@@ -224,7 +224,8 @@ discopt-calphad/                       # setuptools, src layout, uv, py3.12, MIT
     models/regular.py, redlich_kister.py, cef.py
     equilibrium/restricted.py, pricing.py, generation.py, certificate.py, result.py, loop.py
     solvers/pounce.py, global_discopt.py
-    io/tdb.py                          # MVP 3
+    io/tdb.py                          # MVP 3: TDB reader/writer
+    symbolic.py, database.py           # MVP 3: SymPy T-expressions, PiecewiseT, ThermoDatabase
   tests/                               # pytest, `slow` marker, module-scoped fixtures
   examples/                            # notebooks built by build_notebooks.py (thermo style)
   docs/architecture.md, roadmap.md, research-notebook.md
@@ -332,6 +333,38 @@ building the prototype. The upstream requests are tracked in discopt#1249.
     `StoichiometricPhase` and `TPoly` take J/mol and divide by RT inside
     `gibbs`. Every solver quantity (G, μ, Ψ, ε, LB) stays in RT units.
     `Certificate.eps_J_per_mol` converts when T is known.
+14. **TDB conventions.** *MVP 3, measured against pycalphad 0.11.2.* Three
+    conventions change numbers:
+    - **Range boundaries.** Temperature ranges are `[lo, hi)`, with the last
+      range closed. alfe.tdb's GHSERAL jumps by 2.3e-4 J at 700 K, so the
+      other convention disagrees at the breakpoint. We follow pycalphad.
+    - **Gas constant.** pycalphad uses R = 8.3145, and we use CODATA
+      8.314462618. Ideal mixing terms therefore differ by about
+      4e-5·T·|Σ y ln y| J/mol. The oracle tests correct for this and then agree
+      to 1e-10 relative.
+    - **Default limits and pressure.** A `,` temperature limit is taken as
+      unbounded. P-dependent expressions (for example GAS phases) are
+      evaluated at `ThermoDatabase.pressure` (101325 Pa).
+
+    Tolerated on the last range only, because published files do it: a
+    missing `N` (`; 6000 01DUP`), a missing lower or upper T
+    (`G(LIQUID,AL) +GALLIQ; N`), and stray `"` after `!`. Unknown commands and
+    other malformed ranges raise `TDBSyntaxError`.
+15. **Binary database models only.** `ThermoDatabase.phase_model` builds
+    `BinarySolution` (one mixing sublattice, with site ratio and fixed
+    singleton sublattices) or `StoichiometricPhase`. Several features raise
+    `UnsupportedModelError` with the reason:
+    - mixing on more than one sublattice (CEF, MVP 4);
+    - VA in a mixing sublattice;
+    - TC/BMAGN (magnetic);
+    - DISORDERED_PART;
+    - ionic liquids;
+    - parameter kinds or orders the binary model cannot represent.
+
+    `phase_models(elements)` skips such phases silently.
+    `applicability(elements)` lists the reason for each one, and should be
+    checked before trusting a diagram. In Al–Fe, for example, BCC_A2 and
+    FCC_A1 are skipped because they are magnetic.
 
 ## 10. Roadmap after MVP 1
 
@@ -379,10 +412,50 @@ and disappearance).
   tie-lines and a three-phase G–x plot. The three-phase case needs 4
   iterations: it adds FCC, adds AB, and then removes a trace LIQUID.
 
+**MVP 3 status: done** (TDB import and export, symbolic database, binary
+database phase models).
+
+- **`symbolic.py`:**
+  - A TDB expression parser to SymPy in `T` and `P`. A named function
+    reference `GHSERAL#` stays unevaluated as `GHSERAL(T)`.
+  - `PiecewiseT`: ranges, `select`, `as_sympy`, `to_tdb`.
+  - `tdb_str`, which prints SymPy back to TDB syntax.
+- **`io/tdb.py`:**
+  - Reads ELEMENT, SPECIES, FUNCTION, PHASE (with `:L` style hints),
+    CONSTITUENT, PARAMETER (G/L, any order, `*` wildcards), and
+    TYPE_DEFINITION, kept raw for amendment checks.
+  - Ignores bookkeeping commands and raises on anything else.
+  - Keywords may be abbreviated per `_`/`-` part.
+  - The writer's output re-reads to identical functions and parameters.
+- **`database.py`:** `ThermoDatabase`.
+  - Evaluates functions numerically with caching and recursion or undefined
+    checks.
+  - `expand()` inlines named functions.
+  - `phase_model`/`phase_models`/`applicability` (§9.15).
+  - Model coefficients are `DatabaseValue`s: callable at T, and symbolic via
+    `.expr()` with the parameter labels kept.
+  - `BinarySolution` gained `sites` and `fixed` for singleton sublattices such
+    as `(AL,ZN)1(VA)0.5`, and odd RK orders flip sign when the requested
+    element order is reversed.
+- **Tests:** `tests/test_tdb.py` has 46 tests:
+  - Parser and printer round-trip, and syntax errors.
+  - Range and extrapolation behaviour, P-dependence, and recursive or
+    undefined functions.
+  - Model construction and every unsupported-model error.
+  - G versus pycalphad (test-only oracle) for Al–Zn, Cu–Mg and Al–Fe phases at
+    5 temperatures (including breakpoints) to 1e-10 relative.
+  - Round-trip of 10 published databases.
+  - Slow: a certified Al–Zn equilibrium versus `pycalphad.equilibrium` (GM,
+    μ, phases).
+
+  A sweep (not in CI) reads and round-trips 36 of pycalphad's 38 test TDB files.
+- **Example:** `examples/alzn_tdb.py` reads the an Mey Al–Zn database, copied
+  with attribution to `examples/data/`. It prints the symbolic view and
+  certifies three two-phase states (FCC gap, FCC + HCP, LIQUID + HCP) with
+  G–x panels.
+
 Next:
 
-TDB import (ELEMENT/SPECIES/FUNCTION/PHASE/CONSTITUENT/
-PARAMETER, piecewise T, explicit errors for unsupported constructs, round-trip
-tests) → CEF (multi-sublattice endmembers and interactions, simplex-aware bound
+CEF (multi-sublattice endmembers and interactions, simplex-aware bound
 study) → small open binary database vs pycalphad on a T–x grid → ternary →
 phase-diagram tracing with warm starts in both POUNCE and pricing.

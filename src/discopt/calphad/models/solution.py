@@ -15,22 +15,31 @@ __all__ = ["BinarySolution"]
 
 @dataclass(frozen=True)
 class BinarySolution:
-    """A single-sublattice binary solution ``(A,B)1``; energies are in J/mol.
+    """A binary solution that mixes A and B on one sublattice; energies are in J per formula unit.
 
-    With x_A = y[0] and x_B = 1 − x_A:
+    The formula unit is ``(A,B)_sites`` plus fixed amounts ``fixed = (n_A, n_B)``
+    from singleton sublattices (VA contributes nothing). With y = y[0] the site
+    fraction of A on the mixing sublattice:
 
-        G = x_A g_A(T) + x_B g_B(T) + RT (x_A ln x_A + x_B ln x_B)
-            + x_A x_B Σ_k L_k(T) (x_A − x_B)^k
+        G = y g_A(T) + (1 − y) g_B(T) + sites·RT (y ln y + (1 − y) ln(1 − y))
+            + y (1 − y) Σ_k L_k(T) (2y − 1)^k
 
-    ``gibbs`` returns G/RT. Each ``g`` and ``L`` entry is either a number or a
-    callable of T, such as :class:`~discopt.calphad.models.TPoly`.
+    Here g_A and g_B are the endmember energies, and ``gibbs`` returns G/RT.
+    Each ``g`` and ``L`` entry is a number or a callable of T, such as
+    :class:`~discopt.calphad.models.TPoly` or a database value. With the
+    defaults (``sites=1``, no fixed amounts), y is the mole fraction x_A.
     """
 
     name: str
     elements: tuple[str, str] = ("A", "B")
     g: tuple = (0.0, 0.0)
     L: tuple = ()
-    atoms_min: float = 1.0
+    sites: float = 1.0
+    fixed: tuple[float, float] = (0.0, 0.0)
+
+    @property
+    def atoms_min(self) -> float:
+        return float(self.sites + self.fixed[0] + self.fixed[1])
 
     @property
     def n_y(self) -> int:
@@ -47,7 +56,7 @@ class BinarySolution:
         xa = y[0]
         xb = 1 - xa
         ga, gb = (coef(c, T) / RT for c in self.g)
-        G = ga * xa + gb * xb + ops.xlogx(xa) + ops.xlogx(xb)
+        G = ga * xa + gb * xb + self.sites * (ops.xlogx(xa) + ops.xlogx(xb))
         if self.L:
             d = xa - xb
             rk, dk = 0.0, 1.0
@@ -59,9 +68,11 @@ class BinarySolution:
         return G
 
     def amounts(self, y):
-        xa = y[0]
-        return (xa, 1 - xa)
+        ya = y[0]
+        return (self.sites * ya + self.fixed[0], self.sites * (1 - ya) + self.fixed[1])
 
-    def initial_y(self, b) -> np.ndarray:
+    def initial_y(self, b) -> np.ndarray | None:
+        """The site fraction at which one formula unit matches ``b`` in ratio, or None if there is none."""
         b = np.asarray(b, dtype=float)
-        return np.array([b[0] / b.sum()])
+        y = (b[0] / b.sum() * self.atoms_min - self.fixed[0]) / self.sites
+        return np.array([y]) if 0.0 < y < 1.0 else None

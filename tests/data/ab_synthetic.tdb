@@ -1,0 +1,68 @@
+$ Synthetic A-B-C database for discopt-calphad tests.
+$ The numbers are made up. The file exercises TDB constructs: abbreviations,
+$ multi-range functions, references with and without '#', phase-name
+$ suffixes, major-constituent marks, wildcards, and unsupported models.
+$
+ ELEMENT /-   ELECTRON_GAS   0.0 0.0 0.0 !
+ ELEMENT VA   VACUUM         0.0 0.0 0.0 !
+ ELEMENT A    FCC_A1        10.0 0.0 30.0 !
+ ELEMENT B    HCP_A3        20.0 0.0 35.0 !
+ ELEMENT C    GRAPHITE      12.0 0.0  5.7 !
+ SPECIES AB2  A1B2 !
+ VERSION_DATE  synthetic test file !
+
+ FUNC GHSERA 298.15 -8000+130*T-24*T*LN(T)-1.8E-3*T**2+74000*T**(-1);  900 Y
+      -11000+220*T-38*T*LN(T)+1.8E-02*T**2-5.7E-6*T**3;             3000 N REF1 !
+ FUNCTION GHSERB 298.15 -7000+120*T-23*T*LN(T)-.0017*T**2;          3000 N !
+ FUNCTION GALIQ  298.15 +10000-10*T+GHSERA#;                         3000 N !
+ FUNCTION GBLIQ  298.15 +15000-10*T+GHSERB;                          3000 N !
+
+ TYPE_DEFINITION % SEQ *!
+ DEFINE_SYSTEM_DEFAULT ELEMENT 2 !
+ DEFAULT_COMMAND DEF_SYS_ELEMENT VA /- !
+ TYPE_DEF & GES A_P_D FCC_A1 MAGNETIC  -3.0    2.80000E-01 !
+ TYPE_DEFINITION ( GES A_P_D ORD_PH DIS_PART FCC_A1 !
+
+ PHASE LIQUID:L %  1  1.0  !
+ CONST LIQUID:L :A,B : !
+ PARA G(LIQUID,A;0)   298.15 +GALIQ#;       3000 N !
+ PARA G(LIQUID,B;0)   298.15 +GBLIQ#;       3000 N !
+ PARA L(LIQUID,A,B;0) 298.15 -5000+1.5*T;   3000 N !
+ PARA G(LIQUID,A,B;1) 298.15 +2500;         3000 N !
+
+ PHASE FCC_A1 %&  2 1 1 !
+ CONSTITUENT FCC_A1 :A%,B : VA% : !
+ PARAMETER G(FCC_A1,A:VA;0)   298.15 +GHSERA#;             3000 N !
+ PARAMETER G(FCC_A1,B:VA;0)   298.15 +3000-1.2*T+GHSERB#;  3000 N !
+ PARAMETER G(FCC_A1,A,B:VA;0) 298.15 +20000-2*T;           3000 N !
+ PARAMETER G(FCC_A1,A,B:*;1)  298.15 +3000;                3000 N !
+ PARAMETER G(FCC_A1,A,B:VA;2) 298.15 -1000;                3000 N !
+
+ PHASE AB2 % 2 1 2 !
+ CONST AB2 :A:B: !
+ PARA G(AB2,A:B;0) 298.15 -45000+5*T+GHSERA#+2*GHSERB#;    3000 N !
+
+ PHASE HCP_A3 % 2 1 0.5 !
+ CONST HCP_A3 :B:VA: !
+ PARA G(HCP_A3,B:VA;0) 298.15 +GHSERB#;                    3000 N !
+
+ PHASE SIGMA % 3 2 1 1 !
+ CONST SIGMA :A,B:A,B:B: !
+ PARA G(SIGMA,A:A:B;0) 298.15 +1000+3*GHSERA#+GHSERB#;     3000 N !
+ PARA G(SIGMA,A:B:B;0) 298.15 +2000+2*GHSERA#+2*GHSERB#;   3000 N !
+ PARA G(SIGMA,B:A:B;0) 298.15 +3000+GHSERA#+3*GHSERB#;     3000 N !
+ PARA G(SIGMA,B:B:B;0) 298.15 +4000+4*GHSERB#;             3000 N !
+
+ PHASE BCC_MAG % 2 1 3 !
+ CONST BCC_MAG :A,B:VA: !
+ PARA G(BCC_MAG,A:VA;0) 298.15 +GHSERA#;    3000 N !
+ PARA G(BCC_MAG,B:VA;0) 298.15 +GHSERB#;    3000 N !
+ PARA TC(BCC_MAG,A:VA;0) 298.15 +1043;      3000 N !
+
+ PHASE ORD_PH % 2 0.5 0.5 !
+ CONST ORD_PH :A,B:A,B: !
+ PARA G(ORD_PH,A:B;0) 298.15 -1000;         3000 N !
+
+ PHASE GRAPHITE % 1 1.0 !
+ CONST GRAPHITE :C: !
+ PARA G(GRAPHITE,C;0) 298.15 -17000+170*T-24*T*LN(T); 3000 N !

@@ -11,9 +11,13 @@ __all__ = ["lower_convex_hull", "gx_curves", "plot_gx"]
 
 def lower_convex_hull(x, g):
     """Lower convex hull of points (x, g), using a monotone chain; the points are sorted by x first."""
-    order = np.lexsort((np.asarray(g, float), np.asarray(x, float)))
+    x, g = np.asarray(x, float), np.asarray(g, float)
+    order = np.lexsort((g, x))
+    x, g = x[order], g[order]
+    # keep only the lowest g at each x; otherwise a higher point at the last x leaves a vertical edge
+    first = np.concatenate(([True], np.diff(x) > 0))
     hull: list[tuple[float, float]] = []
-    for p in zip(np.asarray(x, float)[order], np.asarray(g, float)[order]):
+    for p in zip(x[first], g[first]):
         while len(hull) >= 2:
             (x1, g1), (x2, g2) = hull[-2], hull[-1]
             if (x2 - x1) * (p[1] - g1) - (g2 - g1) * (p[0] - x1) <= 0:
