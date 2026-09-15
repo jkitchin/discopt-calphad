@@ -14,6 +14,11 @@ dist/
 # Jupyter Book build output
 _build/
 
+# MkDocs build output and files the docs hook copies in
+site/
+docs/assets/logo.png
+docs/assets/examples/
+
 # OS
 .DS_Store
 

@@ -8,9 +8,9 @@ import pytest
 import sympy as sp
 
 from discopt.calphad import BinarySolution, StoichiometricPhase
-from discopt.calphad.models import CEFPhase
 from discopt.calphad.database import PhaseNotApplicable, ThermoDatabase, UnsupportedModelError
 from discopt.calphad.equilibrium.common import R_GAS
+from discopt.calphad.models import CEFPhase
 from discopt.calphad.symbolic import (
     PiecewiseT,
     T,
@@ -103,9 +103,7 @@ def test_function_evaluation_and_expansion(synth):
     ghsera = -11000 + 220 * t - 38 * t * np.log(t) + 1.8e-2 * t**2 - 5.7e-6 * t**3
     assert synth.evaluate("GHSERA", t) == pytest.approx(ghsera, rel=1e-14)
     assert synth.evaluate("GALIQ", t) == pytest.approx(10000 - 10 * t + ghsera, rel=1e-14)
-    assert synth.evaluate("GALIQ", 500.0) == pytest.approx(
-        float(synth.expand("GALIQ").subs(T, 500.0)), rel=1e-12
-    )
+    assert synth.evaluate("GALIQ", 500.0) == pytest.approx(float(synth.expand("GALIQ").subs(T, 500.0)), rel=1e-12)
     assert synth.functions["GBLIQ"].exprs[0].has(function_ref("GHSERB"))  # reference without '#'
     with pytest.raises(ValueError, match="outside"):
         synth.evaluate("GHSERA", 200.0)
@@ -272,8 +270,18 @@ def test_gibbs_matches_pycalphad(fname, elements, phases, t):
 
 @pytest.mark.parametrize(
     "fname",
-    ["alzn_mey.tdb", "cumg.tdb", "alfe.tdb", "alnipt.tdb", "crfe_bcc_magnetic.tdb", "alcrni.tdb", "alcocrni.tdb",
-     "crtiv_ghosh.tdb", "COST507.tdb", "cumg_parameters.tdb"],
+    [
+        "alzn_mey.tdb",
+        "cumg.tdb",
+        "alfe.tdb",
+        "alnipt.tdb",
+        "crfe_bcc_magnetic.tdb",
+        "alcrni.tdb",
+        "alcocrni.tdb",
+        "crtiv_ghosh.tdb",
+        "COST507.tdb",
+        "cumg_parameters.tdb",
+    ],
 )
 def test_round_trip_real_databases(fname):
     db = ThermoDatabase.from_tdb(pycalphad_db(fname))
@@ -291,19 +299,25 @@ def test_round_trip_real_databases(fname):
 @pytest.mark.slow
 def test_alzn_equilibrium_matches_pycalphad():
     """Al–Zn at 600 K, x_Zn = 0.5: FCC miscibility-gap / HCP two-phase region."""
-    from pycalphad import Database, equilibrium as pyeq, variables as v
+    path = pycalphad_db("alzn_mey.tdb")  # skips when pycalphad is absent
+    from pycalphad import Database
+    from pycalphad import equilibrium as pyeq
+    from pycalphad import variables as v
 
     from discopt.calphad import CertificateLevel, equilibrium
 
-    path = pycalphad_db("alzn_mey.tdb")
     db = ThermoDatabase.from_tdb(path)
     phases = list(db.phase_models(("AL", "ZN")).values())
     t, xzn = 600.0, 0.5
     res = equilibrium(phases, x=1 - xzn, T=t)
     assert res.certificate.level >= CertificateLevel.CERTIFIED_TO_TOLERANCE
 
-    eq = pyeq(Database(str(path)), ["AL", "ZN", "VA"], ["LIQUID", "FCC_A1", "HCP_A3"],
-              {v.X("ZN"): xzn, v.T: t, v.P: 101325, v.N: 1})
+    eq = pyeq(
+        Database(str(path)),
+        ["AL", "ZN", "VA"],
+        ["LIQUID", "FCC_A1", "HCP_A3"],
+        {v.X("ZN"): xzn, v.T: t, v.P: 101325, v.N: 1},
+    )
     gm_ref = float(np.squeeze(eq.GM.values))
     mu_ref = np.squeeze(eq.MU.values)
     # tolerances cover the R difference (≈ 4e-5 J/mol/K times the mixing entropy) and pycalphad's own convergence

@@ -76,7 +76,7 @@ def _xlogx_prod(factors, ops):
     """x ln x for x = Π factors, written as Σ_i xlogx(f_i) Π_{j≠i} f_j."""
     total = 0.0
     for i, f in enumerate(factors):
-        rest = factors[:i] + factors[i + 1:]
+        rest = factors[:i] + factors[i + 1 :]
         term = ops.xlogx(f)
         total = total + (term * _prod(rest) if rest else term)
     return total
@@ -112,7 +112,8 @@ class CEFPhase:
         object.__setattr__(self, "_layout", tuple(layout))
         if self.atoms_min <= 0:
             raise NotImplementedError(
-                f"{self.name}: an all-vacancy configuration has no atoms, so the certificate's amount bound is unbounded"
+                f"{self.name}: an all-vacancy configuration has no atoms, "
+                "so the certificate's amount bound is unbounded"
             )
 
     def _check_term(self, t: CEFTerm) -> None:

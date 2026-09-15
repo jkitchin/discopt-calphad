@@ -1,8 +1,7 @@
 """Solver-free unit tests: backends, interval soundness, boundary bound, certificate levels."""
 
-from types import SimpleNamespace
-
 import math
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -50,8 +49,12 @@ def test_lower_convex_hull():
 
 
 def _fake(lbs, ubs, *, converged=True, residual=0.0):
-    R = SimpleNamespace(converged=converged, status="optimal" if converged else "iteration_limit",
-                        residual=residual, primal_infeasibility=0.0)
+    R = SimpleNamespace(
+        converged=converged,
+        status="optimal" if converged else "iteration_limit",
+        residual=residual,
+        primal_infeasibility=0.0,
+    )
     ph = lambda i: SimpleNamespace(name=f"P{i}", atoms_min=1.0)
     P = [
         SimpleNamespace(phase=ph(i), lb=lb, ub=ub, destabilizing=lambda eps, ub=ub: ub < -eps)

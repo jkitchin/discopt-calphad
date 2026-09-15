@@ -89,8 +89,10 @@ def main():
         for vname, fn, gap in variants:
             t0 = time.perf_counter()
             status, decided, nodes, bound = fn(p, mu, gap)
-            print(f"  {vname:28s} {time.perf_counter() - t0:6.1f} s  {status!s:24s} decided={decided!s:5s} "
-                  f"nodes={nodes:6d}  bound={bound}")
+            print(
+                f"  {vname:28s} {time.perf_counter() - t0:6.1f} s  {status!s:24s} decided={decided!s:5s} "
+                f"nodes={nodes:6d}  bound={bound}"
+            )
 
 
 if __name__ == "__main__":

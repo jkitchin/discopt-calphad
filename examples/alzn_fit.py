@@ -28,8 +28,11 @@ truth = ThermoDatabase.from_tdb(HERE / "data" / "alzn_mey.tdb")
 rng = np.random.default_rng(1)
 lm = _LinearModel(truth, EL, [])  # evaluates the true model
 data = Dataset()
-for kind, phase, T, sigma in [("HM_MIX", "LIQUID", 1000.0, 30.0), ("HM_MIX", "FCC_A1", 650.0, 30.0),
-                              ("SM_MIX", "FCC_A1", 650.0, 0.05)]:
+for kind, phase, T, sigma in [
+    ("HM_MIX", "LIQUID", 1000.0, 30.0),
+    ("HM_MIX", "FCC_A1", 650.0, 30.0),
+    ("SM_MIX", "FCC_A1", 650.0, 0.05),
+]:
     x = np.linspace(0.1, 0.9, 9)
     v = [lm.phase(phase).thermo(kind, xx, T)[0] for xx in x]
     data.add_thermo(kind, phase, T, x, np.array(v) + rng.normal(0, sigma, x.size), sigma, citation="synthetic")
@@ -48,16 +51,24 @@ print(res.summary())
 print("\ncorrelation\n", np.array2string(res.correlation, precision=2, suppress_small=True))
 
 for check in res.check_equilibria():
-    print(f"\nT = {check['T']} K, x_AL = {check['x']:.3f}: observed {check['observed']}, "
-          f"computed {check['computed']} ({check['certificate']})")
+    print(
+        f"\nT = {check['T']} K, x_AL = {check['x']:.3f}: observed {check['observed']}, "
+        f"computed {check['computed']} ({check['certificate']})"
+    )
 
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4))
 fit_lm = _LinearModel(res.database, EL, [])
 xs = np.linspace(0.02, 0.98, 97)
 for (kind, phase, T), color in zip([("HM_MIX", "LIQUID", 1000.0), ("HM_MIX", "FCC_A1", 650.0)], ("C0", "C1")):
     obs = [o for o in data if o.kind == kind and o.phase == phase]
-    ax1.errorbar([o.x for o in obs], [o.value for o in obs], [o.sigma for o in obs], fmt="o", color=color,
-                 label=f"{phase} {T:g} K data")
+    ax1.errorbar(
+        [o.x for o in obs],
+        [o.value for o in obs],
+        [o.sigma for o in obs],
+        fmt="o",
+        color=color,
+        label=f"{phase} {T:g} K data",
+    )
     ax1.plot(xs, [fit_lm.phase(phase).thermo(kind, x, T)[0] for x in xs], color=color, label="fit")
 ax1.set_xlabel("x(AL)")
 ax1.set_ylabel("ΔH_mix (J/mol)")

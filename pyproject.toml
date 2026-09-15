@@ -26,7 +26,32 @@ dev = [
     "pytest>=8",
     "matplotlib>=3.7",
     "pycalphad>=0.11.1",
+    "ruff>=0.16",
 ]
+docs = [
+    "mkdocs>=1.6,<2",  # MkDocs 2 drops the plugin system that Material and mkdocstrings use
+    "mkdocs-material>=9.7",
+    "mkdocstrings[python]>=0.29",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+extend-exclude = ["docs_hooks.py"]
+
+[tool.ruff.format]
+exclude = ["*.md"]  # code blocks in the docs are written by hand (and hold snippet directives)
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = [
+    "E731",  # small lambdas in tests and benchmarks read better inline
+    "B905",  # zip() without strict=: lengths are checked where it matters
+]
+
+[tool.ruff.lint.per-file-ignores]
+"benchmarks/*" = ["E402"]
+"examples/*" = ["E402"]
 
 [tool.pytest.ini_options]
 markers = ["slow: long-running solves (deselect with '-m \"not slow\"')"]

@@ -131,8 +131,19 @@ class Dataset:
     def add_activity(self, element, phase, T, x, value, sigma, reference=None, citation: str = "") -> Dataset:
         """Activities of ``element`` relative to the pure element in ``reference`` (default: ``phase``)."""
         for t, xx, v, s in zip(*_broadcast(T, x, value, sigma)):
-            self.add(Observation("ACR", float(t), float(v), float(s), phase=phase, x=float(xx),
-                                 element=element.upper(), reference=reference, citation=citation))
+            self.add(
+                Observation(
+                    "ACR",
+                    float(t),
+                    float(v),
+                    float(s),
+                    phase=phase,
+                    x=float(xx),
+                    element=element.upper(),
+                    reference=reference,
+                    citation=citation,
+                )
+            )
         return self
 
     def add_equilibrium(self, T, phases, sigma: float = 500.0, citation: str = "") -> Dataset:
@@ -170,7 +181,10 @@ class Dataset:
 
     @classmethod
     def from_csv(cls, path) -> Dataset:
-        """Thermochemical or activity rows with columns kind, phase, T, x, value, sigma, and optionally element, reference, citation."""
+        """Thermochemical or activity rows.
+
+        Columns: kind, phase, T, x, value, sigma, and optionally element, reference, citation.
+        """
         import csv
 
         ds = cls()
@@ -243,8 +257,11 @@ class _LinearModel:
         self.free_index: dict[int, FreeParameter] = {}
         for fp in free:
             kind, phase, subl, order = _parse_label(fp.label)
-            hit = [i for i, p in enumerate(params)
-                   if (p.kind, p.phase, p.constituents, p.order) == (kind, phase, subl, order)]
+            hit = [
+                i
+                for i, p in enumerate(params)
+                if (p.kind, p.phase, p.constituents, p.order) == (kind, phase, subl, order)
+            ]
             if not hit:
                 if phase not in db.phases:
                     raise KeyError(f"{fp.label}: no phase {phase} in the database")
@@ -445,8 +462,10 @@ class FitResult:
         return out
 
     def summary(self) -> str:
-        lines = [f"fit of {len(self.names)} coefficients to {len(self.data)} observations "
-                 f"({self.residuals.size} residuals): chi2 = {self.chi2:.4g}, dof = {self.dof}, rank = {self.rank}"]
+        lines = [
+            f"fit of {len(self.names)} coefficients to {len(self.data)} observations "
+            f"({self.residuals.size} residuals): chi2 = {self.chi2:.4g}, dof = {self.dof}, rank = {self.rank}"
+        ]
         for n, v, s in zip(self.names, self.values, self.std):
             flag = "  (at bound)" if n in self.active_bounds else ""
             lines.append(f"  {n:32s} = {v: .6g}  ± {s:.3g}{flag}")
@@ -456,8 +475,10 @@ class FitResult:
 
     def to_tdb(self) -> str:
         """The fitted database as TDB text, with a provenance header."""
-        head = [f"$ parameters fitted by discopt.calphad.fit to {len(self.data)} observations "
-                f"(chi2 = {self.chi2:.6g}, dof = {self.dof})"]
+        head = [
+            f"$ parameters fitted by discopt.calphad.fit to {len(self.data)} observations "
+            f"(chi2 = {self.chi2:.6g}, dof = {self.dof})"
+        ]
         head += [f"$   {n} = {v:.10g} +/- {s:.3g}" for n, v, s in zip(self.names, self.values, self.std)]
         return "\n".join(head) + "\n" + self.database.to_tdb()
 
@@ -478,7 +499,7 @@ class FitResult:
         return ax
 
     def check_equilibria(self, eps: float = 1e-5, **kwargs) -> list[dict]:
-        """A certified equilibrium at each ZPF observation, at its mean composition, compared with the observed phases."""
+        """A certified equilibrium at each ZPF observation's mean composition, compared with the observed phases."""
         from discopt.calphad.equilibrium import equilibrium
 
         phases = list(self.database.phase_models(self.elements).values())
@@ -496,8 +517,17 @@ class FitResult:
             res = equilibrium(phases, x=xbar, T=obs.T, eps=eps, **kwargs)
             observed = sorted(n for n, _ in obs.phases)
             computed = sorted(cs.phase.name for cs in res.composition_sets)
-            out.append({"T": obs.T, "x": xbar, "observed": observed, "computed": computed,
-                        "match": observed == computed, "certificate": res.certificate.level.name, "result": res})
+            out.append(
+                {
+                    "T": obs.T,
+                    "x": xbar,
+                    "observed": observed,
+                    "computed": computed,
+                    "match": observed == computed,
+                    "certificate": res.certificate.level.name,
+                    "result": res,
+                }
+            )
         return out
 
 
@@ -538,7 +568,9 @@ def fit(db: ThermoDatabase, data: Dataset, elements, free, *, bounds=None) -> Fi
     Js = J / scale
     rank = int(np.linalg.matrix_rank(Js))
     if rank < lm.n:
-        warnings.warn(f"the data determine only {rank} of {lm.n} coefficients; the solution is not unique", stacklevel=2)
+        warnings.warn(
+            f"the data determine only {rank} of {lm.n} coefficients; the solution is not unique", stacklevel=2
+        )
 
     lo = np.full(lm.n, -np.inf)
     hi = np.full(lm.n, np.inf)
@@ -566,7 +598,19 @@ def fit(db: ThermoDatabase, data: Dataset, elements, free, *, bounds=None) -> Fi
         old = lm.db.parameters[i].function
         fitted[i] = PiecewiseT((old.t_min, old.t_max), (sp.nsimplify(fp.form.subs(subs), rational=False),))
     return FitResult(
-        names=list(lm.names), values=theta, std=std, covariance=cov, correlation=corr, residuals=resid,
-        row_observation=np.array(owner), chi2=float(resid @ resid), dof=int(resid.size - rank), rank=rank,
-        database=_replace(lm.db, fitted), data=data, elements=lm.elements, free=fps, active_bounds=active,
+        names=list(lm.names),
+        values=theta,
+        std=std,
+        covariance=cov,
+        correlation=corr,
+        residuals=resid,
+        row_observation=np.array(owner),
+        chi2=float(resid @ resid),
+        dof=int(resid.size - rank),
+        rank=rank,
+        database=_replace(lm.db, fitted),
+        data=data,
+        elements=lm.elements,
+        free=fps,
+        active_bounds=active,
     )

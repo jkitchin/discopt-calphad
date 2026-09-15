@@ -159,17 +159,18 @@ CEF_CASES = [
 @pytest.mark.parametrize("fname,elements,name", CEF_CASES)
 @pytest.mark.parametrize("t", [500.0, 933.47, 1400.0])
 def test_cef_gibbs_matches_pycalphad(fname, elements, name, t):
+    path = pycalphad_db(fname)  # skips when pycalphad is absent
     from pycalphad import Database, calculate
 
-    path = pycalphad_db(fname)
     model = ThermoDatabase.from_tdb(path).phase_model(name, elements)
     assert isinstance(model, CEFPhase)
     rng = np.random.default_rng(7)
     fractions = [[dict(zip(c, rng.dirichlet(np.ones(len(c))))) for c in model.constituents] for _ in range(6)]
     fractions.append([{c: (1.0 if i == 0 else 0.0) for i, c in enumerate(cons)} for cons in model.constituents])
     points = [[d[c] for cons, d in zip(model.constituents, fr) for c in cons] for fr in fractions]
-    ref = calculate(Database(str(path)), [*elements, "VA"], name, T=t, P=101325, N=1, points=np.array(points),
-                    output="GM")
+    ref = calculate(
+        Database(str(path)), [*elements, "VA"], name, T=t, P=101325, N=1, points=np.array(points), output="GM"
+    )
     for fr, gm in zip(fractions, np.asarray(ref.GM).ravel()):
         u = model.variables_from_site_fractions(fr)
         atoms = float(np.sum(model.amounts(u)))
@@ -226,7 +227,9 @@ def test_staged_pricing_certifies_a_clearly_unstable_phase():
 @pytest.mark.slow
 @pytest.mark.parametrize("x_cu,T", [(0.75, 700.0), (0.62, 900.0)])
 def test_cumg_equilibrium_with_cef_phase_matches_pycalphad(cumg, x_cu, T):
-    from pycalphad import Database, equilibrium as pyeq, variables as v
+    from pycalphad import Database
+    from pycalphad import equilibrium as pyeq
+    from pycalphad import variables as v
 
     phases = cumg.phase_models(("CU", "MG"))
     res = equilibrium(list(phases.values()), x=x_cu, T=T)

@@ -68,9 +68,7 @@ class EquilibriumResult:
 def is_duplicate(sets, phase, y, tol: float) -> bool:
     """True if some set of the same phase has ‖y − y_α‖∞ < tol (every set of a compound counts)."""
     y = np.asarray(y, dtype=float)
-    return any(
-        s.phase is phase and (y.size == 0 or float(np.max(np.abs(s.y - y))) < tol) for s in sets
-    )
+    return any(s.phase is phase and (y.size == 0 or float(np.max(np.abs(s.y - y))) < tol) for s in sets)
 
 
 def initial_set(phases, b, T=None) -> CompositionSet:
@@ -133,14 +131,15 @@ def equilibrium(
         history.append(record)
         if not R.converged:
             break
+
         # An interior-point solve leaves a vanishing phase with a small positive amount, not an exact
         # zero. A set counts as inactive if its amount is negligible, or if it is small and sits
         # clearly above the tangent plane. If any set is dropped, R is solved again before pricing,
         # so the reported μ and G never include a ghost phase.
-        def inactive(s):
+        def inactive(s, mu=R.mu):
             if s.amount <= amount_tol:
                 return True
-            return s.amount < small and float(tangent_distance(s.phase, s.y, R.mu, NUM, T)) > eps
+            return s.amount < small and float(tangent_distance(s.phase, s.y, mu, NUM, T)) > eps
 
         active = [s for s in R.sets if not inactive(s)] or [max(R.sets, key=lambda s: s.amount)]
         record.removed = [s for s in R.sets if all(s is not a for a in active)]

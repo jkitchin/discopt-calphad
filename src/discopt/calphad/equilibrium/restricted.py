@@ -13,8 +13,9 @@ the multipliers of the balance constraints.
 from __future__ import annotations
 
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any
 
 import discopt.modeling as dm
 import numpy as np

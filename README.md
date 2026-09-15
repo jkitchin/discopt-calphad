@@ -2,6 +2,9 @@
 
 ![discopt-calphad logo](images/logo.png)
 
+[![tests](https://github.com/jkitchin/discopt-calphad/actions/workflows/tests.yml/badge.svg)](https://github.com/jkitchin/discopt-calphad/actions/workflows/tests.yml)
+[![docs](https://github.com/jkitchin/discopt-calphad/actions/workflows/docs.yml/badge.svg)](https://kitchingroup.cheme.cmu.edu/discopt-calphad/)
+
 </div>
 
 # discopt-calphad
@@ -99,7 +102,9 @@ open("alzn_fit.tdb", "w").write(res.to_tdb())
 
 ```bash
 uv sync
-uv run pytest
+uv run pytest -m "not slow"                      # what CI runs; drop -m for the slow solves too
+uv run ruff check . && uv run ruff format --check .
+uv sync --group docs && uv run mkdocs build --strict   # site: https://kitchingroup.cheme.cmu.edu/discopt-calphad/
 uv run python examples/regular_solution_gap.py   # writes examples/regular_solution_gap.png
 uv run python examples/alzn_tdb.py               # TDB -> certified Al–Zn equilibria
 uv run python examples/cumg_cef.py               # CEF Laves phase in Cu–Mg

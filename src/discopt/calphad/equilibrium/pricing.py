@@ -112,8 +112,18 @@ def _price_fixed(phase, mu, T) -> PricingResult:
     y = np.empty(0)
     psi = float(tangent_distance(phase, y, mu, NUM, T))
     return PricingResult(
-        phase=phase, mu=mu, y=y, ub=psi, lb=psi, solver_lb=psi, boundary_lb=math.inf,
-        status="exact", gap_certified=True, node_count=0, wall_time=time.perf_counter() - t0, bound_source="exact",
+        phase=phase,
+        mu=mu,
+        y=y,
+        ub=psi,
+        lb=psi,
+        solver_lb=psi,
+        boundary_lb=math.inf,
+        status="exact",
+        gap_certified=True,
+        node_count=0,
+        wall_time=time.perf_counter() - t0,
+        bound_source="exact",
     )
 
 
@@ -166,8 +176,12 @@ def price_phase(
     while True:
         stages += 1
         remaining = time_limit - (time.perf_counter() - t0)
-        r = m.solve(gap_tolerance=gap_tolerance, time_limit=max(min(limit, remaining), 0.1),
-                    node_callback=record_bound, **solve_kwargs)
+        r = m.solve(
+            gap_tolerance=gap_tolerance,
+            time_limit=max(min(limit, remaining), 0.1),
+            node_callback=record_bound,
+            **solve_kwargs,
+        )
         nodes += int(r.node_count or 0)
         if r.x:
             yr = np.array([float(np.asarray(r.x[f"y{i}"])) for i in range(len(box))])

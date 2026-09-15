@@ -93,10 +93,20 @@ def plot_gx(phases, result=None, T=None, ax=None, n: int = 4001, show_hull: bool
         ax.plot(hx, hg, ls=":", color="k", lw=1.2, label="lower convex hull (grid reference)")
     if result is not None:
         xs = np.linspace(0, 1, 201)
-        ax.plot(xs, result.mu[0] * xs + result.mu[1] * (1 - xs), ls="--", color="C3", lw=1.2, label="μ tangent (solver)")
+        ax.plot(
+            xs, result.mu[0] * xs + result.mu[1] * (1 - xs), ls="--", color="C3", lw=1.2, label="μ tangent (solver)"
+        )
         for cs in result.composition_sets:
-            ax.plot(cs.x[0], float(cs.phase.gibbs(cs.y, NUM, T)) / cs.atoms, "o", mfc="none", mec="k", ms=10, mew=1.5,
-                    zorder=6)
+            ax.plot(
+                cs.x[0],
+                float(cs.phase.gibbs(cs.y, NUM, T)) / cs.atoms,
+                "o",
+                mfc="none",
+                mec="k",
+                ms=10,
+                mew=1.5,
+                zorder=6,
+            )
         ax.plot([], [], "o", mfc="none", mec="k", label="composition sets")
     names = phases[0].elements
     ax.set_xlabel(f"x({names[0]})")

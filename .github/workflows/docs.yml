@@ -1,0 +1,54 @@
+name: docs
+
+# Build the MkDocs site on every push and pull request (--strict, so a broken
+# cross-reference fails); deploy to GitHub Pages from main
+# (Settings > Pages > Source: GitHub Actions).
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10.1.0
+        with:
+          python-version: "3.12"
+
+      # only the docs tools: the API reference is read statically from src/
+      # and example figures are stored outputs, so the package is not installed
+      - name: Install docs dependencies
+        run: uv sync --only-group docs --frozen --no-install-project
+
+      - name: Build site
+        run: uv run --no-sync mkdocs build --strict
+
+      - uses: actions/upload-pages-artifact@v5
+        if: github.event_name != 'pull_request'
+        with:
+          path: site
+
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
