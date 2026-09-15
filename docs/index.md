@@ -26,6 +26,59 @@ the tangent-plane distance Ψ(y) = G(y) − μ·A(y):
   *active*, its bound stalls near −1e-4, so the result is `GLOBAL_SEARCH_INCOMPLETE`.
 - **Fitting:** weighted linear least squares of TDB parameters to
   thermochemical, activity and tie-line data.
+- **Pricing modes:** `certify="final"` (default) prices locally while
+  generating sets and globally once at the end. `certify="none"` skips the
+  global step, and `res.certify()` adds it later.
+
+## Related projects
+
+- **[pycalphad](https://pycalphad.org)** is an open-source Python library for
+  CALPHAD models and equilibria. It reads TDB databases, supports a broad range
+  of models (magnetic, order–disorder, ionic liquids and more), and is mature
+  and widely used. We use it as a test oracle for our Gibbs energies and
+  equilibria.
+- **[ESPEI](https://espei.org)** builds on pycalphad. It generates CALPHAD
+  parameters from data and quantifies their uncertainty with Bayesian (MCMC)
+  sampling.
+- **[OpenCalphad](https://www.opencalphad.com)** is an open-source Fortran
+  equilibrium software package.
+- **Thermo-Calc, FactSage and Pandat** are the commercial standards. They come
+  with assessed multicomponent databases.
+
+For real alloy work today, use those tools. discopt-calphad is a pre-alpha
+research code. It covers far fewer models, and it is much slower. On the same
+TDB files (`benchmarks/pycalphad_comparison.py`, pycalphad 0.11.2, Apple M4 Pro),
+a warm pycalphad point takes about 5 ms. An uncertified solve here
+(`certify="none"`) takes 20–80 ms, and a certified one takes 6–65 s. For a
+19-point composition sweep, pycalphad is about 50–90× faster than
+`certify="none"`. Where both codes find the same phases, GM agrees to within
+0.02 J/mol and μ to within 0.1 J/mol.
+
+## Why another CALPHAD code
+
+A CALPHAD equilibrium is a nonconvex minimization. The established codes find
+the global minimum well in practice, typically by sampling each phase's
+composition space on a grid and then refining locally. But the answer carries
+no proof: nothing shows that a composition between the grid points, or a narrow
+miscibility gap, lowers G further. discopt-calphad asks whether the equilibrium
+can come with a **certificate**. The certificate is a rigorous lower bound, from
+global optimization, showing that no composition of any candidate phase lowers
+G by more than ε.
+
+## What is different here
+
+- **Certified or explicitly not.** Every result carries a certificate level and
+  a bound on G_found − G_global. When the global search cannot close the gap,
+  the result says `GLOBAL_SEARCH_INCOMPLETE`, with the bound it did reach.
+- **Grid-free correctness.** Grids may supply starting points, but correctness
+  rests on the global pricing bound, never on them.
+- **Symbolic models.** SymPy expressions that keep TDB function names. You can
+  inspect, differentiate, and edit them, and write them back to TDB.
+- **Part of an optimization language.** The equilibrium subproblems are discopt
+  models. They can later go inside constrained fitting, alloy design, and
+  checks that a fit predicts no spurious phases.
+- **Fitting tied to certification.** Fitted databases are checked with certified
+  equilibria at the data conditions.
 
 ## Quickstart
 

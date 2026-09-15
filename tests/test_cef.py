@@ -224,6 +224,19 @@ def test_staged_pricing_certifies_a_clearly_unstable_phase():
     assert r.ub == pytest.approx(2.7433, abs=1e-3)
 
 
+def test_new_set_is_not_dropped_before_it_can_grow(cumg):
+    # Cu2Mg destabilizes Cu-rich FCC here. Started at N ≈ 0, R used to move its site fractions to
+    # where Ψ ≫ 0 and drop it, so the loop added and removed it until max_iter.
+    phases = cumg.phase_models(("CU", "MG"))
+    res = equilibrium(list(phases.values()), x=0.95, T=700.0, certify="none")
+    assert res.phase_names == ["CU2MG", "FCC_A1"]
+    assert res.n_iterations <= 3 and not any(rec.removed for rec in res.history)
+    x_cu = {cs.phase.name: cs.x[0] for cs in res.composition_sets}
+    assert x_cu["FCC_A1"] == pytest.approx(0.9638, abs=1e-3)  # pycalphad 0.11.2
+    assert x_cu["CU2MG"] == pytest.approx(0.6675, abs=1e-3)
+    assert res.G * R_GAS * 700.0 == pytest.approx(-30115.04, abs=0.5)
+
+
 @pytest.mark.slow
 @pytest.mark.parametrize("x_cu,T", [(0.75, 700.0), (0.62, 900.0)])
 def test_cumg_equilibrium_with_cef_phase_matches_pycalphad(cumg, x_cu, T):

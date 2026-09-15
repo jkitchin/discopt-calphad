@@ -94,8 +94,13 @@ def solve_restricted(
     domain_floor: float = DOMAIN_FLOOR,
     amount_tol: float = 1e-10,
     options: dict | None = None,
+    fixed: Sequence[bool] | None = None,
 ) -> RestrictedResult:
-    """Solve R(S) locally, starting from the given composition sets."""
+    """Solve R(S) locally, starting from the given composition sets.
+
+    ``fixed[k]`` holds set k's site fractions at their starting values, so only
+    its amount can change. The loop uses this for sets that were just added.
+    """
     if not sets:
         raise ValueError("at least one composition set is required")
     b = np.asarray(b, dtype=float)
@@ -111,8 +116,11 @@ def solve_restricted(
     Y, y0 = [], []
     for k, s in enumerate(sets):
         box = inner_bounds(s.phase, domain_floor)
+        yk = np.clip(s.y, [lo for lo, _ in box], [hi for _, hi in box]) if box else s.y
+        if fixed is not None and fixed[k]:
+            box = [(float(v), float(v)) for v in yk]
         Y.append([m.continuous(f"y{k}_{i}", lb=lo, ub=hi) for i, (lo, hi) in enumerate(box)])
-        y0.append(np.clip(s.y, [lo for lo, _ in box], [hi for _, hi in box]) if box else s.y)
+        y0.append(yk)
 
     m.minimize(sum(N[k] * s.phase.gibbs(Y[k], EXPR, T) for k, s in enumerate(sets)))
     for j, e in enumerate(els):

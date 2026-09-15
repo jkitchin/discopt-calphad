@@ -1,4 +1,4 @@
-"""Composition-set generation: alternate restricted solves and global pricing."""
+"""Composition-set generation: alternate restricted solves and pricing, then certify."""
 
 from __future__ import annotations
 
@@ -6,25 +6,33 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from discopt.calphad.equilibrium.certificate import Certificate, certify
+from discopt.calphad.equilibrium.certificate import Certificate, CertificateLevel
+from discopt.calphad.equilibrium.certificate import certify as certify_state
 from discopt.calphad.equilibrium.common import DOMAIN_FLOOR, tangent_distance
 from discopt.calphad.equilibrium.pricing import PricingResult, price_phases
 from discopt.calphad.equilibrium.restricted import CompositionSet, RestrictedResult, solve_restricted
 from discopt.calphad.ops import NUM
 
-__all__ = ["IterationRecord", "EquilibriumResult", "equilibrium", "initial_set", "is_duplicate"]
+__all__ = ["CERTIFY_MODES", "IterationRecord", "EquilibriumResult", "equilibrium", "initial_set", "is_duplicate"]
+
+#: ``equilibrium(certify=...)``: "none" prices locally only; "final" prices locally and
+#: globally once no local point destabilizes; "every" prices globally in every iteration
+CERTIFY_MODES = ("none", "final", "every")
 
 
 @dataclass
 class IterationRecord:
     iteration: int
     restricted: RestrictedResult
+    #: the pricing that decided this iteration (global once it ran, otherwise local)
     pricing: list[PricingResult]
     added: list[CompositionSet] = field(default_factory=list)
     #: destabilizing pricing points rejected as duplicates of existing sets
     rejected: list[PricingResult] = field(default_factory=list)
     #: sets dropped after R because their amount fell to (near) zero
     removed: list[CompositionSet] = field(default_factory=list)
+    #: local pricing that ran before the global pricing in ``pricing``, if any
+    local_pricing: list[PricingResult] | None = None
 
 
 @dataclass
@@ -46,6 +54,48 @@ class EquilibriumResult:
     @property
     def phase_names(self) -> list[str]:
         return sorted({cs.phase.name for cs in self.composition_sets})
+
+    def certify(
+        self,
+        *,
+        eps: float | None = None,
+        gap_tolerance: float = 1e-6,
+        time_limit: float = 600.0,
+        domain_floor: float = DOMAIN_FLOOR,
+    ) -> Certificate:
+        """Price every phase globally at the stored μ and replace :attr:`certificate`.
+
+        Use this on a result from ``equilibrium(certify="none")``, for example on
+        selected points of a phase diagram. If a phase destabilizes, the stored
+        state is not the global equilibrium. The certificate then says so, and
+        ``equilibrium(res.phases, b=res.b, T=res.T, initial_sets=res.composition_sets)``
+        continues from it.
+        """
+        eps = self.certificate.eps if eps is None else eps
+        last = self.history[-1]
+        if not last.restricted.converged:
+            return self.certificate
+        pricing = price_phases(
+            self.phases,
+            last.restricted.mu,
+            method="global",
+            T=self.T,
+            eps=eps,
+            gap_tolerance=gap_tolerance,
+            time_limit=time_limit,
+            domain_floor=domain_floor,
+        )
+        if last.local_pricing is None and any(p.bound_source == "local" for p in last.pricing):
+            last.local_pricing = last.pricing
+        last.pricing = pricing
+        cert = certify_state(last.restricted, pricing, self.b, eps, T=self.T)
+        if cert.level == CertificateLevel.LOCAL_EQUILIBRIUM and any(p.destabilizing(eps) for p in pricing):
+            cert.messages.append(
+                "not the global equilibrium; continue with "
+                "equilibrium(res.phases, b=res.b, T=res.T, initial_sets=res.composition_sets)"
+            )
+        self.certificate = cert
+        return cert
 
     def summary(self) -> str:
         c = self.certificate
@@ -88,6 +138,17 @@ def initial_set(phases, b, T=None) -> CompositionSet:
     return best[1]
 
 
+def _generate(record: IterationRecord, active, eps: float, dedup_tol: float) -> None:
+    """Add a set for each destabilizing pricing point that is not a duplicate."""
+    for p in record.pricing:
+        if not p.destabilizing(eps):
+            continue
+        if is_duplicate(active + record.added, p.phase, p.y, dedup_tol):
+            record.rejected.append(p)
+        else:
+            record.added.append(CompositionSet(p.phase, p.y, 0.0))
+
+
 def equilibrium(
     phases,
     *,
@@ -95,6 +156,7 @@ def equilibrium(
     b=None,
     T: float | None = None,
     eps: float = 1e-5,
+    certify: str = "final",
     initial_sets=None,
     max_iter: int = 20,
     dedup_tol: float = 1e-4,
@@ -103,8 +165,10 @@ def equilibrium(
     gap_tolerance: float = 1e-6,
     time_limit: float = 600.0,
     domain_floor: float = DOMAIN_FLOOR,
+    local_points: int = 2000,
+    local_starts: int = 5,
 ) -> EquilibriumResult:
-    """Compute an equilibrium by composition-set generation and certify it.
+    """Compute an equilibrium by composition-set generation, and certify it.
 
     ``phases`` is a phase model or a list of them. Pass the overall composition
     either as ``x`` (the fraction of the first element in a binary) or as the
@@ -112,7 +176,22 @@ def equilibrium(
     unit. ``initial_sets`` overrides the automatic starting set. A set whose
     amount is below ``trace_amount``·Σb and whose tangent distance exceeds ``eps``
     is dropped, and R is solved again without it.
+
+    ``certify`` chooses how phases are priced:
+
+    - ``"final"`` (default): local pricing (:func:`price_phase_local`, with
+      ``local_points`` samples and ``local_starts`` refinements) generates
+      composition sets. Once it finds nothing, every phase is priced globally
+      at that μ. A destabilizing point found there is added and the loop goes
+      on, so the certificate is the same as with ``"every"``.
+    - ``"every"``: global pricing in every iteration.
+    - ``"none"``: local pricing only. The result is at best
+      ``STABILITY_SEARCHED``; call :meth:`EquilibriumResult.certify` later.
+
+    ``gap_tolerance`` and ``time_limit`` (seconds per phase) apply to global pricing.
     """
+    if certify not in CERTIFY_MODES:
+        raise ValueError(f"certify must be one of {CERTIFY_MODES}, got {certify!r}")
     phases = list(phases) if isinstance(phases, (list, tuple)) else [phases]
     if (x is None) == (b is None):
         raise ValueError("give exactly one of x= or b=")
@@ -121,12 +200,29 @@ def equilibrium(
             raise ValueError("x= is only for binary systems; pass b= instead")
         b = (float(x), 1.0 - float(x))
     b = np.asarray(b, dtype=float)
+    global_kw = dict(
+        method="global", T=T, eps=eps, gap_tolerance=gap_tolerance, time_limit=time_limit, domain_floor=domain_floor
+    )
+    local_kw = dict(method="local", T=T, n_points=local_points, n_starts=local_starts, domain_floor=domain_floor)
 
     sets = list(initial_sets) if initial_sets else [initial_set(phases, b, T)]
     history: list[IterationRecord] = []
     small = trace_amount * float(np.sum(b))
+    new: list[CompositionSet] = []
+    exhausted = False
     for it in range(max_iter):
         R = solve_restricted(sets, b, T=T, domain_floor=domain_floor, amount_tol=amount_tol)
+        if new:
+            # A just-added set starts with a near-zero amount, and from there the solve can move its
+            # site fractions to where Ψ > 0 and settle at N = 0 (a valid but useless KKT point). So
+            # first hold the new sets at their pricing points, and let amounts and the other sets
+            # adjust; then free everything from that point. The better of the two solutions is kept.
+            fixed = [any(s is n for n in new) for s in sets]
+            R1 = solve_restricted(sets, b, T=T, domain_floor=domain_floor, amount_tol=amount_tol, fixed=fixed)
+            if R1.converged:
+                R2 = solve_restricted(R1.sets, b, T=T, domain_floor=domain_floor, amount_tol=amount_tol)
+                if R2.converged and (not R.converged or R2.G < R.G - 1e-12):
+                    R = R2
         record = IterationRecord(it, R, [])
         history.append(record)
         if not R.converged:
@@ -144,26 +240,24 @@ def equilibrium(
         active = [s for s in R.sets if not inactive(s)] or [max(R.sets, key=lambda s: s.amount)]
         record.removed = [s for s in R.sets if all(s is not a for a in active)]
         if record.removed:
-            sets = active
+            sets, new = active, []
             continue
-        record.pricing = price_phases(
-            phases, R.mu, T=T, eps=eps, gap_tolerance=gap_tolerance, time_limit=time_limit, domain_floor=domain_floor
-        )
-        for p in record.pricing:
-            if not p.destabilizing(eps):
-                continue
-            if is_duplicate(active + record.added, p.phase, p.y, dedup_tol):
-                record.rejected.append(p)
-            else:
-                record.added.append(CompositionSet(p.phase, p.y, 0.0))
+        record.pricing = price_phases(phases, R.mu, **(global_kw if certify == "every" else local_kw))
+        _generate(record, active, eps, dedup_tol)
+        if not record.added and certify == "final":
+            record.local_pricing, record.rejected = record.pricing, []
+            record.pricing = price_phases(phases, R.mu, **global_kw)
+            _generate(record, active, eps, dedup_tol)
         if not record.added:
             break
-        sets = active + record.added
+        sets, new = active + record.added, record.added
+    else:
+        exhausted = True
 
     last = history[-1]
-    cert = certify(last.restricted, last.pricing, b, eps, T=T)
-    if last.added:
-        cert.messages.append(f"max_iter={max_iter} reached with sets still being added")
+    cert = certify_state(last.restricted, last.pricing, b, eps, T=T)
+    if exhausted:
+        cert.messages.append(f"max_iter={max_iter} reached before pricing found no new set")
     if last.rejected:
         cert.messages.append("destabilizing point rejected as a duplicate: R did not reach that tangency")
     return EquilibriumResult(

@@ -27,7 +27,7 @@ class CertificateLevel(IntEnum):
     FAILED = 0
     #: R solved; no pricing, or a phase is still destabilizing (UB < −ε)
     LOCAL_EQUILIBRIUM = 1
-    #: pricing ran, but no phase has a valid lower bound
+    #: pricing ran, but no phase has a valid lower bound, or only local pricing ran
     STABILITY_SEARCHED = 2
     #: some phase has no valid bound, or LB < −ε while UB ≥ −ε
     GLOBAL_SEARCH_INCOMPLETE = 3
@@ -95,6 +95,9 @@ def certify(
     elif any(p.destabilizing(eps) for p in pricing):
         level = CertificateLevel.LOCAL_EQUILIBRIUM
         msgs += [f"{p.phase.name} destabilizing: UB = {p.ub:.3e} < -eps" for p in pricing if p.destabilizing(eps)]
+    elif any(getattr(p, "bound_source", None) == "local" for p in pricing):
+        level = CertificateLevel.STABILITY_SEARCHED
+        msgs.append("local pricing only, so no global lower bounds: call res.certify() to certify")
     elif not valid:
         level = CertificateLevel.STABILITY_SEARCHED
         msgs.append("no phase has a valid global lower bound")

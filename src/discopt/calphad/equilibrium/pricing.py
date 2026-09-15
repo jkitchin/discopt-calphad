@@ -10,6 +10,10 @@ are bounded by interval evaluation of the same expression. The reported lower
 bound is the smaller of the two, so it covers the full site-fraction domain.
 A phase with no site fractions (a stoichiometric compound) is priced by
 evaluating Ψ exactly.
+
+:func:`price_phase_local` is the cheap alternative. It samples the box and
+refines the best samples with a bounded local minimizer. The result is an upper
+bound only: enough to generate composition sets, but not to certify.
 """
 
 from __future__ import annotations
@@ -22,11 +26,13 @@ from typing import Any
 
 import discopt.modeling as dm
 import numpy as np
+from scipy.optimize import minimize
+from scipy.stats import qmc
 
 from discopt.calphad.equilibrium.common import DOMAIN_FLOOR, inner_bounds, tangent_distance
 from discopt.calphad.ops import EXPR, INTERVAL, NUM, Interval
 
-__all__ = ["PricingResult", "price_phase", "price_phases", "boundary_lower_bound"]
+__all__ = ["PricingResult", "price_phase", "price_phase_local", "price_phases", "boundary_lower_bound"]
 
 
 @dataclass
@@ -48,7 +54,8 @@ class PricingResult:
     node_count: int
     wall_time: float
     #: where ``solver_lb`` came from: "exact", "tree" (a closed gap), "callback" (a certified
-    #: best bound read during the search), or "none"
+    #: best bound read during the search), "none" (a global search that gave no bound), or
+    #: "local" (local pricing, which never gives a bound)
     bound_source: str = "none"
     #: number of discopt solves (stages) run
     stages: int = 1
@@ -217,6 +224,95 @@ def price_phase(
     )
 
 
-def price_phases(phases, mu, **kwargs) -> list[PricingResult]:
-    """Price every phase. Runs serially for now; a parallel version waits on discopt#1246."""
-    return [price_phase(ph, mu, **kwargs) for ph in phases]
+def _psi_many(phase, pts, mu, T) -> np.ndarray:
+    """Ψ at each row of ``pts``: vectorized when the model allows it, otherwise point by point."""
+    try:
+        with np.errstate(all="ignore"):
+            v = np.asarray(tangent_distance(phase, list(pts.T), mu, NUM, T), dtype=float)
+        if v.shape != (len(pts),):
+            raise ValueError("model did not broadcast")
+    except Exception:
+        with np.errstate(all="ignore"):
+            v = np.array([float(tangent_distance(phase, p, mu, NUM, T)) for p in pts])
+    return np.where(np.isfinite(v), v, np.inf)
+
+
+def price_phase_local(
+    phase,
+    mu,
+    *,
+    T: float | None = None,
+    n_points: int = 2000,
+    n_starts: int = 5,
+    domain_floor: float = DOMAIN_FLOOR,
+    seed: int = 0,
+) -> PricingResult:
+    """Minimize Ψ_φ(y) locally: sample the site-fraction box, then refine the best samples.
+
+    The samples form a tensor grid when about ``n_points`` points still give at
+    least five per axis, and a scrambled Halton sequence otherwise. The
+    ``n_starts`` best samples that are spread apart are refined with L-BFGS-B
+    inside the inner box. The result carries only an upper bound (``lb=None``,
+    ``bound_source="local"``). A narrow well between samples can be missed, which
+    is why ``equilibrium(certify="final")`` ends with global pricing.
+    """
+    mu = np.asarray(mu, dtype=float)
+    if phase.n_y == 0:
+        return _price_fixed(phase, mu, T)
+    t0 = time.perf_counter()
+    box = np.array(inner_bounds(phase, domain_floor), dtype=float)
+    lo, hi = box[:, 0], box[:, 1]
+    n = phase.n_y
+    k = int(math.floor(n_points ** (1.0 / n) + 1e-9))
+    if k >= 5:
+        axes = np.meshgrid(*[np.linspace(a, c, k) for a, c in box], indexing="ij")
+        pts = np.stack([g.ravel() for g in axes], axis=1)
+    else:
+        pts = lo + qmc.Halton(d=n, seed=seed).random(n_points) * (hi - lo)
+    psi = _psi_many(phase, pts, mu, T)
+
+    starts, spread = [], 0.1 * (hi - lo)
+    for i in np.argsort(psi):
+        if not np.isfinite(psi[i]) or len(starts) == n_starts:
+            break
+        if all(np.any(np.abs(pts[i] - s) > spread) for s in starts):
+            starts.append(pts[i])
+
+    def f(z):
+        with np.errstate(all="ignore"):
+            v = float(tangent_distance(phase, z, mu, NUM, T))
+        return v if math.isfinite(v) else 1e300
+
+    best_y, best = None, math.inf
+    for z0 in starts:
+        r = minimize(f, z0, method="L-BFGS-B", bounds=box)
+        for z in (np.clip(r.x, lo, hi), z0):
+            v = f(z)
+            if v < best:
+                best_y, best = np.array(z, dtype=float), v
+    return PricingResult(
+        phase=phase,
+        mu=mu,
+        y=best_y,
+        ub=best,
+        lb=None,
+        solver_lb=None,
+        boundary_lb=-math.inf,
+        status="local",
+        gap_certified=False,
+        node_count=0,
+        wall_time=time.perf_counter() - t0,
+        bound_source="local",
+        stages=0,
+    )
+
+
+def price_phases(phases, mu, *, method: str = "global", **kwargs) -> list[PricingResult]:
+    """Price every phase with ``method="global"`` (:func:`price_phase`) or ``"local"`` (:func:`price_phase_local`).
+
+    Runs serially for now; a parallel version waits on discopt#1246.
+    """
+    funcs = {"global": price_phase, "local": price_phase_local}
+    if method not in funcs:
+        raise ValueError(f"method must be one of {sorted(funcs)}, got {method!r}")
+    return [funcs[method](ph, mu, **kwargs) for ph in phases]

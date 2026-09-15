@@ -183,6 +183,22 @@ ThermoDatabase / ThermoSystem
   destabilizing phases are added per iteration. Sets with N_α below a documented
   threshold after R are removed. The removal is logged and re-checked by the next
   pricing round, so dropping a set can never hide instability.
+- **Local and global pricing (`equilibrium(certify=...)`).** Generating sets only
+  needs a point with UB_φ < −ε, and μ changes after every R, so a lower bound
+  at an intermediate μ is thrown away. `price_phase_local` samples the box and
+  refines the best samples with L-BFGS-B (an upper bound only,
+  `bound_source="local"`).
+  - `"final"` (the default) prices locally until no local point destabilizes,
+    then prices globally once at that μ. A destabilizing global point is added
+    and the loop continues, so the certificate is the same as with `"every"`.
+  - `"every"` prices globally in every iteration.
+  - `"none"` prices locally only. The level is at best `STABILITY_SEARCHED`, and
+    `EquilibriumResult.certify()` runs the global pricing later at the stored μ
+    (for example on selected phase-diagram points). If a phase destabilizes
+    there, the level drops to `LOCAL_EQUILIBRIUM` and the loop can resume from
+    the stored sets.
+  The global pricing at the converged μ is the expensive part in every mode that
+  certifies: Ψ* ≈ 0 there, so LB ≥ −ε is the hardest decision.
 
 ## 6. Certification logic
 
@@ -192,7 +208,7 @@ T. ε_J/mol = ε·RT is reported alongside. Levels, in order of increasing stren
 | Level | Condition |
 |---|---|
 | `LOCAL_EQUILIBRIUM` | R solved to KKT tolerance; no pricing done |
-| `STABILITY_SEARCHED` | pricing ran with local/heuristic solves only (no valid bound) |
+| `STABILITY_SEARCHED` | pricing ran with local/heuristic solves only (no valid bound), e.g. `certify="none"` |
 | `GLOBAL_SEARCH_INCOMPLETE` | some φ has no bound, or LB_φ < −ε, UB_φ ≥ −ε at a limit; the worst LB is reported |
 | `CERTIFIED_TO_TOLERANCE` | every φ has LB_φ ≥ −ε, with the certificate-theorem gap bound reported |
 | `GLOBALLY_CERTIFIED` | as above, and ε is at or below the requested certification tolerance and r is below the KKT tolerance |

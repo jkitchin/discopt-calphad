@@ -14,6 +14,7 @@ from discopt.calphad.database import (
     UnsupportedModelError,
 )
 from discopt.calphad.equilibrium import (
+    CERTIFY_MODES,
     DOMAIN_FLOOR,
     R_GAS,
     Certificate,
@@ -27,6 +28,7 @@ from discopt.calphad.equilibrium import (
     initial_set,
     is_duplicate,
     price_phase,
+    price_phase_local,
     price_phases,
     solve_restricted,
     tangent_distance,
@@ -39,6 +41,7 @@ __version__ = "0.0.1"
 
 __all__ = [
     "BinarySolution",
+    "CERTIFY_MODES",
     "Certificate",
     "CertificateLevel",
     "CompositionSet",
@@ -65,6 +68,7 @@ __all__ = [
     "initial_set",
     "is_duplicate",
     "price_phase",
+    "price_phase_local",
     "price_phases",
     "solve_restricted",
     "tangent_distance",
