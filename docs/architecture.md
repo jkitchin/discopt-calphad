@@ -285,6 +285,14 @@ building the prototype. The upstream requests are tracked in discopt#1249.
    starting compositions, floored away from 0. Vanishing sets (N_α → 0) are
    filtered by `amount_tol` but have not been stress-tested. The homogeneous
    form is deferred.
+   *MVP 2, confirmed problem:* the interior-point solve does not drive a
+   vanishing set's amount to zero. The amount stalls at 1e-10 to 1e-7, set by
+   the barrier, while the set sits clearly above the tangent plane (Ψ = 0.03 to
+   0.25 RT). The loop now drops a set if N_α ≤ `amount_tol`, or if
+   N_α < `trace_amount`·Σb and Ψ_α > ε, and then re-solves R before pricing.
+   This keeps ghost phases out of the reported μ and G. It is only a
+   bookkeeping rule: the certificate always comes from the final R plus full
+   pricing.
 5. **Formula units with vacancies/CEF.** A_φ(y) and "atoms per formula unit"
    vary with vacancy fraction. This changes the N_tot,max term in the
    certificate and normalization of pricing.
@@ -313,6 +321,17 @@ building the prototype. The upstream requests are tracked in discopt#1249.
     relies on the constraint declaration order that discopt 0.8.0 keeps. The
     tests check μ against the analytic tangent for asymmetric g, so a change
     would be caught.
+12. **Degenerate μ with compounds.** *MVP 2.* If the only active set is a line
+    compound and b matches its stoichiometry exactly, μ is not unique: any μ
+    with μ·A = G works, and R returns whichever multiplier POUNCE lands on.
+    Pricing is still valid for that μ, but a poor choice can certify a looser
+    bound than needed, or add sets that later vanish. No test exercises this
+    case yet. The fix is to choose μ (for example, the μ that maximizes
+    min pricing LB) and belongs with ternaries.
+13. **Units.** `RegularSolution` is in RT units and ignores T. `BinarySolution`,
+    `StoichiometricPhase` and `TPoly` take J/mol and divide by RT inside
+    `gibbs`. Every solver quantity (G, μ, Ψ, ε, LB) stays in RT units.
+    `Certificate.eps_J_per_mol` converts when T is known.
 
 ## 10. Roadmap after MVP 1
 
@@ -327,11 +346,42 @@ building the prototype. The upstream requests are tracked in discopt#1249.
 - **Example:** `examples/regular_solution_gap.py` produces the G(x) /
   common-tangent / hull plot.
 
+**MVP 2 status: done** (several simple phases, T dependence, phase appearance
+and disappearance).
+
+- **Phase protocol:** `gibbs(y, ops, T)`, with T passed through `equilibrium`,
+  R, and pricing. `initial_y(b)` may return None.
+- **Models:**
+  - `BinarySolution`: Redlich–Kister with any number of L_k. Every coefficient
+    is a number or a callable of T.
+  - `StoichiometricPhase` (`n_y = 0`): priced by exact evaluation, with no
+    global solve.
+  - `TPoly`: a + bT + cT ln T + dT² + e/T.
+- **Loop:**
+  - Several phases.
+  - The start is the lowest-G single-set phase, or `initial_sets=`.
+  - Trace sets are removed with a re-solve (§9.4).
+  - Deduplication handles compounds.
+  - `EquilibriumResult.T` and `.phase_names`.
+- **Plot:** `plot_gx` takes a list of phases, including compounds. `gx_curves`
+  gives the sampled curves.
+- **Tests:** `tests/test_multiphase.py` covers:
+  - the analytic ideal-lens tie-line, lever rule and μ at 1250 K;
+  - appearance and disappearance at 900 K and 1600 K from the wrong start
+    phase;
+  - a three-phase LIQUID + FCC (gap) + AB system against a 200k-point convex
+    hull, with G within 1e-7 RT and the same phases.
+
+  `tests/test_models.py` covers the RK value, the evaluator Hessian, interval
+  enclosure, compound pricing, dedup and initialization. There are 46 tests in
+  total.
+- **Example:** `examples/multiphase_lens.py` gives the lens with certified
+  tie-lines and a three-phase G–x plot. The three-phase case needs 4
+  iterations: it adds FCC, adds AB, and then removes a trace LIQUID.
+
 Next:
 
-
-regular solution → multiple simple phases (LIQUID/FCC/BCC, phase appearance and
-disappearance) → TDB import (ELEMENT/SPECIES/FUNCTION/PHASE/CONSTITUENT/
+TDB import (ELEMENT/SPECIES/FUNCTION/PHASE/CONSTITUENT/
 PARAMETER, piecewise T, explicit errors for unsupported constructs, round-trip
 tests) → CEF (multi-sublattice endmembers and interactions, simplex-aware bound
 study) → small open binary database vs pycalphad on a T–x grid → ternary →

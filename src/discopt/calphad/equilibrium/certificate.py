@@ -15,9 +15,9 @@ from enum import IntEnum
 
 import numpy as np
 
-__all__ = ["CertificateLevel", "Certificate", "certify", "R_GAS"]
+from discopt.calphad.equilibrium.common import R_GAS
 
-R_GAS = 8.314462618  # J/(mol K)
+__all__ = ["CertificateLevel", "Certificate", "certify", "R_GAS"]
 
 
 class CertificateLevel(IntEnum):

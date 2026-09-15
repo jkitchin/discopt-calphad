@@ -8,6 +8,8 @@ discopt's global solver runs on the inner box, where every site fraction is kept
 at least ``domain_floor`` from its bounds. The boundary slabs outside that box
 are bounded by interval evaluation of the same expression. The reported lower
 bound is the smaller of the two, so it covers the full site-fraction domain.
+A phase with no site fractions (a stoichiometric compound) is priced by
+evaluating Ψ exactly.
 """
 
 from __future__ import annotations
@@ -52,7 +54,7 @@ class PricingResult:
         return self.lb is not None and self.lb >= -eps
 
 
-def boundary_lower_bound(phase, mu, domain_floor: float = DOMAIN_FLOOR) -> float:
+def boundary_lower_bound(phase, mu, domain_floor: float = DOMAIN_FLOOR, T: float | None = None) -> float:
     """Interval lower bound on Ψ over the slabs within ``domain_floor`` of a bound."""
     outer = phase.y_bounds
     lbs = []
@@ -60,14 +62,25 @@ def boundary_lower_bound(phase, mu, domain_floor: float = DOMAIN_FLOOR) -> float
         for slab in ((lo, lo + domain_floor), (hi - domain_floor, hi)):
             box = [Interval(a, c) for a, c in outer]
             box[i] = Interval(*slab)
-            lbs.append(tangent_distance(phase, box, mu, INTERVAL).lo)
-    return min(lbs)
+            lbs.append(tangent_distance(phase, box, mu, INTERVAL, T).lo)
+    return min(lbs) if lbs else math.inf
+
+
+def _price_fixed(phase, mu, T) -> PricingResult:
+    t0 = time.perf_counter()
+    y = np.empty(0)
+    psi = float(tangent_distance(phase, y, mu, NUM, T))
+    return PricingResult(
+        phase=phase, mu=mu, y=y, ub=psi, lb=psi, solver_lb=psi, boundary_lb=math.inf,
+        status="exact", gap_certified=True, node_count=0, wall_time=time.perf_counter() - t0,
+    )
 
 
 def price_phase(
     phase,
     mu,
     *,
+    T: float | None = None,
     gap_tolerance: float = 1e-6,
     time_limit: float = 600.0,
     domain_floor: float = DOMAIN_FLOOR,
@@ -75,10 +88,12 @@ def price_phase(
 ) -> PricingResult:
     """Globally minimize Ψ_φ(y) = G_φ(y) − μ·A_φ(y) with discopt."""
     mu = np.asarray(mu, dtype=float)
+    if phase.n_y == 0:
+        return _price_fixed(phase, mu, T)
     m = dm.Model(f"price_{phase.name}")
     box = inner_bounds(phase, domain_floor)
     y = [m.continuous(f"y{i}", lb=lo, ub=hi) for i, (lo, hi) in enumerate(box)]
-    m.minimize(tangent_distance(phase, y, mu, EXPR))
+    m.minimize(tangent_distance(phase, y, mu, EXPR, T))
 
     t0 = time.perf_counter()
     r = m.solve(gap_tolerance=gap_tolerance, time_limit=time_limit, **solve_kwargs)
@@ -87,10 +102,10 @@ def price_phase(
     ystar, ub = None, math.inf
     if r.x:
         ystar = np.array([float(np.asarray(r.x[f"y{i}"])) for i in range(len(box))])
-        ub = float(tangent_distance(phase, ystar, mu, NUM))
+        ub = float(tangent_distance(phase, ystar, mu, NUM, T))
     # discopt 0.8.0 has no public bound-validity flag (discopt#1244), so gap_certified stands in for one.
     solver_lb = float(r.bound) if (r.gap_certified and r.bound is not None) else None
-    boundary = boundary_lower_bound(phase, mu, domain_floor)
+    boundary = boundary_lower_bound(phase, mu, domain_floor, T)
     return PricingResult(
         phase=phase,
         mu=mu,

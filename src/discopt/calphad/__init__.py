@@ -8,6 +8,7 @@ the result is certified to a stated tolerance. Plotting is in
 
 from discopt.calphad.equilibrium import (
     DOMAIN_FLOOR,
+    R_GAS,
     Certificate,
     CertificateLevel,
     CompositionSet,
@@ -16,18 +17,20 @@ from discopt.calphad.equilibrium import (
     RestrictedResult,
     certify,
     equilibrium,
+    initial_set,
     is_duplicate,
     price_phase,
     price_phases,
     solve_restricted,
     tangent_distance,
 )
-from discopt.calphad.models import RegularSolution
+from discopt.calphad.models import BinarySolution, RegularSolution, StoichiometricPhase, TPoly
 from discopt.calphad.ops import EXPR, INTERVAL, NUM, Interval
 
 __version__ = "0.0.1"
 
 __all__ = [
+    "BinarySolution",
     "Certificate",
     "CertificateLevel",
     "CompositionSet",
@@ -38,10 +41,14 @@ __all__ = [
     "Interval",
     "NUM",
     "PricingResult",
+    "R_GAS",
     "RegularSolution",
     "RestrictedResult",
+    "StoichiometricPhase",
+    "TPoly",
     "certify",
     "equilibrium",
+    "initial_set",
     "is_duplicate",
     "price_phase",
     "price_phases",

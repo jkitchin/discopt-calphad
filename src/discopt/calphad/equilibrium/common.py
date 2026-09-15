@@ -6,7 +6,9 @@ import numpy as np
 
 from discopt.calphad.ops import NUM
 
-__all__ = ["DOMAIN_FLOOR", "inner_bounds", "tangent_distance", "amount_matrix"]
+__all__ = ["R_GAS", "DOMAIN_FLOOR", "inner_bounds", "tangent_distance", "amount_matrix"]
+
+R_GAS = 8.314462618  # J/(mol K)
 
 #: Distance kept between site-fraction variables and their bounds in every
 #: discopt model. With discopt 0.8.0, an ``entropy`` argument whose lower bound is
@@ -21,9 +23,9 @@ def inner_bounds(phase, floor: float = DOMAIN_FLOOR) -> list[tuple[float, float]
     return [(lo + floor, hi - floor) for lo, hi in phase.y_bounds]
 
 
-def tangent_distance(phase, y, mu, ops=NUM):
+def tangent_distance(phase, y, mu, ops=NUM, T=None):
     """Ψ(y) = G(y) − μ·A(y), in units of RT per formula unit."""
-    return phase.gibbs(y, ops) - sum(float(m) * a for m, a in zip(mu, phase.amounts(y)))
+    return phase.gibbs(y, ops, T) - sum(float(m) * a for m, a in zip(mu, phase.amounts(y)))
 
 
 def amount_matrix(sets) -> np.ndarray:

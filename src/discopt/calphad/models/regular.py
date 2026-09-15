@@ -45,8 +45,8 @@ class RegularSolution:
     #: smallest number of atoms in one formula unit, used to bound total moles
     atoms_min: float = 1.0
 
-    def gibbs(self, y, ops=NUM):
-        """G/RT per formula unit, evaluated with the given ``ops`` backend."""
+    def gibbs(self, y, ops=NUM, T=None):
+        """G/RT per formula unit, evaluated with the given ``ops`` backend (already in RT units, so T is ignored)."""
         x = y[0]
         gA, gB = self.g
         return gA * x + gB * (1 - x) + ops.xlogx(x) + ops.xlogx(1 - x) + self.omega * x * (1 - x)

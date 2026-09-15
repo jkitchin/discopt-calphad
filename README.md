@@ -12,8 +12,14 @@ the tangent-plane distance Ψ(y) = G(y) − μ·A(y):
 - a lower bound ≥ −ε for every phase certifies the result to within ε·RT
   per mole of formula units.
 
-**Status.** Pre-alpha. MVP 1 is a binary regular solution with a miscibility
-gap. See `docs/architecture.md` for the design and
+**Status.** Pre-alpha.
+
+- **MVP 1:** a binary regular solution with a miscibility gap.
+- **MVP 2:** binary systems with several phases: Redlich–Kister solutions,
+  line compounds, T-dependent energies, and phase appearance and
+  disappearance.
+
+See `docs/architecture.md` for the design and
 `docs/symbolic-diagrams-fitting.md` for the planned symbolic model, phase
 diagram, and fitting layers.
 
@@ -23,6 +29,17 @@ from discopt.calphad import RegularSolution, equilibrium
 phase = RegularSolution("LIQ", omega=3.0)   # G/RT, omega = Omega/RT
 res = equilibrium(phase, x=0.5, eps=1e-5)
 print(res.certificate, [cs.x for cs in res.composition_sets], res.mu)
+```
+
+```python
+from discopt.calphad import BinarySolution, StoichiometricPhase, TPoly, equilibrium
+
+# energies in J/mol; TPoly(a, b, c, d, e) = a + bT + cT ln T + dT^2 + e/T
+liq = BinarySolution("LIQUID", g=(TPoly(10000, -10), TPoly(15000, -10)), L=(-5000,))
+fcc = BinarySolution("FCC_A1", L=(20000, 3000))
+ab = StoichiometricPhase("AB", ("A", "B"), (0.5, 0.5), g=-5000)
+res = equilibrium([liq, fcc, ab], x=0.3, T=1000, eps=1e-5)
+print(res.summary())   # FCC_A1 + AB, CERTIFIED_TO_TOLERANCE
 ```
 
 ## Development

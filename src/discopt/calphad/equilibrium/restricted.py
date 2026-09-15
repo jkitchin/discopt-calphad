@@ -46,6 +46,11 @@ class CompositionSet:
         a = np.array([float(v) for v in self.phase.amounts(self.y)], dtype=float)
         return a / a.sum()
 
+    @property
+    def atoms(self) -> float:
+        """Atoms per formula unit."""
+        return float(sum(float(v) for v in self.phase.amounts(self.y)))
+
     def __repr__(self) -> str:
         y = np.array2string(self.y, precision=8)
         return f"CompositionSet({self.phase.name}, y={y}, amount={self.amount:.8g})"
@@ -84,6 +89,7 @@ def solve_restricted(
     sets: Sequence[CompositionSet],
     b,
     *,
+    T: float | None = None,
     domain_floor: float = DOMAIN_FLOOR,
     amount_tol: float = 1e-10,
     options: dict | None = None,
@@ -105,9 +111,9 @@ def solve_restricted(
     for k, s in enumerate(sets):
         box = inner_bounds(s.phase, domain_floor)
         Y.append([m.continuous(f"y{k}_{i}", lb=lo, ub=hi) for i, (lo, hi) in enumerate(box)])
-        y0.append(np.clip(s.y, [lo for lo, _ in box], [hi for _, hi in box]))
+        y0.append(np.clip(s.y, [lo for lo, _ in box], [hi for _, hi in box]) if box else s.y)
 
-    m.minimize(sum(N[k] * s.phase.gibbs(Y[k], EXPR) for k, s in enumerate(sets)))
+    m.minimize(sum(N[k] * s.phase.gibbs(Y[k], EXPR, T) for k, s in enumerate(sets)))
     for j, e in enumerate(els):
         lhs = sum(N[k] * s.phase.amounts(Y[k])[j] for k, s in enumerate(sets))
         m.subject_to(lhs == float(b[j]), name=f"balance_{e}")
@@ -130,11 +136,11 @@ def solve_restricted(
     else:
         mu = -np.asarray(r.multipliers, dtype=float)
 
-    G = float(sum(cs.amount * float(cs.phase.gibbs(cs.y, NUM)) for cs in new))
+    G = float(sum(cs.amount * float(cs.phase.gibbs(cs.y, NUM, T)) for cs in new))
     amounts = np.array([cs.amount for cs in new])
     primal = float(np.max(np.abs(amount_matrix(new) @ amounts - b)))
     tangency = max(
-        (abs(float(tangent_distance(cs.phase, cs.y, mu, NUM))) for cs in new if cs.amount > amount_tol),
+        (abs(float(tangent_distance(cs.phase, cs.y, mu, NUM, T))) for cs in new if cs.amount > amount_tol),
         default=0.0,
     )
     return RestrictedResult(
