@@ -149,6 +149,29 @@ The diagram object is plain data, so other backends are possible.
 
 ## 5. Fitting parameters to data
 
+> **Status (issue #2).** Steps 1 and 2 without errors in variables are
+> implemented in `src/discopt/calphad/fit.py`; see `examples/alzn_fit.py`
+> and `tests/test_fit.py`. The implemented API differs from the sketch below:
+>
+> ```python
+> data = Dataset().add_thermo("HM_MIX", "LIQUID", T=1000, x=[0.1, 0.5], value=[...], sigma=200)
+> data.add_activity("ZN", "LIQUID", T=1000, x=0.4, value=0.55, sigma=0.02)
+> data.add_equilibrium(700, {"LIQUID": 0.21, "FCC_A1": 0.50}, sigma=200)   # x = x(first element)
+> res = fit(db, data, ("AL", "ZN"), {"L(FCC_A1,AL,ZN;0)": "a + b*T", "L(LIQUID,AL,ZN;0)": "a"})
+> res.summary(); res.database.to_tdb(); res.check_equilibria()
+> ```
+>
+> Free parameters are TDB labels with a symbolic T-form that is linear in its
+> coefficients. The site-fraction factors φ_p are found by probing the phase
+> models, so no separate `linear_in` is needed. H, S and Cp come from symbolic
+> T-derivatives. μ-based data (activities, ZPF) need binary phases with at most
+> one site fraction. Not yet done:
+> - boundary points without a measured partner composition, and errors in
+>   variables (step 2's nonlinear part);
+> - global consistency (step 3);
+> - FIM-based design (step 4);
+> - ESPEI import.
+
 ```python
 from discopt.calphad.fit import Dataset, fit
 

@@ -350,18 +350,76 @@ building the prototype. The upstream requests are tracked in discopt#1249.
     missing `N` (`; 6000 01DUP`), a missing lower or upper T
     (`G(LIQUID,AL) +GALLIQ; N`), and stray `"` after `!`. Unknown commands and
     other malformed ranges raise `TDBSyntaxError`.
-15. **Binary database models only.** `ThermoDatabase.phase_model` builds
-    `BinarySolution` (one mixing sublattice, with site ratio and fixed
-    singleton sublattices) or `StoichiometricPhase`. Several features raise
-    `UnsupportedModelError` with the reason:
-    - mixing on more than one sublattice (CEF, MVP 4);
-    - VA in a mixing sublattice;
+15. **Database models.** `ThermoDatabase.phase_model` builds a
+    `BinarySolution` (binary, one mixing sublattice, no VA),
+    a `StoichiometricPhase` (no mixing), or a `CEFPhase` (everything else,
+    MVP 4; see §9.16). Several features raise `UnsupportedModelError` with the
+    reason:
+    - a missing endmember G parameter;
+    - interaction structures pycalphad also rejects (§9.16);
     - TC/BMAGN (magnetic);
     - DISORDERED_PART;
     - ionic liquids;
     - parameter kinds or orders the binary model cannot represent.
 
     `phase_models(elements)` skips such phases silently.
+16. **CEF conventions.** *MVP 4, measured against pycalphad 0.11.2.*
+    - **Variables.** Each sublattice with m > 1 constituents gets m − 1
+      stick-breaking variables u ∈ [0, 1]: y_j = u_j Π_{i<j}(1 − u_i), and the
+      last y is Π(1 − u_i). The domain stays a box, so the phase protocol,
+      `DOMAIN_FLOOR` and the boundary-slab bound are unchanged. xlogx of a
+      product is expanded as Σ_i xlogx(f_i) Π_{j≠i} f_j, keeping the entropy
+      node discopt can bound.
+    - **Terms.** One term per parameter: the product of the listed site
+      fractions (a `*` wildcard contributes 1), times an interaction factor.
+      The factor is (y_first − y_second)^k for a binary RK on one mixing
+      sublattice, in sorted constituent order. For a reciprocal parameter
+      (two mixing sublattices), order 1 puts the difference on the second
+      mixing sublattice and order 2 on the first. For a ternary, order k
+      multiplies by v_k = y_k + (1 − Σy)/3. A lone ternary L0 implies
+      L1 = L2 = L0.
+    - **Rejected, as in pycalphad.** Reciprocal orders > 2, reciprocal terms
+      with 3 constituents on a sublattice, order > 0 with more than two mixing
+      sublattices, and more than 3 mixing constituents.
+    - **Vacancies.** A_φ(y) counts atoms on non-VA constituents.
+      `atoms_min` is the sum of site ratios over sublattices without VA, and
+      N_tot,max = Σb/atoms_min. A phase with `atoms_min = 0` is rejected.
+    - **Oracle.** pycalphad's GM is per mole of atoms, with R = 8.3145.
+      Eleven phases (Laves C14/C15, CU2MG, AL13FE4, ALMG_GAMMA, AL3NI2, CHI_RENB,
+      AL8FE5_D82, ternary liquids) agree to 1e-9 relative at 3 temperatures.
+17. **Pricing with more than one site-fraction variable.** *MVP 4, measured.*
+    With `gap_tolerance` 1e-6, which is *relative* in `Model.solve`, a
+    2-variable CEF pricing problem does not close in 30–60 s. Pricing does not
+    need a closed gap, though: it only needs to decide LB ≥ −ε or UB < −ε.
+    discopt 0.8 cannot stop from a callback, because exceptions raised in
+    `node_callback` are logged and swallowed. `price_phase(eps=...)` therefore
+    runs in stages (2 s, then ×4, up to `time_limit`) and stops once the
+    answer is decided. A `node_callback` records the largest `ctx.best_bound`,
+    which discopt documents as a certified global dual bound that never
+    over-reports, so a stage that hits its time limit still gives a valid LB
+    (`PricingResult.bound_source = "callback"`). The boundary slabs of a
+    multi-variable phase are thin in one direction only, so a single interval
+    evaluation is loose (−0.90 against a true minimum of 2.74). They are
+    refined best-first by bisection until the bound reaches −ε. With both
+    changes, the reciprocal test phase certifies and CU2MG destabilizes in one
+    2 s stage, where the fixed 1e-6 gap previously took 124 s.
+    A bound from the loop's pricing is loose by design. The certificate's gap
+    bound stays valid but is N_tot,max·ε rather than a tight number, and
+    `price_phase(eps=None)` still closes the gap.
+    Formulation results are in `benchmarks/simplex_bound_study.py`:
+
+    | 30 s limit | reciprocal (Ψ* ≈ 2.743) | CU2MG (Ψ* ≈ −5.965) |
+    |---|---|---|
+    | stick-breaking, gap 1e-6 | not closed; 12k nodes; bound 2.7397 | not closed; 28k nodes |
+    | explicit y with Σy = 1, gap 1e-6 | not closed; 4.7k nodes; bound 2.710 | not closed |
+    | stick-breaking, gap 1e-4 | not closed | closed in 5.2 s (4.6k nodes) |
+    | explicit y with Σy = 1, gap 1e-4 | not closed | closed in 20.8 s |
+    | staged, ε = 1e-5 | certified in 2 s | destabilizing in 2 s |
+
+    At equal time, the explicit simplex gives weaker bounds than
+    stick-breaking, because discopt does not exploit the equality. Raising
+    `DOMAIN_FLOOR` to 1e-6 did not help. This is the measured case for the
+    simplex structure request (discopt-feature-requests P2-2).
     `applicability(elements)` lists the reason for each one, and should be
     checked before trusting a diagram. In Al–Fe, for example, BCC_A2 and
     FCC_A1 are skipped because they are magnetic.
@@ -454,8 +512,77 @@ database phase models).
   certifies three two-phase states (FCC gap, FCC + HCP, LIQUID + HCP) with
   G–x panels.
 
+**MVP 4 status: done** (CEF and the simplex-aware bound study).
+
+- **`models/cef.py`:** `CEFPhase` and `CEFTerm`, with stick-breaking
+  variables, endmember, binary RK, reciprocal and ternary Muggianu terms, VA,
+  and `gibbs_expr()` (SymPy in `y<s>_<constituent>`, `T`, `R`, with database
+  labels kept). It also has `site_fractions`, `variables_from_site_fractions`,
+  `endmembers` and a least-squares `initial_y`.
+- **Database:** phases in any number of elements are routed to `CEFPhase`
+  when the binary model does not fit (§9.15, §9.16).
+- **Pricing:** staged, callback-bounded early stopping and a refined
+  boundary-slab bound (§9.17).
+- **Plot:** `gx_curves` samples multi-variable phases on a grid and keeps the
+  lowest G per x bin.
+- **Tests:** `tests/test_cef.py` covers:
+  - stick-breaking round trip and G checked by hand;
+  - one-sublattice CEF equal to `BinarySolution`, and ternary orders;
+  - interval enclosure;
+  - G against pycalphad for 11 phases;
+  - pricing bound validity and staged certification in about 2 s each;
+  - slow: Cu–Mg equilibria with CU2MG against `pycalphad.equilibrium`.
+- **Example:** `examples/cumg_cef.py` gives the symbolic CU2MG G and three
+  Cu–Mg states with G–x panels.
+- **Benchmark:** `benchmarks/simplex_bound_study.py`.
+
+**Open (found when verifying MVP 4).** The phase assemblages in Cu–Mg are
+right. Certification to ε = 1e-5 still fails whenever the CEF phase CU2MG is
+*active*:
+- its own pricing minimum is Ψ = 0, at the composition set;
+- the tree lower bound stalls at −7e-5 … −4e-4 after the full 600 s;
+- the result is `GLOBAL_SEARCH_INCOMPLETE`, with G_R − G_global ≤ 4e-4 RT;
+- both slow tests in `tests/test_cef.py` fail on the certificate assertion
+  (x = 0.62, T = 900 K: LB −3.7e-4).
+
+Inactive CEF phases, and active one-variable phases, certify quickly. Likely
+remedies:
+- exclude a small box around each known zero of Ψ, and bound that box
+  analytically using the local convexity of the composition set;
+- give discopt the known minimizer as an incumbent together with a
+  bound-target stop (P0-4).
+
+**Fitting (issue #2): first version.** `src/discopt/calphad/fit.py`. Free
+parameters are TDB labels with symbolic T-forms that are linear in their
+coefficients.
+- **Linear model:** G is linear in the coefficients. The site-fraction
+  factors are found by probing the phase models (all of a phase's parameters
+  set to 0, then each set to 1 J at T = 1/R).
+- **Derived quantities:** H, S and Cp come from symbolic T-derivatives. μ comes
+  from the tangent (5-point stencil in y).
+- **Data kinds:**
+  - GM, HM, SM, CPM and their _MIX forms;
+  - activities (ACR);
+  - ZPF with measured compositions (μ equality, and compounds on the tangent).
+- **Solve:** weighted linear least squares (bounded BVLS when bounds are
+  given), absolute covariance (JᵀJ)⁻¹, rank warning.
+- **Result:** `FitResult` gives a database with the fitted forms,
+  `to_tdb` with a provenance header, `check_equilibria` (certified
+  equilibria at the ZPF data), and `plot_residuals`.
+- **Tests:** `tests/test_fit.py` (9 tests, about 9 s): exact recovery,
+  noisy recovery within 4σ with χ²/dof in range, Gibbs–Helmholtz and tangent
+  checks, a tie-line fixing L0, bounds, and JSON/CSV round trips.
+- **Example:** `examples/alzn_fit.py` recovers six Al–Zn coefficients from
+  33 synthetic residuals (χ² = 19.2, dof 27).
+- **Deferred:**
+  - ZPF points without a partner composition;
+  - errors in variables (`discopt.estimate`);
+  - μ data for multi-variable phases;
+  - global consistency by cutting planes (docs/symbolic-diagrams-fitting.md §5.3);
+  - comparison with a real dataset.
+
 Next:
 
-CEF (multi-sublattice endmembers and interactions, simplex-aware bound
-study) → small open binary database vs pycalphad on a T–x grid → ternary →
-phase-diagram tracing with warm starts in both POUNCE and pricing.
+small open binary database vs pycalphad on a T–x grid → ternary →
+phase-diagram tracing with warm starts in both POUNCE and pricing. Open
+upstream: P0-4 (stop at a bound target) would replace staged pricing.

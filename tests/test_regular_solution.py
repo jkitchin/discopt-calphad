@@ -15,6 +15,7 @@ from discopt.calphad import (
     is_duplicate,
     tangent_distance,
 )
+from discopt.calphad.equilibrium.pricing import price_phase
 from discopt.calphad.solvers import model_evaluator
 
 
@@ -45,10 +46,15 @@ def test_step2_single_set_is_kkt_point_but_unstable(gap_result):
 
 
 def test_step3_global_pricing_brackets_dense_grid(gap_result, gap_phase):
-    (p,) = gap_result.history[0].pricing
+    (staged,) = gap_result.history[0].pricing
     ys = np.linspace(0, 1, 400_001)
-    psi = tangent_distance(gap_phase, [ys], p.mu, NUM)
+    psi = tangent_distance(gap_phase, [ys], staged.mu, NUM)
     grid_min = psi.min()
+    # inside the loop, pricing stops once the sign is decided: a valid but loose bracket
+    assert staged.destabilizing(EPS) and staged.ub >= grid_min - 1e-12
+    assert staged.lb is None or staged.lb <= grid_min + 1e-12
+    # with eps=None, the gap closes fully
+    p = price_phase(gap_phase, staged.mu)
     assert p.lb is not None and p.gap_certified
     assert p.lb <= grid_min + 1e-12
     assert p.ub == pytest.approx(grid_min, abs=1e-8)

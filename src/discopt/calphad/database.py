@@ -6,25 +6,30 @@ expressions, with named function references left unevaluated. It evaluates
 numerically at a fixed T, with a cache, and it builds phase models for the
 equilibrium solver.
 
-Supported phase structures (MVP 3), for a binary element pair:
+Supported phase structures, for any system of two or more elements:
 
-- one sublattice that mixes the two elements, plus any number of singleton
-  sublattices (an element or VA): becomes a :class:`BinarySolution` with ``sites``
-  and ``fixed`` amounts;
-- all sublattices singleton: becomes a :class:`StoichiometricPhase`.
+- all sublattices singleton: becomes a :class:`StoichiometricPhase`;
+- in a binary, one sublattice that mixes the two elements plus singleton
+  sublattices (an element or VA): becomes a :class:`BinarySolution` with
+  ``sites`` and ``fixed`` amounts (the named ``g``/``L`` view is kept);
+- anything else with mixing (several mixing sublattices, VA in a mixing
+  sublattice, three or more constituents, reciprocal and ternary parameters):
+  becomes a :class:`~discopt.calphad.models.cef.CEFPhase`, one term per parameter.
 
-Everything else raises :class:`UnsupportedModelError` with the reason: mixing on
-more than one sublattice (CEF), VA in a mixing sublattice, magnetic TC/BMAGN
-parameters, order–disorder descriptions, ionic phases, or other parameter kinds.
+Everything else raises :class:`UnsupportedModelError` with the reason: magnetic
+TC/BMAGN parameters, order–disorder descriptions, ionic phases, other parameter
+kinds, or CEF structures pycalphad also rejects.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from itertools import product
 from pathlib import Path
 
 import sympy as sp
 
+from discopt.calphad.models.cef import CEFPhase, CEFTerm
 from discopt.calphad.models.solution import BinarySolution
 from discopt.calphad.models.stoichiometric import StoichiometricPhase
 from discopt.calphad.symbolic import P, PiecewiseT, T, function_ref, function_refs
@@ -244,8 +249,8 @@ class ThermoDatabase:
         feature that is not implemented yet.
         """
         elements = tuple(e.upper() for e in elements)
-        if len(elements) != 2 or len(set(elements)) != 2:
-            raise UnsupportedModelError("database phase models are binary-only until the CEF milestone")
+        if len(elements) < 2 or len(set(elements)) != len(elements):
+            raise ValueError(f"phase models need at least two distinct elements, got {elements}")
         key = name.upper()
         if key not in self.phases:
             raise KeyError(f"PHASE {key} is not defined")
@@ -274,17 +279,44 @@ class ThermoDatabase:
             raise UnsupportedModelError(f"{key}: ionic liquid models are not supported yet")
 
         mixing = [i for i, s in enumerate(subl) if len(s) > 1]
-        if len(mixing) > 1:
-            raise UnsupportedModelError(
-                f"{key}: mixing on {len(mixing)} sublattices needs the compound energy formalism (CEF milestone)"
-            )
-        if mixing and "VA" in subl[mixing[0]]:
-            raise UnsupportedModelError(f"{key}: vacancies in a mixing sublattice are not supported yet")
+        for arr in product(*subl):
+            if not any(p.order == 0 and p.matches(tuple((c,) for c in arr)) for p in params):
+                raise ValueError(f"{key}: no G parameter for endmember {':'.join(arr)}")
+        if len(elements) == 2 and len(mixing) == 1 and "VA" not in subl[mixing[0]]:
+            model = self._binary_solution(key, ph, subl, params, elements, mixing[0])
+            if model is not None:
+                return model
+        if mixing:
+            return self._cef_phase(key, ph, subl, params, elements)
 
-        fixed = [0.0, 0.0]
+        fixed = [0.0] * len(elements)
         for i, s in enumerate(subl):
-            if i not in mixing and s[0] != "VA":
+            if s[0] != "VA":
                 fixed[elements.index(s[0])] += ph.site_ratios[i]
+        unused = [p.label for p in params if not all(len(c) == 1 for c in p.constituents)]
+        if unused:
+            raise UnsupportedModelError(f"{key}: interaction parameters on a phase without mixing: {unused}")
+        return StoichiometricPhase(key, elements, tuple(fixed), g=DatabaseValue(self, tuple((1.0, p) for p in params)))
+
+    def _cef_phase(self, key, ph, subl, params, elements) -> CEFPhase:
+        """Every parameter becomes one CEF term (see :mod:`discopt.calphad.models.cef`)."""
+        terms = [CEFTerm(p.constituents, p.order, DatabaseValue(self, ((1.0, p),))) for p in params]
+        # pycalphad/Thermo-Calc convention: a lone ternary L0 implies L1 = L2 = L0
+        for p in params:
+            if p.order == 0 and max(len(c) for c in p.constituents) == 3:
+                if not any(q is not p and q.constituents == p.constituents for q in params):
+                    terms += [CEFTerm(p.constituents, k, DatabaseValue(self, ((1.0, p),))) for k in (1, 2)]
+        try:
+            return CEFPhase(key, elements, tuple(ph.site_ratios), tuple(subl), tuple(terms))
+        except NotImplementedError as err:
+            raise UnsupportedModelError(str(err)) from err
+
+    def _binary_solution(self, key, ph, subl, params, elements, i) -> BinarySolution | None:
+        """The phase as a :class:`BinarySolution`, or None if some parameter does not fit that form."""
+        fixed = [0.0, 0.0]
+        for j, s in enumerate(subl):
+            if j != i and s[0] != "VA":
+                fixed[elements.index(s[0])] += ph.site_ratios[j]
 
         used: set[int] = set()
 
@@ -296,32 +328,25 @@ class ThermoDatabase:
             used.update(id(p) for p in terms)
             return DatabaseValue(self, tuple((scale, p) for p in terms))
 
-        if not mixing:
-            model = StoichiometricPhase(key, elements, tuple(fixed), g=value(tuple((s[0],) for s in subl)))
-        else:
-            i = mixing[0]
-            ends = [tuple((e,) if j == i else s for j, s in enumerate(subl)) for e in elements]
-            g = tuple(value(arr) for arr in ends)
-            pair = subl[i]  # sorted, as stored in parameters
-            flip = pair != elements
-            interactions = [p for p in params if p.matches(tuple(pair if j == i else s for j, s in enumerate(subl)))]
-            max_k = max((p.order for p in interactions), default=-1)
-            L = []
-            for k in range(max_k + 1):
-                terms = [p for p in interactions if p.order == k]
-                used.update(id(p) for p in terms)
-                # RK uses (y_first - y_second) in the sorted order; odd orders change sign when elements are reversed
-                sign = -1.0 if (flip and k % 2) else 1.0
-                L.append(DatabaseValue(self, tuple((sign, p) for p in terms)))
-            model = BinarySolution(key, elements, g=g, L=tuple(L), sites=ph.site_ratios[i], fixed=tuple(fixed))
-
-        unused = [p.label for p in params if id(p) not in used]
-        if unused:
-            raise UnsupportedModelError(f"{key}: parameters not representable in a binary model: {unused}")
-        return model
+        ends = [tuple((e,) if j == i else s for j, s in enumerate(subl)) for e in elements]
+        g = tuple(value(arr) for arr in ends)
+        pair = subl[i]  # sorted, as stored in parameters
+        flip = pair != elements
+        interactions = [p for p in params if p.matches(tuple(pair if j == i else s for j, s in enumerate(subl)))]
+        max_k = max((p.order for p in interactions), default=-1)
+        L = []
+        for k in range(max_k + 1):
+            terms = [p for p in interactions if p.order == k]
+            used.update(id(p) for p in terms)
+            # RK uses (y_first - y_second) in the sorted order; odd orders change sign when elements are reversed
+            sign = -1.0 if (flip and k % 2) else 1.0
+            L.append(DatabaseValue(self, tuple((sign, p) for p in terms)))
+        if any(id(p) not in used for p in params):
+            return None  # e.g. a wildcard on the mixing sublattice: the CEF form handles it
+        return BinarySolution(key, elements, g=g, L=tuple(L), sites=ph.site_ratios[i], fixed=tuple(fixed))
 
     def phase_models(self, elements, phases=None) -> dict:
-        """Phase models for a binary system.
+        """Phase models for an element system.
 
         With ``phases=None``, every phase that is applicable and supported is
         included, and the rest are skipped (see :meth:`applicability`). With an

@@ -67,6 +67,38 @@ holds, and report which one stopped the solve.
   converged at a gap of 1e-7.
 - `result.solver_stats` records which criterion stopped the solve.
 
+**Measured (MVP 4).** For a 2-variable CEF pricing problem with optimum −5.96,
+a relative gap of 1e-6 does not close in 60 s, while 1e-4 closes in 5 s.
+Neither is the right question. Pricing needs only a sign decision against
+−ε, which leads to P0-4.
+
+## P0-4. Stop a global solve from a callback, or at a bound target
+
+**Why.** Pricing is decided as soon as the global dual bound reaches −ε
+(certified) or an incumbent goes below −ε (destabilizing). Waiting for the gap
+to close wastes most of the time. For the reciprocal test phase, the bound
+passes −ε within 2 s, but a relative gap of 1e-6 is not closed after 60 s.
+
+**Current state.**
+- `node_callback(ctx, model)` returns None. An exception raised inside it is
+  logged ("Node callback raised an exception") and swallowed, and the solve
+  continues.
+- `incumbent_callback` can reject a solution but cannot stop the search.
+- The workaround in `pricing.price_phase` is staged solves with growing time
+  limits. It records `ctx.best_bound` from a node callback and throws away the
+  tree between stages.
+
+**Request.** Either option would do:
+- `node_callback` may return `dm.STOP` (or raise `dm.StopSolve`) to terminate
+  with the current incumbent and a valid bound; or
+- `Model.solve(..., bound_target=L, objective_target=U)`: stop when the
+  certified bound is ≥ L or an incumbent is ≤ U, and report which one stopped
+  the solve.
+
+**Acceptance.** For `min Ψ` with Ψ* = 2.74, `bound_target=-1e-5` returns within
+one node batch after the bound crosses the target. `result.bound` is valid
+(P0-3), and the status names the stop reason.
+
 ## P0-3. Documented, machine-readable validity of `SolveResult.bound`
 
 **Why.** The certificate uses `bound` as a *valid global lower bound* even when
@@ -210,6 +242,17 @@ simplex domains. There is no way to declare a simplex, and `recognize_and_inject
 bound with the simplex-aware relaxation is at least as tight as the default and
 strictly tighter on a stated instance.
 
+**Measured (MVP 4, `benchmarks/simplex_bound_study.py`).** Two formulations
+were compared, each with a 30 s limit: explicit site fractions with Σy = 1 as a
+plain equality, and stick-breaking box variables.
+- On the reciprocal (A,B)1(A,B)2 case, the explicit form reached bound 2.710 in
+  4.7k nodes. Stick-breaking reached 2.7397 in 12k nodes (optimum 2.7433).
+- On CU2MG with a relative gap of 1e-4, the explicit form closed in 20.8 s and
+  stick-breaking in 5.2 s.
+
+An undeclared simplex costs bound quality. A declared one should do better
+than both.
+
 ## P2-3. Cut callbacks at fractional and spatial nodes
 
 **Why.** Gibbs-convexification ideas (§12: supporting hyperplanes of G, tangent
@@ -300,7 +343,9 @@ measured before being relied on.
 
 ## Suggested filing
 
-Proposal only; nothing has been filed.
+Proposal only in this draft. P0-1 to P2-7 were later filed as discopt#1242–#1249.
+P0-4 (stop from a callback, or at a bound target) was added in MVP 4 and has
+not been filed yet.
 
 - One tracking issue: "Plugin needs from discopt-calphad".
 - One issue per P0 item and P1-1…P1-3, filed now, because they block or slow the MVP.

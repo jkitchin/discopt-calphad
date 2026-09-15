@@ -8,6 +8,7 @@ import pytest
 import sympy as sp
 
 from discopt.calphad import BinarySolution, StoichiometricPhase
+from discopt.calphad.models import CEFPhase
 from discopt.calphad.database import PhaseNotApplicable, ThermoDatabase, UnsupportedModelError
 from discopt.calphad.equilibrium.common import R_GAS
 from discopt.calphad.symbolic import (
@@ -166,19 +167,19 @@ def test_phase_model_kinds_and_errors(synth):
     assert isinstance(ab2, StoichiometricPhase) and ab2.stoichiometry == (1.0, 2.0)
     hcp = synth.phase_model("HCP_A3", ("A", "B"))
     assert isinstance(hcp, StoichiometricPhase) and hcp.stoichiometry == (0.0, 1.0)
-    with pytest.raises(UnsupportedModelError, match="compound energy formalism"):
-        synth.phase_model("SIGMA", ("A", "B"))
+    sigma = synth.phase_model("SIGMA", ("A", "B"))
+    assert isinstance(sigma, CEFPhase) and sigma.n_y == 2 and sigma.atoms_min == 4.0
     with pytest.raises(UnsupportedModelError, match="magnetic"):
         synth.phase_model("BCC_MAG", ("A", "B"))
     with pytest.raises(UnsupportedModelError, match="order-disorder"):
         synth.phase_model("ORD_PH", ("A", "B"))
     with pytest.raises(PhaseNotApplicable):
         synth.phase_model("GRAPHITE", ("A", "B"))
-    with pytest.raises(UnsupportedModelError, match="binary"):
-        synth.phase_model("LIQUID", ("A", "B", "C"))
-    assert set(synth.phase_models(("A", "B"))) == {"LIQUID", "FCC_A1", "AB2", "HCP_A3"}
+    liq3 = synth.phase_model("LIQUID", ("A", "B", "C"))  # a ternary system: the CEF form, with no C on the lattice
+    assert isinstance(liq3, CEFPhase) and liq3.amounts([0.4]) == (0.4, 0.6, 0.0)
+    assert set(synth.phase_models(("A", "B"))) == {"LIQUID", "FCC_A1", "AB2", "HCP_A3", "SIGMA"}
     with pytest.raises(UnsupportedModelError):
-        synth.phase_models(("A", "B"), phases=["LIQUID", "SIGMA"])
+        synth.phase_models(("A", "B"), phases=["LIQUID", "BCC_MAG"])
 
 
 def test_element_order_flips_odd_rk_terms(synth):

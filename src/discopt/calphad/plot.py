@@ -29,22 +29,38 @@ def lower_convex_hull(x, g):
     return np.array(hx), np.array(hg)
 
 
-def gx_curves(phase, T=None, n: int = 4001):
+def gx_curves(phase, T=None, n: int = 4001, grid_points: int = 250_000):
     """Mole fraction of the first element and G/RT per atom, sampled over a binary phase.
 
-    A phase with one site fraction gives ``n`` points; a compound gives one point.
+    A phase with one site fraction gives ``n`` points, and a compound gives one
+    point. With several site fractions (a CEF phase), about ``grid_points`` points
+    are sampled on a grid. For each of ``n`` bins in x the lowest G is kept,
+    which is the curve a common-tangent construction sees.
     """
     if phase.n_y == 0:
         a = np.array(phase.amounts(), float)
         return np.array([a[0] / a.sum()]), np.array([float(phase.gibbs((), NUM, T)) / a.sum()])
-    if phase.n_y != 1:
-        raise ValueError("gx_curves supports phases with at most one site fraction")
-    lo, hi = phase.y_bounds[0]
-    ys = np.linspace(lo, hi, n)
-    a = np.array([[float(v) for v in phase.amounts([y])] for y in ys])
-    g = np.array([float(phase.gibbs([y], NUM, T)) for y in ys])
-    atoms = a.sum(axis=1)
-    return a[:, 0] / atoms, g / atoms
+    if phase.n_y == 1:
+        lo, hi = phase.y_bounds[0]
+        ys = np.linspace(lo, hi, n)
+        a = np.array([[float(v) for v in phase.amounts([y])] for y in ys])
+        g = np.array([float(phase.gibbs([y], NUM, T)) for y in ys])
+        atoms = a.sum(axis=1)
+        return a[:, 0] / atoms, g / atoms
+    per_dim = max(3, int(round(grid_points ** (1.0 / phase.n_y))))
+    axes = [np.linspace(lo, hi, per_dim) for lo, hi in phase.y_bounds]
+    y = [v.ravel() for v in np.meshgrid(*axes, indexing="ij")]
+    a = np.array([np.broadcast_to(np.asarray(v, float), y[0].shape) for v in phase.amounts(y)])
+    g = np.broadcast_to(np.asarray(phase.gibbs(y, NUM, T), float), y[0].shape)
+    atoms = a.sum(axis=0)
+    keep = atoms > 0
+    x, g = a[0][keep] / atoms[keep], g[keep] / atoms[keep]
+    bins = np.minimum((x * n).astype(int), n - 1)
+    order = np.lexsort((g, bins))
+    first = np.concatenate(([True], np.diff(bins[order]) > 0))
+    sel = order[first]
+    sel = sel[np.argsort(x[sel])]
+    return x[sel], g[sel]
 
 
 def plot_gx(phases, result=None, T=None, ax=None, n: int = 4001, show_hull: bool = True):

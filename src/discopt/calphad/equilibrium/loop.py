@@ -148,7 +148,7 @@ def equilibrium(
             sets = active
             continue
         record.pricing = price_phases(
-            phases, R.mu, T=T, gap_tolerance=gap_tolerance, time_limit=time_limit, domain_floor=domain_floor
+            phases, R.mu, T=T, eps=eps, gap_tolerance=gap_tolerance, time_limit=time_limit, domain_floor=domain_floor
         )
         for p in record.pricing:
             if not p.destabilizing(eps):

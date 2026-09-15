@@ -10,9 +10,10 @@ Every phase model follows the same protocol:
 - ``initial_y(b)``: a composition that satisfies the balance with one set, or None.
 """
 
+from discopt.calphad.models.cef import CEFPhase, CEFTerm
 from discopt.calphad.models.regular import RegularSolution
 from discopt.calphad.models.solution import BinarySolution
 from discopt.calphad.models.stoichiometric import StoichiometricPhase
 from discopt.calphad.models.tfunc import TPoly, coef
 
-__all__ = ["BinarySolution", "RegularSolution", "StoichiometricPhase", "TPoly", "coef"]
+__all__ = ["BinarySolution", "CEFPhase", "CEFTerm", "RegularSolution", "StoichiometricPhase", "TPoly", "coef"]

@@ -1,3 +1,9 @@
+<div align="center">
+
+![discopt-calphad logo](images/logo.png)
+
+</div>
+
 # discopt-calphad
 
 Certified CALPHAD phase equilibrium as a discopt plugin (`import discopt.calphad`).
@@ -20,8 +26,17 @@ the tangent-plane distance Ψ(y) = G(y) − μ·A(y):
   disappearance.
 - **MVP 3:** TDB import and export into a symbolic `ThermoDatabase` (SymPy
   expressions with named functions kept), and binary phase models built from
-  it. Unsupported models (CEF, magnetic, order–disorder) raise with the
+  it. Unsupported models (magnetic, order–disorder, ionic) raise with the
   reason.
+- **MVP 4:** compound-energy-formalism phases (`CEFPhase`: several sublattices,
+  endmembers, binary/reciprocal/ternary interactions, vacancies) in any number
+  of elements, checked against pycalphad. Pricing stops as soon as its answer
+  is decided: LB ≥ −ε or UB < −ε. Open: when a two-sublattice phase is
+  *active*, its bound stalls near −1e-4, so the result is
+  `GLOBAL_SEARCH_INCOMPLETE`.
+- **Fitting (issue #2):** weighted linear least squares of TDB parameters
+  (symbolic T-forms) to thermochemical, activity and tie-line data. Results
+  include the covariance, a fitted TDB, and certified equilibrium checks.
 
 See `docs/architecture.md` for the design and
 `docs/symbolic-diagrams-fitting.md` for the planned symbolic model, phase
@@ -58,6 +73,28 @@ res = equilibrium(list(db.phase_models(("AL", "ZN")).values()), x=0.5, T=500)
 print(db.to_tdb()[:200])
 ```
 
+```python
+from discopt.calphad import ThermoDatabase, equilibrium
+
+db = ThermoDatabase.from_tdb("examples/data/cumg_nims.tdb")
+phases = db.phase_models(("CU", "MG"))
+cu2mg = phases["CU2MG"]                      # CEFPhase (CU,MG)2(CU,MG)1
+print(cu2mg.gibbs_expr())                    # SymPy in y0_CU, y1_MG, ..., T, R
+res = equilibrium(list(phases.values()), x=0.75, T=700)
+print(res.summary())                         # FCC_A1 + CU2MG
+```
+
+```python
+from discopt.calphad import ThermoDatabase
+from discopt.calphad.fit import Dataset, fit
+
+db = ThermoDatabase.from_tdb("examples/data/alzn_mey.tdb")
+data = Dataset.from_json("examples/data/alzn_synthetic.json")   # HM_MIX, SM_MIX, ACR, ZPF
+res = fit(db, data, ("AL", "ZN"), {"L(FCC_A1,AL,ZN;0)": "a + b*T", "L(LIQUID,AL,ZN;0)": "a + b*T"})
+print(res.summary())                         # values ± σ, residuals by data kind
+open("alzn_fit.tdb", "w").write(res.to_tdb())
+```
+
 ## Development
 
 ```bash
@@ -65,6 +102,9 @@ uv sync
 uv run pytest
 uv run python examples/regular_solution_gap.py   # writes examples/regular_solution_gap.png
 uv run python examples/alzn_tdb.py               # TDB -> certified Al–Zn equilibria
+uv run python examples/cumg_cef.py               # CEF Laves phase in Cu–Mg
+uv run python examples/alzn_fit.py               # fit Al–Zn parameters to data
+uv run python benchmarks/simplex_bound_study.py  # pricing formulations for 2-sublattice phases
 ```
 
 pycalphad is a dev dependency used only as a test oracle; the package never imports it.
