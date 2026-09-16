@@ -34,6 +34,28 @@ jobs:
       - name: Build site
         run: uv run --no-sync mkdocs build --strict
 
+      # The browser app is not part of the MkDocs build: it is a static page
+      # plus wheels, staged by its own script and copied in beside the site.
+      # This sync installs the project (the docs build deliberately does not),
+      # because two of the three wheels are repacked from what it installs.
+      - name: Install the package, to build the app's wheels
+        run: uv sync --frozen
+
+      - name: Build the browser app
+        run: web/build-web.sh
+
+      - name: Copy the app into the site
+        run: |
+          mkdir -p site/app
+          cp -a web/. site/app/
+          # Source and tooling are not worth serving; the wheels and data are.
+          rm -rf site/app/vendor site/app/build-web.sh site/app/pure_wheel.py site/app/README.md
+          # A missing wheel would publish a page that boots and then fails at
+          # micropip, which is a worse failure than a red build.
+          test -s site/app/wheels/manifest.json
+          test -s site/app/index.html
+          ls site/app/wheels/
+
       - uses: actions/upload-pages-artifact@v5
         if: github.event_name != 'pull_request'
         with:

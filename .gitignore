@@ -24,3 +24,12 @@ docs/assets/examples/
 
 # pytest
 .pytest_cache/
+
+# Staged by web/build-web.sh — rebuild them, do not commit them. These two
+# wheels are built from this checkout, so a committed copy would go stale the
+# moment the source moved, and the databases are copies of examples/data/.
+#
+# web/vendor/ is the exception and IS committed: the emscripten pounce-solver
+# wheel is not on PyPI and cannot be rebuilt here or in CI.
+web/wheels/
+web/data/

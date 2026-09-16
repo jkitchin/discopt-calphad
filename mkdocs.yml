@@ -30,6 +30,7 @@ theme:
 nav:
   - Home: index.md
   - Examples: examples.md
+  - Browser app: web-app.md
   - Design:
       - Architecture: architecture.md
       - Symbolic layer, diagrams, fitting: symbolic-diagrams-fitting.md
