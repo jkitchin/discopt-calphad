@@ -378,8 +378,8 @@ function cutAtJumps(pts) {
  * gathered per temperature and deduplicated first: the eleven points across
  * the Al-Zn two-phase field at 400 K carry one boundary composition per phase
  * between them, not eleven. Branches then grow a temperature at a time, each
- * extended by its nearest composition in the next row, which keeps the two
- * sides of a miscibility gap apart without having to label them.
+ * row's compositions extending the branches they are nearest to, which keeps
+ * the two sides of a miscibility gap apart without having to label them.
  *
  * Keying by the assemblage as well as the phase stops LIQUID's edge against
  * FCC being joined to its edge against HCP across a eutectic, but that alone
@@ -437,21 +437,34 @@ function boundaries() {
     let open = [];
     for (const T of temps) {
       const xs = [...byT.get(T)].sort((a, b) => a - b);
-      // Nearest first, so a branch follows its own side of a gap -- and only
-      // within reach, because an assemblage key is not unique to one boundary.
-      // A congruently melting compound has liquid on both sides of it: two
-      // different compositions, at one temperature, under the same
-      // CU2MG+LIQUID key. Refinement samples one side per row, so with no limit
-      // on the pairing the single open branch is handed whichever side that row
-      // saw and drags itself back and forth across the diagram -- one
-      // 303-vertex branch zigzagging between x 0.24 and x 0.42, which
-      // cutAtJumps then chopped into 59 pieces. Beyond DISCONTINUITY a
-      // composition is not this boundary, so it starts its own.
+      // Which branch a composition belongs to is decided first, and once: the
+      // one it is nearest to. An assemblage key is not unique to one boundary,
+      // and a congruently melting compound has liquid on both sides of it --
+      // two compositions, at one temperature, under the same CU2MG+LIQUID key.
+      // A distance limit alone cannot separate those sides, because they can be
+      // closer to each other than the limit is wide: on Cu-Mg they are 0.11
+      // apart near 1055 K and 0.10 apart near 834 K, both inside DISCONTINUITY.
+      // Refinement samples one side per row, and the two rules below then
+      // misfire together on that row -- the sampled side pairs with its own
+      // branch, and the other branch, 0.116 away, is retired below as passed by,
+      // so the next row's composition finds only the wrong branch open and the
+      // survivor zigzags between the sides. Naming an owner settles both rules
+      // at once: a composition may join, and may retire, only its nearest
+      // branch. Beyond DISCONTINUITY it belongs to no open branch and starts its
+      // own.
+      const owner = xs.map((x) => {
+        let ci = -1;
+        let d = Infinity;
+        open.forEach((c, i) => {
+          const gap = Math.abs(x - c.pts[c.pts.length - 1].x);
+          if (gap < d) { d = gap; ci = i; }
+        });
+        return { ci, d };
+      });
+      // Nearest first, so that when two compositions claim one branch it goes to
+      // the closer and the other opens a branch of its own.
       const pairs = [];
-      open.forEach((c, ci) => xs.forEach((x, xi) => {
-        const d = Math.abs(x - c.pts[c.pts.length - 1].x);
-        if (d <= DISCONTINUITY) pairs.push({ ci, xi, d });
-      }));
+      owner.forEach((o, xi) => { if (o.ci >= 0 && o.d <= DISCONTINUITY) pairs.push({ ci: o.ci, xi, d: o.d }); });
       pairs.sort((a, b) => a.d - b.d);
       const tookBranch = new Set();
       const tookX = new Set();
@@ -477,8 +490,7 @@ function boundaries() {
       // opening up.
       const next = [];
       open.forEach((c, ci) => {
-        const last = c.pts[c.pts.length - 1].x;
-        const reached = xs.some((x) => Math.abs(x - last) <= DISCONTINUITY);
+        const reached = owner.some((o) => o.ci === ci && o.d <= DISCONTINUITY);
         (tookBranch.has(ci) || !reached ? next : done).push(c);
       });
       xs.forEach((x, xi) => { if (!tookX.has(xi)) next.push({ pts: [{ x, T }] }); });
