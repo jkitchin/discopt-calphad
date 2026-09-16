@@ -4,16 +4,36 @@
 
 import { ELEMENTS } from './elements.js';
 
-/** The databases build-web.sh stages. Each covers exactly one binary. */
-// `ms` is the measured cost of one point under Pyodide (M4 Pro, Pyodide 0.28.3)
-// — about twice the native rate. It is only used to warn before a long run.
+/**
+ * The databases this page can use. The first two are what build-web.sh stages,
+ * one binary each; opening a file appends to this list, which is why it is not
+ * frozen.
+ *
+ * `ms` is the measured cost of one point under Pyodide (M4 Pro, Pyodide 0.28.3)
+ * — about twice the native rate. It is only used to warn before a long run.
+ * `tLo`/`tHi` are a useful temperature window for that system. A file the
+ * visitor opened can supply none of the three: it has never been timed here,
+ * and it covers many systems, each with its own window. So it carries them as
+ * null and the page says what it does not know rather than inventing it.
+ */
 const DATABASES = [
   { name: 'Al-Zn', file: 'alzn_mey.tdb', elements: ['AL', 'ZN'], tLo: 400, tHi: 950, ms: 69 },
   { name: 'Cu-Mg', file: 'cumg_nims.tdb', elements: ['CU', 'MG'], tLo: 400, tHi: 1200, ms: 144 },
 ];
 
+// `elements` is the ordered pair to solve -- the axis labels and Python both
+// want exactly two -- while `covers` is everything the file can do. For a
+// bundled binary they are the same; for a picked file they are not, which is
+// why the two are separate fields rather than one.
+for (const db of DATABASES) db.covers = new Set(db.elements);
+
+/** Element symbols some loaded database covers. Grows when a file is opened. */
 const WITH_DATA = new Set(DATABASES.flatMap((db) => db.elements));
 const $ = (id) => document.getElementById(id);
+
+// Names and parse errors out of a TDB are file contents, and they are written
+// into innerHTML, so they are escaped on the way.
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 
 const state = {
   chosen: [],          // element symbols, in the order picked
@@ -25,6 +45,9 @@ const state = {
   selected: null,      // the point whose detail is shown
   hover: null,         // the point under the cursor, described by the tooltip
   invariants: [],      // three-phase horizontals: { T, xs, phases }
+  criticals: [],       // where a miscibility gap closes: { phase, T, x, ... }
+  pureEnds: [],        // pure-element transitions: { element, x, T, below, above }
+  epoch: 0,            // bumped per run, so work cached per run is dropped
 };
 
 /**
@@ -63,11 +86,55 @@ function colorFor(phase) {
   return state.phaseColors.get(phase);
 }
 
-/** The database covering the chosen pair, if there is one. */
+/**
+ * The database to use for the chosen pair, if any covers it.
+ *
+ * A bundled file covers exactly one binary; a file the visitor opened covers
+ * every binary among its elements, so "covers" is containment, not equality. A
+ * bundled exact match wins where there is one, because that assessment is what
+ * this page has been checked against, and an opened file answers for the rest.
+ */
 function currentDatabase() {
   if (state.chosen.length !== 2) return null;
   const want = [...state.chosen].sort().join('-');
-  return DATABASES.find((db) => [...db.elements].sort().join('-') === want) || null;
+  const exact = DATABASES.find((db) => !db.text && [...db.elements].sort().join('-') === want);
+  if (exact) return exact;
+  const covering = DATABASES.find((db) => state.chosen.every((el) => db.covers.has(el)));
+  // The pair in play comes from the selection rather than the file, because a
+  // multicomponent file has no pair of its own. Everything downstream -- the
+  // axis labels, the worker message, Python's `elements` -- wants two, in order.
+  return covering ? { ...covering, elements: [...state.chosen] } : null;
+}
+
+/** The file being parsed, until Python reports what is in it. */
+let picked = null;
+
+/**
+ * Add a database the visitor opened, and turn on the elements it covers.
+ *
+ * The text stays here rather than being handed over once. Cancel is a
+ * `worker.terminate()`, so every database parsed inside the worker dies with
+ * it and the page has to be able to say it again — which is why the text rides
+ * on the database object the run messages already carry.
+ */
+function registerDatabase({ name, file, text }, info) {
+  const covers = new Set(info.elements);
+  const db = {
+    name,
+    file,
+    text,
+    covers,
+    elements: [...covers],
+    label: `${file} · ${info.elements.length} elements`,
+    tLo: null,
+    tHi: null,
+    ms: null,
+  };
+  const at = DATABASES.findIndex((d) => d.name === name);
+  if (at >= 0) DATABASES[at] = db;
+  else DATABASES.push(db);
+  for (const el of covers) WITH_DATA.add(el);
+  refreshTable();
 }
 
 // --- periodic table ---------------------------------------------------------
@@ -84,19 +151,36 @@ function buildTable() {
     }
     lastRow = el.row;
     const cell = document.createElement('button');
-    cell.className = 'el' + (WITH_DATA.has(el.sym.toUpperCase()) ? ' has-data' : '');
+    cell.className = 'el';
     cell.style.gridRow = String(el.row === 9 ? 9 : el.row === 10 ? 10 : el.row);
     cell.style.gridColumn = String(el.col);
     cell.innerHTML = `<span class="z">${el.z}</span>${el.sym}`;
     cell.dataset.sym = el.sym.toUpperCase();
-    if (WITH_DATA.has(el.sym.toUpperCase())) {
-      cell.title = `${el.name} — click to select`;
-      cell.addEventListener('click', () => toggleElement(el.sym.toUpperCase()));
-    } else {
-      cell.title = `${el.name} — no database staged for this element`;
-      cell.disabled = true;
-    }
+    cell.dataset.name = el.name;
+    // The listener goes on every cell rather than only the ones with data,
+    // because which elements have data changes when a file is opened -- and a
+    // disabled button fires no clicks anyway.
+    cell.addEventListener('click', () => toggleElement(el.sym.toUpperCase()));
     table.append(cell);
+  }
+  refreshTable();
+}
+
+/**
+ * Enable the elements some loaded database covers.
+ *
+ * Called again whenever a database is added, because opening a file is what
+ * turns most of this table on: the two bundled files reach four elements
+ * between them, and one multicomponent file reaches tens.
+ */
+function refreshTable() {
+  for (const cell of document.querySelectorAll('.el')) {
+    const has = WITH_DATA.has(cell.dataset.sym);
+    cell.classList.toggle('has-data', has);
+    cell.disabled = !has;
+    cell.title = has
+      ? `${cell.dataset.name} — click to select`
+      : `${cell.dataset.name} — no loaded database covers this element`;
   }
 }
 
@@ -113,22 +197,47 @@ function renderSelection() {
     cell.classList.toggle('chosen', state.chosen.includes(cell.dataset.sym));
   }
   const db = currentDatabase();
-  const pairs = DATABASES.map((d) => `<span class="pill">${d.elements.join('–')}</span>`).join('');
+  const pairs = DATABASES.map((d) => `<span class="pill">${esc(d.label || d.elements.join('–'))}</span>`).join('');
   if (db) {
     const info = state.databaseInfo?.[db.name];
-    const phases = info ? ` · phases: ${info.phases.join(', ')}` : '';
-    $('systems').innerHTML = `<strong>${db.elements.join('–')}</strong> from <code>${db.file}</code>${phases}`;
-    $('t-lo').value = db.tLo;
-    $('t-hi').value = db.tHi;
+    // A binary file's phases fit on the line. A multicomponent file has
+    // hundreds, and the ones that matter are the ones this pair can form, which
+    // is what the run itself reports.
+    const phases = info
+      ? ` · ${info.phases.length > 12 ? `${info.phases.length} phases` : `phases: ${info.phases.join(', ')}`}`
+      : '';
+    $('systems').innerHTML =
+      `<strong>${db.elements.join('–')}</strong> from <code>${esc(db.file)}</code>${phases}${skippedNote(info)}`;
+    // A picked file spans many systems, each with its own useful temperature
+    // window, so it offers no default and the fields are left as they are.
+    if (db.tLo != null) $('t-lo').value = db.tLo;
+    if (db.tHi != null) $('t-hi').value = db.tHi;
     setXLabels(db);
   } else if (state.chosen.length === 2) {
     $('systems').innerHTML =
-      `No staged database covers ${state.chosen.join('–')}. Available: ${pairs}`;
+      `No loaded database covers ${state.chosen.join('–')}. Loaded: ${pairs} — open a TDB file below for more.`;
   } else {
-    $('systems').innerHTML = `Pick two elements. Available: ${pairs}`;
+    $('systems').innerHTML = `Pick two elements. Loaded: ${pairs}`;
   }
   updateEstimate();
   $('run').disabled = !db || state.running || !state.ready;
+}
+
+/**
+ * What a file cost to parse, when it cost anything.
+ *
+ * Reported rather than swallowed. A command that will not parse is usually a
+ * PARAMETER, and a dropped parameter shows up as wrong energies rather than as
+ * an error, so the page has to say it lost one. COST507 loses exactly two this
+ * way, to a `!` typed where a `1` belongs.
+ */
+function skippedNote(info) {
+  if (!info?.skipped?.length) return '';
+  const n = info.skipped.length;
+  const first = info.skipped[0];
+  return `<br><span class="warn-text">${n} command${n === 1 ? '' : 's'} in this file would not parse and `
+    + `${n === 1 ? 'was' : 'were'} skipped; everything else loaded. First: <code>${esc(first.command)}</code> — `
+    + `${esc(first.reason)}. A skipped parameter shows up as wrong energies, not as an error.</span>`;
 }
 
 /** Say what a run will cost before it is started, not after. */
@@ -141,9 +250,18 @@ function updateEstimate() {
   const n = Number($('n-t').value) * Number($('n-x').value);
   const rounds = Number($('n-refine').value);
   const seconds = (n * db.ms) / 1000;
+  // An opened file has never been timed here, and a made-up number would read
+  // exactly like a measured one. Say what is known: a multicomponent database
+  // carries far more phases than a bundled binary, and the run reports its real
+  // cost when it finishes.
+  const cost = db.ms
+    ? `${n} points to start, about ${seconds < 1 ? '1' : seconds.toFixed(0)} s — `
+      + `${db.elements.join('–')} measures ${db.ms} ms per point in the browser. `
+    : `${n} points to start, at a cost per point this page has not measured — `
+      + 'a multicomponent file offers many more phases per solve than the bundled binaries do at '
+      + '69–144 ms, so expect several times that. ';
   $('estimate').textContent =
-    `${n} points to start, about ${seconds < 1 ? '1' : seconds.toFixed(0)} s — `
-    + `${db.elements.join('–')} measures ${db.ms} ms per point in the browser. `
+    cost
     + (rounds
       ? `Then ${rounds} refinement round${rounds === 1 ? '' : 's'}, each subdividing only the `
         + 'cells a phase boundary runs through, and only across the boundary — so the added cost '
@@ -281,9 +399,30 @@ function boundaries() {
     }
   }
 
+  // The pure-element ends, put in as exact vertices rather than approached by
+  // sampling. A pure element's transition is a crossing of two molar energies --
+  // no tie-line, and no solve at all -- so it is computed (see
+  // `pure_transitions`), and it is the one point on a boundary that is known
+  // exactly rather than to the resolution of a grid. Attached only to a field
+  // that was actually sampled: the Al-Zn liquidus reaches Al's melting point
+  // because the FCC+LIQUID field runs into it, while an end belonging to a
+  // field this run never saw is not drawn from one vertex alone.
+  for (const end of state.pureEnds) {
+    const assemblage = [end.below, end.above].sort().join('+');
+    for (const phase of [end.below, end.above]) {
+      const byT = fields.get(`${assemblage}|${phase}`);
+      if (!byT) continue;
+      const T = Math.round(end.T * 1e4) / 1e4;
+      const xs = byT.get(T) || [];
+      if (!xs.some((x) => Math.abs(x - end.x) < 1e-6)) xs.push(end.x);
+      byT.set(T, xs);
+    }
+  }
+
   const out = [];
   for (const [key, byT] of fields) {
     const phase = key.slice(key.indexOf('|') + 1);
+    const assemblage = key.slice(0, key.indexOf('|'));
     const temps = [...byT.keys()].sort((a, b) => a - b);
     const done = [];
     let open = [];
@@ -313,11 +452,44 @@ function boundaries() {
     for (const branch of [...done, ...open]) {
       for (const piece of cutAtJumps(branch.pts)) {
         // One point is not a line.
-        if (piece.length > 1) out.push({ phase, pts: piece });
+        if (piece.length > 1) out.push({ phase, assemblage, pts: piece });
       }
     }
   }
+  closeAtCriticals(out);
   return out;
+}
+
+/**
+ * Join the two branches of a closing miscibility gap at its critical point.
+ *
+ * The two sides of a dome are ends of one tie-line, so they are traced as two
+ * branches and each stops at the last temperature where the two compositions
+ * were still apart. That leaves the arch open at the top however hard the
+ * temperature is refined, because the gap closes to nothing: the lens thins
+ * faster than bisection narrows. The apex is the one vertex the two branches
+ * share, so once it has been found it is appended to both.
+ */
+function closeAtCriticals(branches) {
+  for (const cp of state.criticals) {
+    for (const b of branches) {
+      // Only the field of two sets of one phase closes at a critical point. The
+      // same phase's other branches -- its solidus, its solvus against another
+      // phase -- belong to different fields and must not be pulled to the apex.
+      if (b.assemblage !== cp.assemblage || b.pts.length < 2) continue;
+      const first = b.pts[0];
+      const last = b.pts[b.pts.length - 1];
+      const atEnd = Math.abs(last.T - cp.T) <= Math.abs(first.T - cp.T);
+      const stop = atEnd ? last : first;
+      // A guard rather than a search. The branch ends at the highest row that
+      // still resolved two compositions, and the apex was fitted from that row
+      // and the ones below it, so the two are a known distance apart -- `gap`
+      // carries it. A branch further off than that belongs to some other field.
+      if (Math.abs(stop.T - cp.T) > cp.gap || Math.abs(stop.x - cp.x) > 0.3) continue;
+      if (atEnd) b.pts.push({ x: cp.x, T: cp.T });
+      else b.pts.unshift({ x: cp.x, T: cp.T });
+    }
+  }
 }
 
 // --- adaptive grid ----------------------------------------------------------
@@ -426,6 +598,59 @@ function liveCells() {
   return state.points.filter((p) => p.cell && !p.superseded && !p.error);
 }
 
+// How many buckets across and up `cellIndex` lays over the diagram.
+const INDEX_N = 48;
+
+/**
+ * Point location over the live cells: which cell holds (x, T)?
+ *
+ * Three things here ask that question -- the refinement's neighbour probes, the
+ * bracket hunts, and the wash -- and each asks it several thousand times for one
+ * diagram. Scanning the cells for every probe makes all of that quadratic, which
+ * is slow enough to feel when a hover redraws the plot. The cells tile the
+ * diagram at deliberately uneven sizes, so this buckets them on a fixed lattice
+ * instead: a cell joins every bucket its extent overlaps, and a probe then
+ * searches one bucket rather than the whole run.
+ *
+ * Built per caller from the cells it is asking about, because the callers
+ * disagree about which cells count -- the wash excludes cells it has already
+ * rejected -- and an index is much cheaper to build than to be wrong about.
+ */
+function cellIndex(live) {
+  if (!live.length) return { at: () => null };
+  let tLo = Infinity;
+  let tHi = -Infinity;
+  for (const p of live) {
+    if (p.cell.t0 < tLo) tLo = p.cell.t0;
+    if (p.cell.t1 > tHi) tHi = p.cell.t1;
+  }
+  const span = tHi - tLo || 1;
+  const col = (x) => Math.min(INDEX_N - 1, Math.max(0, Math.floor(x * INDEX_N)));
+  const row = (T) => Math.min(INDEX_N - 1, Math.max(0, Math.floor(((T - tLo) / span) * INDEX_N)));
+  const buckets = new Map();
+  for (const p of live) {
+    const c = p.cell;
+    for (let j = row(c.t0); j <= row(c.t1); j += 1) {
+      for (let i = col(c.x0); i <= col(c.x1); i += 1) {
+        const k = j * INDEX_N + i;
+        const held = buckets.get(k);
+        if (held) held.push(p);
+        else buckets.set(k, [p]);
+      }
+    }
+  }
+  return {
+    at(x, T) {
+      const held = buckets.get(row(T) * INDEX_N + col(x));
+      if (!held) return null;
+      // A point outside every cell is off the diagram, and the callers all read
+      // that as "no neighbour" rather than as a boundary.
+      return held.find((p) => x >= p.cell.x0 && x < p.cell.x1
+        && T >= p.cell.t0 && T < p.cell.t1) || null;
+    },
+  };
+}
+
 /**
  * Which cells a boundary runs through, and across which axis, as
  * point -> { x, t }.
@@ -441,8 +666,8 @@ function liveCells() {
  */
 function crossedCells() {
   const live = liveCells();
-  const holding = (x, T) => live.find((p) => x >= p.cell.x0 && x < p.cell.x1
-    && T >= p.cell.t0 && T < p.cell.t1);
+  const index = cellIndex(live);
+  const holding = (x, T) => index.at(x, T);
   const marks = new Map();
   const mark = (p, axis) => {
     const m = marks.get(p) || { x: false, t: false };
@@ -535,8 +760,8 @@ const INVARIANT_STEPS = 12;
  */
 function invariantBrackets() {
   const live = liveCells();
-  const holding = (x, T) => live.find((p) => x >= p.cell.x0 && x < p.cell.x1
-    && T >= p.cell.t0 && T < p.cell.t1);
+  const index = cellIndex(live);
+  const holding = (x, T) => index.at(x, T);
   const best = new Map();
   for (const p of live) {
     const c = p.cell;
@@ -566,6 +791,124 @@ function invariantBrackets() {
     if (!prev || found.tHi - found.tLo < prev.tHi - prev.tLo) best.set(key, found);
   }
   return [...best.values()];
+}
+
+/**
+ * The critical points: where a miscibility gap closes, found by extrapolating
+ * the gap rather than by searching for its top.
+ *
+ * This is the other feature `boundaries()` cannot draw. A gap closes at a
+ * critical point -- the top of the Al-Zn FCC dome -- and approaching it the two
+ * coexisting compositions merge, so the tie-line shortens to nothing and the
+ * two branches stop short with the arch open between them.
+ *
+ * The first version of this bracketed the apex and bisected it, like an
+ * invariant, and that was the wrong instrument rather than a fixable bug.
+ * Bisection asks "one phase here, or two?", and near the apex that question
+ * stops having a reliable answer, because the two minima it distinguishes are
+ * converging on each other. It put the Al-Zn apex at 623.3 K, 0.01 K above a
+ * row whose own gap was still 0.085 wide -- a shape no closing dome has --
+ * because one solve 2.4 K below the top answered "one phase" where there were
+ * two.
+ *
+ * So the apex is fitted. A gap closes parabolically: its half-width w obeys
+ * T = Tc - c w^2, which is both why refinement never reaches the top and
+ * exactly how to extrapolate to it. Least squares over the rows that are
+ * comfortably resolved gives Tc where w vanishes, costs no solves at all --
+ * those rows are already on the screen -- and is far steadier than the search
+ * it replaces: on Al-Zn the top eight rows give 625.75 K with a 4 mK residual,
+ * and windows from four to twenty rows agree within 0.06 K.
+ */
+const CRITICAL_ROWS = 8;
+
+function criticalPoints() {
+  // Rows of a closing gap: one phase, two compositions. Every solve is eligible,
+  // refinement points and bisection probes alike -- a probe is an ordinary
+  // equilibrium that happens to have been asked for by a bracket.
+  const byPhase = new Map();
+  for (const p of state.points) {
+    if (p.error) continue;
+    const sets = uniqueSets(p);
+    if (sets.length !== 2 || sets[0].phase !== sets[1].phase) continue;
+    const xs = [sets[0].x[0], sets[1].x[0]].sort((a, b) => a - b);
+    if (!byPhase.has(sets[0].phase)) byPhase.set(sets[0].phase, []);
+    byPhase.get(sets[0].phase).push({
+      T: p.T,
+      w: (xs[1] - xs[0]) / 2,
+      xc: (xs[0] + xs[1]) / 2,
+    });
+  }
+  const top = Number($('t-hi').value);
+  const out = [];
+  for (const [phase, all] of byPhase) {
+    // The highest rows, and only those. The parabola describes the gap near its
+    // top; rows far down the flanks bend away from it, and they bend one way, so
+    // a window that reaches too far reads the apex too high -- Al-Zn drifts from
+    // 625.8 K to 628.7 K as the window slides 20 K down. Where the window sits
+    // matters much more than how wide it is.
+    all.sort((a, b) => b.T - a.T);
+    const rows = all.slice(0, CRITICAL_ROWS);
+    if (rows.length < 4) continue;
+    const fit = fitToZeroWidth(rows);
+    if (!fit) continue;
+    // Extrapolating upwards is the point of this; extrapolating downwards, or
+    // past the ceiling, means these rows are not the top of a closing dome --
+    // a gap cut off by the window, or a field that never closes at all.
+    if (!(fit.T > rows[0].T) || fit.T > top) continue;
+    out.push({
+      phase,
+      assemblage: `${phase}+${phase}`,
+      T: fit.T,
+      x: fit.x,
+      // What the apex rests on: how far apart the last two coexisting
+      // compositions still were, how far past them the fit reached, and how well
+      // the rows it used actually lay on a parabola. Together they say how much
+      // of this point is measured and how much is extrapolation.
+      width: 2 * rows[0].w,
+      reach: fit.T - rows[0].T,
+      rms: fit.rms,
+      // How far a branch may stop short of the apex and still be joined to it.
+      // The fit reaches past the highest solved row by construction, so the
+      // branches stop at least that far short and the allowance has to cover it.
+      gap: Math.max(5, 3 * (fit.T - rows[0].T)),
+    });
+  }
+  return out;
+}
+
+/**
+ * Least squares of T and of the gap's centre against w^2, extrapolated to w = 0.
+ *
+ * The centre is fitted the same way rather than averaged: a dome is not quite
+ * symmetric, so the midpoint of the two compositions drifts as the gap narrows
+ * -- 0.6469 to 0.6492 down the Al-Zn rows -- and what is wanted is the value it
+ * is drifting towards, not the average of the places it has been.
+ */
+function fitToZeroWidth(rows) {
+  const n = rows.length;
+  const X = rows.map((r) => r.w * r.w);
+  const mx = X.reduce((u, v) => u + v, 0) / n;
+  let den = 0;
+  for (const v of X) den += (v - mx) ** 2;
+  // Every row the same width apart: nothing to extrapolate along.
+  if (!(den > 0)) return null;
+  const against = (values) => {
+    const my = values.reduce((u, v) => u + v, 0) / n;
+    let num = 0;
+    for (let i = 0; i < n; i++) num += (X[i] - mx) * (values[i] - my);
+    const m = num / den;
+    return { m, at0: my - m * mx };
+  };
+  const T = against(rows.map((r) => r.T));
+  // The gap has to widen as it cools. A fit that says otherwise is not a dome.
+  if (!(T.m < 0)) return null;
+  let rss = 0;
+  for (let i = 0; i < n; i++) rss += (rows[i].T - (T.at0 + T.m * X[i])) ** 2;
+  return {
+    T: T.at0,
+    x: against(rows.map((r) => r.xc)).at0,
+    rms: Math.sqrt(rss / n),
+  };
 }
 
 /** The midpoint solve each unconverged bracket wants next. */
@@ -697,6 +1040,222 @@ function ranges() {
   };
 }
 
+/**
+ * The wash: which single phase holds each region, drawn as regions.
+ *
+ * This was a rectangle per cell for a long time, and the shape of a cell is the
+ * wrong shape for the answer. A cell is washed by the phase found at its
+ * sample, and a cell with a boundary running through it is single-phase only
+ * *at* that sample -- the rest of it belongs to the other side. Painted anyway,
+ * its edges were stair-steps crossing the very lines the tie-lines were traced
+ * to draw. Washing only cells whose neighbours all agree fixed the crossing but
+ * not the shape: it left every field edged by a ragged white seam a cell wide,
+ * and the cells against the Al-Zn liquidus are still an eighth of the axis
+ * across, so the seam was the most visible thing on the diagram.
+ *
+ * The boundaries themselves are the right edge to fill to. At a fixed
+ * temperature the branch curves cut the composition axis into intervals, and
+ * each interval is one field -- 2 crossings below the Al-Zn monotectoid, 4
+ * between it and the top of the dome, 2 again above where the dome has closed.
+ * So this scans temperature, interpolates every branch to get that row of
+ * crossings, and pairs consecutive rows into bands: one quad per band per
+ * interval, its sides slanting with the two boundaries it lies between. Nothing
+ * steps, because the edge of the wash *is* the boundary.
+ *
+ * Stitching a field's bands into one field-shaped polygon is the obvious next
+ * move, and it was tried and taken out again. It means deciding which interval
+ * of a row continues which interval of the row below, and that reading comes
+ * from the cells, so it wobbles: a track that closes and reopens on a single bad
+ * row leaves a seam across the middle of a field, and two tracks open at once
+ * paint it twice. On Al-Zn that showed as a blue block beside the HCP curve
+ * ignoring the curve, and as pale stripes ending in mid-air under the liquidus.
+ * The quads are kept apart and the *drawing* joins them instead -- one path per
+ * phase, composited once however many quads it holds.
+ *
+ * Which phase fills an interval comes from the crossings that bound it, not
+ * from the cells. A crossing is a tie-line end -- the composition of a named
+ * phase, whose conjugate is the other end of the same tie-line -- and the
+ * single-phase field lies on the side away from that conjugate, and is that
+ * phase. So the curves that say where a field is also say what is in it, at any
+ * width. Asking a cell cannot do that for a field narrower than a cell: nearly
+ * every cell overlapping the Al-Zn HCP strip has its sample outside it, in the
+ * two-phase region, so the strip went unwashed below 611 K while its own
+ * boundary ran on to 400 K, and the liquid wedge at the Zn corner and the FCC
+ * field under the monotectoid were cut off flat the same way.
+ *
+ * The lenses are still unpainted, now for a reason rather than for want of an
+ * answer: both crossings that bound one face away from it -- the liquidus says
+ * single-phase liquid to its left, the solidus single-phase FCC to its right --
+ * so nothing names the interval between them. Two crossings that disagree paint
+ * nothing either.
+ *
+ * One strip has no curve to name it. Above the highest melting point every row
+ * is liquid and no branch crosses one to say so, which left a white band across
+ * the top of Al-Zn above 934 K. There, and only there, a cell is asked: it is
+ * as far from a boundary as a cell ever gets, and above the last curve a binary
+ * holds nothing but liquid in any case.
+ *
+ * The foot of the diagram is not the mirror of that and must not be treated as
+ * one. Curves stop at the lowest row that was solved, not at the edge of a
+ * field, so what lies below them is usually still two-phase. Asking a cell
+ * there painted a band of FCC clear across the bottom of Al-Zn near 415 K,
+ * where the answer is FCC+HCP. Below the curves nothing is claimed. An interval holding two phases is left unpainted, as before --
+ * those are the lenses, and a wash across one would claim a single phase where
+ * the whole point is that two coexist.
+ *
+ * Memoised per run, per point count and per frame, because hovering redraws the
+ * plot and this is far too much work to repeat for a redraw that changed
+ * nothing but which dot is circled.
+ */
+const WASH_BANDS = 120;
+
+let washMemo = { key: '', fills: [] };
+
+function washFills(brs, tLo, tHi) {
+  const key = `${state.epoch}:${state.points.length}:${tLo}:${tHi}`;
+  if (washMemo.key === key) return washMemo.fills;
+  const index = cellIndex(liveCells());
+  const eps = (tHi - tLo) * 1e-4;
+  // An even sweep, plus a hair either side of every temperature where the
+  // structure changes: an invariant, a closing dome, the end of any branch. A
+  // band that straddles such a temperature has a different number of intervals
+  // at its two ends and cannot be filled, so those bands are made thin enough
+  // to vanish rather than left to show as a stripe across the diagram.
+  const ts = new Set();
+  for (let i = 0; i <= WASH_BANDS; i += 1) ts.add(tLo + ((tHi - tLo) * i) / WASH_BANDS);
+  const breaks = [
+    ...state.invariants.map((inv) => inv.T),
+    ...state.criticals.map((cp) => cp.T),
+  ];
+  for (const b of brs) breaks.push(b.pts[0].T, b.pts[b.pts.length - 1].T);
+  for (const T of breaks) {
+    if (T > tLo + eps && T < tHi - eps) { ts.add(T - eps); ts.add(T + eps); }
+  }
+  const scan = [...ts].filter((T) => T >= tLo && T <= tHi).sort((a, b) => a - b);
+
+  /**
+   * Where every branch crosses one temperature -- the composition, the phase it
+   * is the composition of, and the assemblage whose tie-line it ends.
+   */
+  const crossAt = (T) => {
+    const xs = [];
+    for (const b of brs) {
+      for (let k = 1; k < b.pts.length; k += 1) {
+        const p = b.pts[k - 1];
+        const q = b.pts[k];
+        if (q.T === p.T) continue;
+        if (T < Math.min(p.T, q.T) || T > Math.max(p.T, q.T)) continue;
+        const x = p.x + ((T - p.T) / (q.T - p.T)) * (q.x - p.x);
+        if (!xs.some((v) => Math.abs(v.x - x) < 1e-9)) {
+          xs.push({ x, phase: b.phase, assemblage: b.assemblage });
+        }
+      }
+    }
+    xs.sort((a, b2) => a.x - b2.x);
+    return xs;
+  };
+
+  /** The composition axis cut at those crossings, the two ends included. */
+  const edgesOf = (cr) => [0, ...cr.map((c) => c.x), 1];
+
+  /**
+   * Which way the single-phase field lies from each crossing: away from the
+   * other end of its own tie-line. -1 is to the left, 1 to the right, 0 for a
+   * crossing whose conjugate is not in this row and which therefore says
+   * nothing. The nearest same-assemblage crossing is the conjugate, which is
+   * what keeps the two sides of a dome -- one assemblage, one phase, two
+   * crossings -- pointing outwards rather than at each other.
+   */
+  const sidesOf = (cr) => cr.map((c, i) => {
+    let conj = null;
+    for (let j = 0; j < cr.length; j += 1) {
+      if (j === i || cr[j].assemblage !== c.assemblage) continue;
+      if (!conj || Math.abs(cr[j].x - c.x) < Math.abs(conj.x - c.x)) conj = cr[j];
+    }
+    if (!conj) return 0;
+    return conj.x > c.x ? -1 : 1;
+  });
+
+  // A reaction temperature is the one place this cannot be asked. Every branch
+  // stops there, so there are no crossings to fill between, and the index
+  // answers with whatever single phase the reaction produced -- which would
+  // paint that phase clear across the diagram. The bands holding one are
+  // eps-thin by construction, so they are left unpainted instead.
+  const reactions = state.invariants.map((inv) => inv.T);
+
+  // The highest temperature any boundary reaches. Above it there is no curve to
+  // name a field, and none is needed -- see the note on the cell fallback.
+  let topOfCurves = -Infinity;
+  for (const b of brs) {
+    for (const p of b.pts) if (p.T > topOfCurves) topOfCurves = p.T;
+  }
+
+  // One quad per band per interval, accumulated by phase. They are not stitched
+  // into field-shaped polygons: doing that means tracking which interval
+  // continues which, and a track that closes and reopens on a wobble leaves a
+  // seam across the middle of a field. Quads cannot wobble, and the drawing
+  // makes the joins between them invisible -- see `drawPlot`.
+  const byPhase = new Map();
+  let lower = crossAt(scan[0]);
+  for (let i = 1; i < scan.length; i += 1) {
+    const t0 = scan[i - 1];
+    const t1 = scan[i];
+    const upper = crossAt(t1);
+    if (!reactions.some((T) => T > t0 && T < t1)) {
+      const tm = (t0 + t1) / 2;
+      const mid = crossAt(tm);
+      // Slant a quad's sides to follow the boundaries only where the band has
+      // the same intervals at both ends. Where a field opens or closes inside
+      // it, that end is squared off at the band's middle instead -- such a band
+      // is eps-thin, so the square end is under a pixel tall.
+      const a = edgesOf(lower.length === mid.length ? lower : mid);
+      const b = edgesOf(upper.length === mid.length ? upper : mid);
+      const m = edgesOf(mid);
+      const side = sidesOf(mid);
+      for (let k = 1; k < m.length; k += 1) {
+        if (m[k] - m[k - 1] <= 0) continue;
+        // An interval is named by whichever of its two bounding crossings faces
+        // it. One is the usual case; two that agree is a field bounded by the
+        // curves of two different assemblages, as the Al-Zn FCC field is by its
+        // solidus and the dome. Two that disagree, or none at all, paints
+        // nothing -- the lenses land here, both of their crossings facing away.
+        const votes = [];
+        if (k >= 2 && side[k - 2] === 1) votes.push(mid[k - 2].phase);
+        if (k - 1 < mid.length && side[k - 1] === -1) votes.push(mid[k - 1].phase);
+        if (votes.some((v) => v !== votes[0])) continue;
+        let phase = votes[0];
+        if (!phase && tm > topOfCurves) {
+          // Above every curve, and only there. No branch reaches this row to
+          // name what it holds, and above the last boundary a binary holds
+          // nothing but liquid, so the cell is both reliable here -- as far
+          // from a boundary as a cell ever gets -- and merely being asked for
+          // the name of something already known.
+          const hold = index.at((m[k - 1] + m[k]) / 2, tm);
+          // Merged, not `p.phases`: a lone phase returned as two composition
+          // sets is still one phase, and would otherwise get no wash.
+          const sets = hold ? uniqueSets(hold) : [];
+          if (sets.length !== 1) continue;
+          phase = sets[0].phase;
+        }
+        // Nothing named this interval and nothing was entitled to guess. That is
+        // the two-phase background, and the honest wash for it is none: without
+        // this the unnamed intervals collect under a single `undefined` key and
+        // paint the whole field between the curves in one colour.
+        if (!phase) continue;
+        if (!byPhase.has(phase)) byPhase.set(phase, []);
+        byPhase.get(phase).push([
+          { x: a[k - 1], T: t0 }, { x: a[k], T: t0 },
+          { x: b[k], T: t1 }, { x: b[k - 1], T: t1 },
+        ]);
+      }
+    }
+    lower = upper;
+  }
+  const fills = [...byPhase].map(([phase, quads]) => ({ phase, quads }));
+  washMemo = { key, fills };
+  return fills;
+}
+
 function drawPlot() {
   const svg = $('plot');
   svg.replaceChildren();
@@ -746,33 +1305,49 @@ function drawPlot() {
   svg.append(yTitle);
 
   // Three layers, back to front: a wash marking which single phase holds each
-  // cell, the boundary lines traced from the tie-lines, then the tie-line ends
-  // themselves. Each cell is drawn at its own extent, so refinement shows in
-  // the wash directly -- fine where a boundary runs, coarse where nothing
-  // happens. A superseded cell is skipped because its children cover the same
-  // ground, and drawing both would double the wash there.
-  for (const p of state.points) {
-    if (p.error || p.superseded || !p.cell) continue;
-    const sets = uniqueSets(p);
-    // Merged, not `p.phases`: a lone phase returned as two composition sets is
-    // still one phase holding the cell, and would otherwise get no wash.
-    if (sets.length !== 1) continue;
-    const c = p.cell;
-    svg.append(node('rect', {
-      x: sx(c.x0), y: sy(c.t1), width: sx(c.x1) - sx(c.x0), height: sy(c.t0) - sy(c.t1),
-      fill: colorFor(sets[0].phase), 'fill-opacity': 0.11, stroke: 'none',
+  // region, the boundary lines traced from the tie-lines, then the tie-line ends
+  // themselves. The branches are computed once and shared, because the wash is
+  // filled to them: it is one piece of geometry drawn twice, and asking for it
+  // twice would let the fill and the line it is filled to drift apart.
+  const brs = boundaries();
+  // One path per phase rather than one shape per piece of wash. Two translucent
+  // shapes that abut show an antialiasing hairline along the edge they share,
+  // and two that overlap paint the colour twice; inside a single path both go
+  // away, because the rasterizer takes one coverage for the whole path -- its
+  // internal edges are interior to it, and its overlaps fill once.
+  for (const f of washFills(brs, tLo, tHi)) {
+    svg.append(node('path', {
+      d: f.quads.map((q) => `M${q.map((p) => `${sx(p.x)},${sy(p.T)}`).join('L')}Z`).join(''),
+      fill: colorFor(f.phase), 'fill-opacity': 0.11, stroke: 'none',
     }));
   }
 
   // Straight segments between solved temperatures, not a spline: a smooth curve
   // through these points would invent structure between them that was never
   // computed.
-  for (const b of boundaries()) {
+  for (const b of brs) {
     svg.append(node('polyline', {
       points: b.pts.map((q) => `${sx(q.x)},${sy(q.T)}`).join(' '),
       fill: 'none', stroke: colorFor(b.phase), 'stroke-width': 1.7,
       'stroke-opacity': 0.9, 'stroke-linejoin': 'round', 'stroke-linecap': 'round',
     }));
+  }
+
+  // The critical points: an open circle, not a dot, because nothing was solved
+  // there and nothing can be. The apex is where the gap closes, so it is the one
+  // place on the dome no equilibrium reports two compositions -- it is fitted
+  // from the rows below it, and drawn as the join it is: the one vertex both
+  // sides of the dome share.
+  for (const cp of state.criticals) {
+    const mark = node('circle', {
+      cx: sx(cp.x), cy: sy(cp.T), r: 3, fill: 'var(--bg)',
+      stroke: colorFor(cp.phase), 'stroke-width': 1.4,
+    });
+    mark.append(node('title', {},
+      `${cp.phase} critical point near ${cp.T.toFixed(1)} K, x = ${cp.x.toFixed(3)}`
+      + ` — fitted from the gap, last resolved ${cp.width.toFixed(3)} wide`
+      + ` ${cp.reach.toFixed(1)} K below this, to within ${cp.rms.toFixed(3)} K`));
+    svg.append(mark);
   }
 
   // The invariant horizontals, over the boundaries rather than under them: the
@@ -822,23 +1397,22 @@ function drawPlot() {
     const chosen = state.selected === p;
     const sets = uniqueSets(p);
     for (const s of sets) {
-      // No <title>: the hover tooltip covers the whole plot area and answers
-      // immediately, where a native tooltip only fires over the dot itself and
-      // only after a delay.
-      const dot = node('circle', {
-        // Refinement turned a few hundred points into a few thousand, and at that
-        // density a single-phase dot stops being information: it is one sample
-        // inside a field whose wash already says what holds it. Kept small and
-        // faint, so it reads as a stipple of where the solves actually went and
-        // still answers a click, while the multi-phase dots -- which sit exactly
-        // on a boundary -- stay the ones the eye follows.
-        cx: sx(s.x[0]), cy: sy(p.T), r: sets.length > 1 ? 3.1 : 1.4,
-        fill: colorFor(s.phase), 'fill-opacity': sets.length > 1 ? 0.95 : 0.26,
+      // No <title>, and no click listener either. The hover tooltip covers the
+      // whole plot and answers immediately, where a native tooltip fires only
+      // over the dot itself and only after a delay; the click is resolved the
+      // same way, which is what lets these be small.
+      svg.append(node('circle', {
+        // Every dot is drawn at the same size. A tie-line end used to be more
+        // than twice this radius, and at refinement densities that read as a
+        // chain of beads thicker than the line it was tracing -- when it is the
+        // line that carries the shape. So a boundary dot is set apart by being
+        // darker rather than larger, and a single-phase sample stays faint: it
+        // is one point inside a field whose wash already says what holds it,
+        // and its job is to show where the solves actually went.
+        cx: sx(s.x[0]), cy: sy(p.T), r: 1.4,
+        fill: colorFor(s.phase), 'fill-opacity': sets.length > 1 ? 1 : 0.26,
         stroke: chosen ? 'var(--ink)' : 'none', 'stroke-width': chosen ? 1.5 : 0,
-      });
-      dot.style.cursor = 'pointer';
-      dot.addEventListener('click', () => { state.selected = p; showDetail(p); drawPlot(); });
-      svg.append(dot);
+      }));
     }
   }
 
@@ -955,6 +1529,14 @@ function onMessage({ data }) {
       break;
     case 'database':
       state.databaseInfo = { ...state.databaseInfo, [data.info.name]: data.info };
+      // The elements a picked file covers are only knowable once Python has
+      // parsed it, so registration finishes here rather than at the file input.
+      // A re-parse after Cancel arrives here too, with nothing pending.
+      if (picked && picked.name === data.info.name) {
+        registerDatabase(picked, data.info);
+        setStatus(`${picked.file}: ${data.info.elements.length} elements, ${data.info.phases.length} phases`);
+        picked = null;
+      }
       renderSelection();
       break;
     case 'pass-start':
@@ -977,6 +1559,12 @@ function onMessage({ data }) {
       drawPlot();
       showDetail(data.point);
       setStatus(`solved in ${data.point.ms} ms · ${data.point.phases.join(' + ')}`);
+      break;
+    case 'transitions':
+      // These arrive during the first pass and change where the boundaries
+      // end, so the plot is redrawn rather than waiting for the next point.
+      state.pureEnds = data.ends;
+      drawPlot();
       break;
     case 'error':
       finishRun();
@@ -1100,6 +1688,7 @@ function nextPass() {
       return;
     }
     state.invariants = invariantLines();
+    state.criticals = criticalPoints();
     endRun();
     return;
   }
@@ -1144,6 +1733,9 @@ function endRun(why) {
     `${state.points.length} points in ${run.seconds.toFixed(1)} s · `
     + `${rounds} refinement round${rounds === 1 ? '' : 's'}`
     + ` · ${n} invariant${n === 1 ? '' : 's'}`
+    + (state.criticals.length
+      ? ` · ${state.criticals.length} critical point${state.criticals.length === 1 ? '' : 's'}`
+      : '')
     + (run.failed ? ` · ${run.failed} failed` : '')
     + (why || run.why ? ` · ${why || run.why}` : '')
     + ' · hover for the composition, click a point for its certificate',
@@ -1293,6 +1885,20 @@ function placeTip(ev) {
     tip.hidden = false;
     placeTip(ev);
   });
+  // The click that opens the detail panel is resolved the way the tooltip is,
+  // rather than by a listener on each dot. The dots are 1.4 units across now --
+  // too small to ask anyone to hit -- and `pointAt` already answers "what is
+  // being pointed at", by cell first and then by nearby dot, which is the
+  // question a click asks too. Clicking anywhere in a cell now works, and there
+  // is one listener instead of several thousand.
+  plot.addEventListener('click', (ev) => {
+    const svgPt = toSvg(plot, ev);
+    const p = svgPt ? pointAt(svgPt) : null;
+    if (!p) return;
+    state.selected = p;
+    showDetail(p);
+    drawPlot();
+  });
   plot.addEventListener('pointerleave', () => {
     if (state.hover) { clearHover(); drawPlot(); } else clearHover();
   });
@@ -1325,6 +1931,11 @@ $('run').addEventListener('click', () => {
   // diagram rather than a differently jittered one.
   seq = 0;
   state.invariants = [];
+  state.criticals = [];
+  state.pureEnds = [];
+  // Work cached for the length of a run is keyed on this, so it is dropped in
+  // one place here rather than invalidated from several.
+  state.epoch += 1;
   run.cells = new Map();
   run.round = 0;
   run.rounds = Number($('n-refine').value);
@@ -1340,6 +1951,18 @@ $('run').addEventListener('click', () => {
   run.why = undefined;
   startRun();
   setStatus('solving…');
+  // Asked for before the first pass, not after the last: this is a root find
+  // on temperature over the models this run will solve with, so it costs no
+  // equilibria, and having it early means the boundaries reach the pure
+  // elements from the moment they are first drawn.
+  worker.postMessage({
+    type: 'transitions',
+    db,
+    elements: db.elements,
+    tLo: Number($('t-lo').value),
+    tHi: Number($('t-hi').value),
+    pressure: Number($('pressure').value),
+  });
   sendPass(initialCells());
 });
 
@@ -1352,6 +1975,35 @@ $('cancel').addEventListener('click', () => {
   setStatus('cancelled — restarting Python…');
   finishRun();
   spawnWorker();
+});
+
+/**
+ * Open a TDB from the visitor's own disk.
+ *
+ * Nothing is uploaded and nothing is redistributed: the file is read in this
+ * tab and parsed by the Python running in it. That is the whole reason this is
+ * a file input rather than a list of databases to download — the multicomponent
+ * files worth having are published under their own terms, so the page reads one
+ * the visitor already has instead of serving a copy.
+ */
+$('tdb-file').addEventListener('change', async (ev) => {
+  const file = ev.target.files?.[0];
+  if (!file) return;
+  setStatus(`reading ${file.name}…`);
+  let text;
+  try {
+    text = await file.text();
+  } catch (err) {
+    setStatus(`could not read ${file.name}: ${err.message}`, true);
+    return;
+  }
+  const name = file.name.replace(/\.tdb$/i, '');
+  picked = { name, file: file.name, text };
+  // Queues if Python is still booting; the worker awaits its own readiness.
+  worker.postMessage({
+    type: 'database',
+    db: { name, file: file.name, text, pressure: Number($('pressure').value) },
+  });
 });
 
 const themeSelect = $('theme');

@@ -69,8 +69,9 @@
     padding: 0; cursor: default; min-width: 0;
   }
   .el .z { font-weight: 400; font-size: .62em; opacity: .8; }
-  /* Only elements a staged database actually covers can be picked. Everything
-     else stays visible for orientation but is plainly inert. */
+  /* Only elements some loaded database covers can be picked -- the two bundled
+     files, plus whatever a TDB the visitor opens adds. Everything else stays
+     visible for orientation but is plainly inert. */
   .el.has-data {
     opacity: 1; cursor: pointer; background: var(--panel); color: var(--ink);
     border-color: var(--accent);
@@ -90,6 +91,10 @@
     font: 14px var(--mono); padding: .45rem .5rem; color: var(--ink);
     background: var(--bg); border: 1px solid var(--line); border-radius: 8px; width: 7.5rem;
   }
+  input[type="file"] { font: 13px var(--mono); color: var(--muted); max-width: 20rem; }
+  .pick { align-items: flex-start; margin-top: 1rem; }
+  .pick .note { margin-top: 0; flex: 1 1 22rem; }
+  .warn-text { color: var(--warn); }
   button {
     font: 600 15px/1 system-ui, sans-serif; padding: .65rem 1.3rem;
     background: var(--accent); color: #fff; border: 0; border-radius: 8px; cursor: pointer;
@@ -179,6 +184,15 @@
     <h2>1 · Elements</h2>
     <div class="ptable" id="ptable"></div>
     <p class="systems" id="systems"></p>
+    <div class="row pick">
+      <label>Open a TDB file<input type="file" id="tdb-file" accept=".tdb,.TDB"></label>
+      <span class="note">
+        Two databases ship with this page, which is why most of the table is grey. Open a
+        <code>.tdb</code> of your own — a multicomponent one such as COST507 covers tens of
+        elements — and it is read in this tab and parsed by the Python running here. Nothing is
+        uploaded, and this page redistributes no database of its own.
+      </span>
+    </div>
   </section>
 
   <section class="panel">
@@ -235,8 +249,9 @@
   </section>
 
   <footer>
-    Databases: Al–Zn from <code>alzn_mey.tdb</code>, Cu–Mg from <code>cumg_nims.tdb</code> —
-    the two that ship with the package. This is pre-alpha research code: it covers far fewer
+    Databases: Al–Zn from <code>alzn_mey.tdb</code> and Cu–Mg from <code>cumg_nims.tdb</code> ship
+    with the package; anything else is a TDB file you open above, read in this tab rather than
+    uploaded. This is pre-alpha research code: it covers far fewer
     models than <a href="https://pycalphad.org">pycalphad</a> or a commercial CALPHAD tool,
     and it is much slower. What it adds — natively, not in this tab — is a certificate.
   </footer>

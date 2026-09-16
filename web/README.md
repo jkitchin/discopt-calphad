@@ -13,7 +13,7 @@ python3 -m http.server -d web 8000      # then open http://localhost:8000
 | | |
 |---|---|
 | `index.html` | markup, styling, the periodic table's shell |
-| `app.js` | the page: element selection, adaptive sampling, the SVG plot, phase boundaries, the hover tooltip, streaming, the detail panel |
+| `app.js` | the page: element selection, opening a local database, adaptive sampling, the SVG plot, phase boundaries, the hover tooltip, streaming, the detail panel |
 | `elements.js` | all 118 elements with their positions, generated from ASE's data |
 | `worker.js` | boots Pyodide, installs the three wheels, and runs one solve at a time |
 | `calphad_app.py` | the Python driver — databases in, JSON out. Runs unchanged off-browser |
@@ -66,18 +66,48 @@ and it removes the axis-aligned aliasing a uniform grid produces. It is
 deterministic, so the same run twice draws the same diagram rather than a
 differently jittered one.
 
-Refinement is also what makes the wash mean something. It is one rectangle per
-cell that still owns a patch of the diagram, drawn only where a single phase
-holds that cell, so the fine cells cluster along the boundaries and show where
-the run spent its effort.
+The wash is drawn from the boundary curves, not from the cells. The temperature
+axis is scanned in bands; each band is cut at the compositions where the curves
+cross it, and every interval between two crossings becomes a quad. All of one
+phase's quads go into a single `<path>`. Two translucent shapes that abut leave
+an antialiasing hairline along the shared edge, and two that overlap paint
+twice; inside one path the rasterizer computes a single coverage, so internal
+edges are interior and overlaps fill once.
 
-This is what the uniform grid could not do. A boundary exists only where two
-sampled temperatures both solved that field, so at the old 10×12 default the
-Al–Zn eutectic, the FCC miscibility dome and both monotectoid corners all fell
-between sampled rows and drew no line at all rather than a guessed one. They
-now resolve — see *Measured* below. What neither a grid nor a scatter can
-promise is finding a field thinner than the spacing it started at; landing
-inside one even once, though, yields its exact boundary compositions.
+What names an interval is the crossing that faces it. A crossing is one end of a
+tie-line, so it carries the composition *of a named phase*, and the other end of
+that tie-line — the nearest crossing in the same row with the same assemblage —
+is its conjugate. The single-phase field lies on the side away from the
+conjugate, and it is that phase. So the same curves that say where a field is
+also say what is in it, at any width. Two crossings that face one interval and
+agree are a field bounded by the curves of two different assemblages, as Al–Zn's
+FCC field is by its solidus and the dome. A lens gets nothing: both of its
+bounding crossings face outwards, away from it, so nothing names it and it stays
+bare — which is correct, a lens is two phases. Every unnamed interval stays bare
+for the same reason.
+
+Reading the phase from a cell instead cannot work, and not only because a cell
+with a boundary through it is single-phase just *at* its sample. A field
+narrower than a cell has no cell sample inside it at all: nearly every cell
+overlapping the Al–Zn HCP strip samples outside it, in the two-phase region, so
+the strip went unwashed below 611 K while its own boundary ran down to 400 K.
+One cell lookup survives, above the highest temperature any curve reaches, where
+no crossing exists to name the interval and a binary holds nothing but liquid.
+The foot of the diagram is not the mirror of that: below the lowest crossing the
+curves have stopped because sampling stopped, not because a field ended, and
+what lies beneath is usually still two-phase.
+
+The measurement is the widest straight side of any quad, as a fraction of the
+composition axis — 0.0267, against 0.1250 for the cell wash it replaces.
+
+Resolving those boundaries at all is what the uniform grid could not do. A
+boundary exists only where two sampled temperatures both solved that field, so
+at the old 10×12 default the Al–Zn eutectic, the FCC miscibility dome and both
+monotectoid corners all fell between sampled rows and drew no line at all rather
+than a guessed one. They now resolve — see *Measured* below. What neither a grid
+nor a scatter can promise is finding a field thinner than the spacing it started
+at; landing inside one even once, though, yields its exact boundary
+compositions.
 
 ### Cutting a branch
 
@@ -133,12 +163,24 @@ reaction involves: the line spans the outer two, but the middle one is the phase
 being consumed, and without a mark there is nothing to say where it sits.
 Hovering it names the reaction.
 
-### Not drawn yet
+### Not drawn from a solve
 
-The liquidus and solidus stop just short of the pure elements. A cell's
-sample is held inside x = 0.002…0.998, because a pure element has nothing for a
-solve to balance, so the two branches approach the melting points — 933 K for
-Al, 693 K for Zn — without meeting at them.
+Two things on the diagram are not equilibria, and both say so on hover.
+
+The pure ends are transitions of a single component. A cell's sample is held
+inside x = 0.002…0.998, because a pure element has nothing for a two-phase solve
+to balance, so the branches used to approach the melting points without reaching
+them and every field was open at its ends. Each branch is now carried to x = 0
+or x = 1 by that element's own transition temperature — 933.60 K for Al,
+692.68 K for Zn — computed for the one component rather than solved for two.
+
+The apex of a closing dome is fitted. The two compositions converge as the gap
+shuts, so the solves stop being able to separate them a few degrees before they
+meet, and no refinement reaches the top: the gap closes parabolically, and
+bisecting for it reports a temperature far above the last row it could actually
+resolve. The apex is the zero-width limit of the rows below it instead, which
+costs no solves, and the tooltip gives the reach and the residual so the drawing
+states how much of that point is measured.
 
 ## What it cannot do: certify
 
@@ -225,7 +267,7 @@ cheap and drew the wrong diagram. Against Massalski's Al–Zn the adaptive run
 puts the eutectic at 650 K, x(Al) 0.118 (reference 654 K, 0.113), the FCC
 composition there at 0.325 (0.330), the HCP composition at 0.031 (0.028), the
 Zn-rich monotectoid corner at 548 K, 0.410 (550 K, 0.410), and closes the
-miscibility dome near 622 K (624.6 K).
+miscibility dome at 625.8 K, x 0.650 (624.6 K).
 
 Both invariants are then located exactly. The eutectic comes out at 654 K
 across x(Al) 0.031, 0.117 and 0.327 (reference 654 K and 0.028, 0.113, 0.330)

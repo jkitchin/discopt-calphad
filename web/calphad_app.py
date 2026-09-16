@@ -17,6 +17,7 @@ does keep the right branch; see issue #4.)
 from __future__ import annotations
 
 import json
+import math
 import time
 
 import numpy as np
@@ -104,6 +105,119 @@ def point(name: str, elements, T: float, x=None, b=None, pressure: float = 10132
     out = _describe(result, elements, T)
     out["ms"] = 1000.0 * (time.perf_counter() - started)
     out["certified"] = bool(certify)
+    return json.dumps(out)
+
+
+#: The vacancy, which occupies a site without contributing an atom. A phase can
+#: therefore be pure in one element while a whole sublattice holds vacancies.
+_VACANCY = "VA"
+
+
+def _pure_variables(model, element: str):
+    """Site-fraction variables putting ``model`` at pure ``element``, or None.
+
+    A phase can be pure only where some configuration of its sublattices holds
+    that element and nothing else: FCC_A1 as ``(AL,ZN)1`` can, AL3TI cannot,
+    and a phase whose second sublattice is vacancies can, because vacancies
+    carry no atoms. Rather than reason about which model class this is, each
+    candidate is put to ``amounts`` -- the model's own account of how many moles
+    of each element one formula unit holds -- and accepted only if it answers
+    with this element alone.
+    """
+    candidates = []
+    constituents = getattr(model, "constituents", None)
+    if constituents is not None:
+        fractions = []
+        for sublattice in constituents:
+            occupant = element if element in sublattice else _VACANCY
+            if occupant not in sublattice:
+                fractions = None
+                break
+            fractions.append({c: (1.0 if c == occupant else 0.0) for c in sublattice})
+        if fractions is not None:
+            candidates.append(model.variables_from_site_fractions(fractions))
+    elif model.n_y == 0:
+        candidates.append(())
+    elif model.n_y == 1:
+        # One mixing site: pure is an end of it, and which end depends on how
+        # the model orders its elements, so both are offered and checked.
+        candidates += [np.array([1.0]), np.array([0.0])]
+    for y in candidates:
+        amounts = dict(zip(model.elements, model.amounts(y)))
+        total = sum(amounts.values())
+        if total > 0 and amounts.get(element, 0.0) >= total * (1 - 1e-9):
+            return y
+    return None
+
+
+def _pure_holder(pure, T: float):
+    """Which of ``pure`` has the lowest molar G at ``T`` -- the stable phase."""
+    best, best_g = None, math.inf
+    for phase, model, y in pure:
+        try:
+            # gibbs() is G/RT for one formula unit, so this is J per mole of
+            # atoms: the phases have different formula units and only a molar
+            # quantity compares them.
+            g = float(model.gibbs(y, T=T)) * R_GAS * T / sum(model.amounts(y))
+        except (ValueError, ZeroDivisionError, OverflowError):
+            continue
+        if g < best_g:
+            best, best_g = phase, g
+    return best
+
+
+def pure_transitions(name, elements, pressure=101325.0, t_lo=300.0, t_hi=2000.0, tol=0.02) -> str:
+    """Where a *pure* element changes phase: a root find, not an equilibrium.
+
+    The diagram's boundaries are traced from tie-lines, and a pure element has
+    no tie-line -- with one component there is nothing for a solve to balance.
+    That is why the samples are held just inside x = 0 and 1, and why the
+    liquidus stopped short of the melting points instead of meeting them.
+
+    With one component, though, the answer needs no solve at all: whichever
+    phase has the lowest molar G holds, and a transition is exactly where two of
+    them cross. So this is a one-dimensional root find on temperature, over the
+    same models the diagram is drawn from, and it puts the endpoints of the
+    boundaries where they belong rather than extrapolating toward them. Al melts
+    at 933 K and Zn at 693 K, and those are the two points the Al-Zn liquidus
+    has to reach.
+
+    Returned as ``{element, x, T, below, above}`` per transition, where ``x`` is
+    the mole fraction of ``elements[0]`` -- so the second element's transitions
+    sit at ``x = 0``.
+    """
+    elements = tuple(elements)
+    models = _models(name, elements, pressure)
+    t_lo, t_hi = float(t_lo), float(t_hi)
+    out = []
+    for index, element in enumerate(elements):
+        pure = [
+            (model.name, model, y)
+            for model in models
+            if (y := _pure_variables(model, element)) is not None
+        ]
+        # One phase that can be pure has nothing to cross with.
+        if len(pure) < 2:
+            continue
+        # A scan cheap enough to be free and fine enough not to step over a
+        # phase that is stable across only a few kelvin, then a bisection on
+        # each change of holder. Every call here is an expression evaluation.
+        steps = max(1, math.ceil((t_hi - t_lo) / 2.0))
+        temps = [t_lo + (t_hi - t_lo) * k / steps for k in range(steps + 1)]
+        was_T, was = temps[0], _pure_holder(pure, temps[0])
+        for T in temps[1:]:
+            now = _pure_holder(pure, T)
+            if now is not None and was is not None and now != was:
+                lo, hi = was_T, T
+                while hi - lo > tol:
+                    mid = (lo + hi) / 2
+                    if _pure_holder(pure, mid) == was:
+                        lo = mid
+                    else:
+                        hi = mid
+                x = 1.0 if index == 0 else 0.0
+                out.append({"element": element, "x": x, "T": (lo + hi) / 2, "below": was, "above": now})
+            was_T, was = T, now
     return json.dumps(out)
 
 

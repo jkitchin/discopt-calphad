@@ -102,11 +102,19 @@ function explain(err) {
   return text;
 }
 
-/** Parse a database into Python once, and remember that we did. */
+/**
+ * Parse a database into Python once, and remember that we did.
+ *
+ * A bundled file is fetched from `./data/`; a file the visitor opened arrives
+ * as text on the request, because it exists nowhere else — not on this origin,
+ * and not fetchable from the site that published it, which sends no CORS
+ * header. Either way the text reaches Python as a string, so no database ever
+ * has to exist as a file inside the Pyodide sandbox.
+ */
 async function ensureDatabase(db) {
   if (databases.has(db.name)) return;
   say(`reading ${db.file}…`);
-  const text = await (await fetch(`./data/${db.file}`)).text();
+  const text = db.text ?? (await (await fetch(`./data/${db.file}`)).text());
   const info = JSON.parse(app.load_database(db.name, text, db.pressure ?? 101325));
   databases.add(db.name);
   self.postMessage({ type: 'database', info });
@@ -116,6 +124,26 @@ async function ensureDatabase(db) {
 // the run summary, and the invitation to click a point -- and a trailing
 // say('ready') from here would land after it and wipe it off the screen.
 const handlers = {
+  // Parse a file the visitor opened, and nothing else. What it covers is the
+  // answer, and only Python can say: the elements and phases come back on the
+  // `database` message, which is what re-enables the periodic table.
+  async database({ db }) {
+    await ensureDatabase(db);
+  },
+
+  // Where each pure element changes phase. This is not a sweep: with one
+  // component the stable phase is whichever has the lowest molar G, so it is a
+  // root find on temperature over the models this system already built, and it
+  // costs no equilibria. The page asks for it before the first pass and uses
+  // the answers as the endpoints of the boundaries it draws.
+  async transitions({ db, elements, tLo, tHi, pressure }) {
+    await ensureDatabase(db);
+    const ends = JSON.parse(
+      app.pure_transitions(db.name, elements, pressure ?? 101325, tLo, tHi),
+    );
+    self.postMessage({ type: 'transitions', ends });
+  },
+
   async point({ db, elements, T, x, b, pressure, certify }) {
     await ensureDatabase(db);
     // calphad_app.point() can certify -- it is an ordinary module that also runs
