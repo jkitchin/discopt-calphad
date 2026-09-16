@@ -191,11 +191,7 @@ def pure_transitions(name, elements, pressure=101325.0, t_lo=300.0, t_hi=2000.0,
     t_lo, t_hi = float(t_lo), float(t_hi)
     out = []
     for index, element in enumerate(elements):
-        pure = [
-            (model.name, model, y)
-            for model in models
-            if (y := _pure_variables(model, element)) is not None
-        ]
+        pure = [(model.name, model, y) for model in models if (y := _pure_variables(model, element)) is not None]
         # One phase that can be pure has nothing to cross with.
         if len(pure) < 2:
             continue
