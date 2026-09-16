@@ -322,6 +322,15 @@ function uniqueSets(p) {
 }
 
 /**
+ * How far a composition can lie from a branch and still belong to it.
+ *
+ * One judgement, wanted in two places: whether a step along a branch is a
+ * discontinuity rather than a boundary, and whether a row of samples ever came
+ * near a branch at all. Both are asking the same question about the same scale.
+ */
+const DISCONTINUITY = 0.12;
+
+/**
  * Cut a branch wherever one step in composition is an outlier against the
  * median of its other steps -- a discontinuity rather than a boundary.
  *
@@ -346,7 +355,7 @@ function cutAtJumps(pts) {
     // The floor keeps a branch that barely moves at all -- a solvus down the
     // edge of the diagram -- from being cut at a step that is large only in
     // proportion to its neighbours.
-    if (step > Math.max(0.12, 4 * median)) {
+    if (step > Math.max(DISCONTINUITY, 4 * median)) {
       pieces.push(pts.slice(start, i + 1));
       start = i + 1;
     }
@@ -428,10 +437,20 @@ function boundaries() {
     let open = [];
     for (const T of temps) {
       const xs = [...byT.get(T)].sort((a, b) => a - b);
-      // Nearest first, so a branch follows its own side of a gap.
+      // Nearest first, so a branch follows its own side of a gap -- and only
+      // within reach, because an assemblage key is not unique to one boundary.
+      // A congruently melting compound has liquid on both sides of it: two
+      // different compositions, at one temperature, under the same
+      // CU2MG+LIQUID key. Refinement samples one side per row, so with no limit
+      // on the pairing the single open branch is handed whichever side that row
+      // saw and drags itself back and forth across the diagram -- one
+      // 303-vertex branch zigzagging between x 0.24 and x 0.42, which
+      // cutAtJumps then chopped into 59 pieces. Beyond DISCONTINUITY a
+      // composition is not this boundary, so it starts its own.
       const pairs = [];
       open.forEach((c, ci) => xs.forEach((x, xi) => {
-        pairs.push({ ci, xi, d: Math.abs(x - c.pts[c.pts.length - 1].x) });
+        const d = Math.abs(x - c.pts[c.pts.length - 1].x);
+        if (d <= DISCONTINUITY) pairs.push({ ci, xi, d });
       }));
       pairs.sort((a, b) => a.d - b.d);
       const tookBranch = new Set();
@@ -442,10 +461,26 @@ function boundaries() {
         tookX.add(pr.xi);
         open[pr.ci].pts.push({ x: xs[pr.xi], T });
       }
-      // A branch with nothing to join in this row has ended. A composition
-      // with no branch to join starts one, which is a field opening up.
+      // A branch that found no partner has not necessarily ended: the row may
+      // simply not have reached it. Refinement bisects only the cells a
+      // boundary runs through, so most rows exist at one place on the diagram
+      // and hold nothing anywhere near the other boundaries of the same
+      // assemblage. Retiring a branch because such a row missed it would undo
+      // the limit above: the moment a far composition is refused, the branch it
+      // would have been dragged onto is the one left unpaired, and killing it
+      // puts the two arcs straight back into one. So a branch ends only where
+      // the row came near it and passed it by; a near composition that went to
+      // another branch means this one has been superseded, and a row with
+      // nothing near it means nothing.
+      //
+      // A composition with no branch to join still starts one, which is a field
+      // opening up.
       const next = [];
-      open.forEach((c, ci) => (tookBranch.has(ci) ? next : done).push(c));
+      open.forEach((c, ci) => {
+        const last = c.pts[c.pts.length - 1].x;
+        const reached = xs.some((x) => Math.abs(x - last) <= DISCONTINUITY);
+        (tookBranch.has(ci) || !reached ? next : done).push(c);
+      });
       xs.forEach((x, xi) => { if (!tookX.has(xi)) next.push({ pts: [{ x, T }] }); });
       open = next;
     }
