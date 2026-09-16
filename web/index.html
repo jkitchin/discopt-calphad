@@ -108,7 +108,7 @@
 
   /* --- plot -------------------------------------------------------------- */
   .plot-wrap { position: relative; }
-  svg.plot { width: 100%; height: auto; display: block; touch-action: none; }
+  svg.plot { width: 100%; height: auto; display: block; touch-action: none; cursor: crosshair; }
   svg.plot text { fill: var(--muted); font: 11px system-ui, sans-serif; }
   svg.plot .axis-title { fill: var(--ink); font-size: 12px; }
   svg.plot .frame { fill: none; stroke: var(--line); }
@@ -117,6 +117,22 @@
   .swatch { width: .8rem; height: .8rem; border-radius: 3px; border: 1px solid rgba(0,0,0,.15); }
   .progress { height: 4px; background: var(--dim); border-radius: 999px; overflow: hidden; margin-top: .75rem; }
   .progress i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .1s linear; }
+  /* Follows the cursor, so it must never intercept it: pointer-events:none
+     keeps the pointermove stream going to the SVG underneath. */
+  .tip {
+    position: absolute; pointer-events: none; z-index: 5; color: var(--ink);
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: .45rem .6rem; font-size: .8rem; line-height: 1.45; white-space: nowrap;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, .18);
+  }
+  .tip .tip-head { color: var(--muted); font-size: .75rem; }
+  .tip table { width: auto; font-size: .78rem; margin-top: .25rem; }
+  .tip th, .tip td { border: 0; padding: .08rem .5rem .08rem 0; text-transform: none;
+                     letter-spacing: 0; font-size: inherit; }
+  .tip th { color: var(--muted); font-weight: 500; }
+  .tip td.num, .tip th.num { font-family: var(--mono); text-align: right; }
+  .tip .sw { display: inline-block; width: .55rem; height: .55rem; border-radius: 2px;
+             margin-right: .35rem; vertical-align: baseline; }
 
   /* --- detail ------------------------------------------------------------ */
   table { border-collapse: collapse; width: 100%; font-size: .9rem; }
@@ -154,8 +170,9 @@
     composition sets. Points appear as they are solved. What this page cannot do is
     <em>certify</em>: the global proof that no phase is missing runs through discopt's
     Rust solver, which has no WebAssembly build. Every point here is a local equilibrium
-    that has been searched for destabilizing phases — click any point to see how far its
-    certificate actually goes.
+    that has been searched for destabilizing phases — hover the diagram to read the
+    composition under the cursor, and click a point to see how far its certificate
+    actually goes.
   </p>
 
   <section class="panel">
@@ -210,6 +227,7 @@
     <h2>3 · Result</h2>
     <div class="plot-wrap">
       <svg class="plot" id="plot" viewBox="0 0 760 460" role="img" aria-label="Phase diagram"></svg>
+      <div class="tip" id="tip" hidden></div>
     </div>
     <div class="legend" id="legend"></div>
     <div id="detail"></div>

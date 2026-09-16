@@ -13,7 +13,7 @@ python3 -m http.server -d web 8000      # then open http://localhost:8000
 | | |
 |---|---|
 | `index.html` | markup, styling, the periodic table's shell |
-| `app.js` | the page: element selection, the SVG plot, streaming, the detail panel |
+| `app.js` | the page: element selection, the SVG plot, phase boundaries, the hover tooltip, streaming, the detail panel |
 | `elements.js` | all 118 elements with their positions, generated from ASE's data |
 | `worker.js` | boots Pyodide, installs the three wheels, and runs one solve at a time |
 | `calphad_app.py` | the Python driver — databases in, JSON out. Runs unchanged off-browser |
@@ -23,6 +23,31 @@ python3 -m http.server -d web 8000      # then open http://localhost:8000
 Solving happens in a worker because a solve is synchronous: on the main thread
 the page would freeze and Cancel could never be read. Cancel is a
 `worker.terminate()`, for the same reason — nothing else can interrupt one.
+
+## Reading the diagram
+
+Boundaries are traced from the tie-lines, not contoured off the grid. In a
+two-phase field the coexisting compositions *are* the boundary, so every
+multi-phase point already carries one exact boundary composition per phase, and
+joining those by temperature draws the solvus, solidus and liquidus at the
+precision they were solved to. A contour could never be finer than the grid.
+The faint wash behind the lines is one cell per solved point and *is* only as
+fine as the grid, which is why it is faint.
+
+Two things follow from tracing rather than contouring. A boundary exists only
+where two adjacent temperatures both solved that field, so a feature the grid
+straddles — the FCC miscibility gap, at the default 10×12 spacing — gets no
+line at all rather than a guessed one. And a branch has to be cut where the
+composition jumps: across the Al–Zn monotectoid near 550 K the FCC coexisting
+with HCP goes from x(Al) 0.90 to 0.37, Al-rich below and Zn-rich above, and
+joining those drew a chord clean across the diagram. `cutAtJumps` compares each
+step with the median of the branch's other steps, so the test scales with the
+temperature spacing instead of needing a tolerance per system.
+
+Hovering reads out the point under the cursor — temperature, overall
+composition, and every coexisting phase with its composition and fraction. It
+resolves from the grid cell the cursor is in, or from a tie-line end, which for
+a nearly pure phase sits outside the swept range and so owns no cell.
 
 ## What it cannot do: certify
 
