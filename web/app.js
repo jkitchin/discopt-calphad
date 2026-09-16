@@ -452,11 +452,35 @@ function boundaries() {
       // at once: a composition may join, and may retire, only its nearest
       // branch. Beyond DISCONTINUITY it belongs to no open branch and starts its
       // own.
+      // Where a branch is heading, not merely where it stopped. The flanks of a
+      // lens converge on a congruently melting compound, and at the top they
+      // come closer to each other than to their own continuation one row up: on
+      // Cu-Mg the Mg-side liquidus reaches x=0.6346 at 1065.98 K and its next
+      // point, x=0.6595 at 1070.45 K, sits 0.0249 from it but only 0.0209 from
+      // the Cu-side flank's last point at 0.6804. Matching on the last point
+      // alone hands that point to the Cu flank, which jumps clean over the peak
+      // and leaves the Mg liquidus ending 4.5 K short of the congruent point --
+      // a gap in the drawn arcs, and the wash stripe above it. Extrapolating
+      // each branch from its last two points tells the flanks apart by
+      // direction instead: the Mg flank is climbing and predicts 0.6484, the Cu
+      // flank falling and predicts 0.6765, so the point falls to the Mg flank,
+      // 0.0111 away against 0.0170. The step is capped because a branch whose
+      // last pair is steep, or whose next row is far above it, would otherwise
+      // fling its prediction across the diagram.
+      const predict = (c) => {
+        const p = c.pts[c.pts.length - 1];
+        if (c.pts.length < 2) return p.x;
+        const q = c.pts[c.pts.length - 2];
+        if (Math.abs(p.T - q.T) < 1e-9) return p.x;
+        const step = ((p.x - q.x) / (p.T - q.T)) * (T - p.T);
+        return p.x + Math.max(-DISCONTINUITY / 2, Math.min(DISCONTINUITY / 2, step));
+      };
+      const aim = open.map(predict);
       const owner = xs.map((x) => {
         let ci = -1;
         let d = Infinity;
-        open.forEach((c, i) => {
-          const gap = Math.abs(x - c.pts[c.pts.length - 1].x);
+        aim.forEach((a, i) => {
+          const gap = Math.abs(x - a);
           if (gap < d) { d = gap; ci = i; }
         });
         return { ci, d };
