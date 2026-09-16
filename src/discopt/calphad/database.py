@@ -149,22 +149,22 @@ class ThermoDatabase:
     # ------------------------------------------------------------------ TDB I/O
 
     @classmethod
-    def from_tdb(cls, path) -> ThermoDatabase:
-        """Read a TDB file."""
-        return cls.from_string(Path(path).read_text(encoding="latin-1"))
+    def from_tdb(cls, path, *, skipped: list | None = None) -> ThermoDatabase:
+        """Read a TDB file. See :func:`~discopt.calphad.io.tdb.parse_tdb` for ``skipped``."""
+        return cls.from_string(Path(path).read_text(encoding="latin-1"), skipped=skipped)
 
     @classmethod
-    def from_string(cls, text: str) -> ThermoDatabase:
-        """Read TDB commands from a string."""
+    def from_string(cls, text: str, *, skipped: list | None = None) -> ThermoDatabase:
+        """Read TDB commands from a string. See :func:`~discopt.calphad.io.tdb.parse_tdb` for ``skipped``."""
         db = cls()
-        db.add_tdb(text)
+        db.add_tdb(text, skipped=skipped)
         return db
 
-    def add_tdb(self, text: str) -> ThermoDatabase:
+    def add_tdb(self, text: str, *, skipped: list | None = None) -> ThermoDatabase:
         """Add TDB commands, for example a single pasted PARAMETER line."""
         from discopt.calphad.io.tdb import parse_tdb
 
-        parse_tdb(text, self)
+        parse_tdb(text, self, skipped=skipped)
         self.clear_cache()
         return self
 
@@ -281,7 +281,15 @@ class ThermoDatabase:
         mixing = [i for i, s in enumerate(subl) if len(s) > 1]
         for arr in product(*subl):
             if not any(p.order == 0 and p.matches(tuple((c,) for c in arr)) for p in params):
-                raise ValueError(f"{key}: no G parameter for endmember {':'.join(arr)}")
+                # Not applicable, rather than a malformed database. A multicomponent
+                # file declares phases parameterized only for the subsystems they
+                # were assessed in: COST507's ALLI passes the constituent test for
+                # Al-Mg and then has no G for AL:MG. As a bare ValueError this
+                # escaped `phase_models`, which skips only PhaseNotApplicable, and
+                # lost the whole solve -- while `applicability`, which does catch
+                # ValueError, had already reported the phase unusable. An explicit
+                # `phases=` list still raises, so asking for one by name still fails.
+                raise PhaseNotApplicable(f"{key}: no G parameter for endmember {':'.join(arr)}")
         if len(elements) == 2 and len(mixing) == 1 and "VA" not in subl[mixing[0]]:
             model = self._binary_solution(key, ph, subl, params, elements, mixing[0])
             if model is not None:
@@ -324,7 +332,8 @@ class ThermoDatabase:
             terms = [p for p in params if p.order == 0 and p.matches(array)]
             if required and not terms:
                 label = ":".join(",".join(s) for s in array)
-                raise ValueError(f"{key}: no G parameter for endmember {label}")
+                # Same reclassification as the endmember sweep above.
+                raise PhaseNotApplicable(f"{key}: no G parameter for endmember {label}")
             used.update(id(p) for p in terms)
             return DatabaseValue(self, tuple((scale, p) for p in terms))
 

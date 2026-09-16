@@ -58,8 +58,34 @@ def _constituent_list(text: str) -> tuple[str, ...]:
     return tuple(c.strip().rstrip("%").upper() for c in text.split(",") if c.strip())
 
 
-def parse_tdb(text: str, db=None):
-    """Parse TDB text into ``db`` (a new :class:`ThermoDatabase` if None) and return it."""
+def _num(text: str) -> float:
+    """One numeric field, tolerating FORTRAN's dropped exponent letter.
+
+    Published files sometimes write a fixed-width number with the ``E`` left
+    out: COST507 gives yttrium's mass as ``8.89059+01``, which ``float``
+    rejects, and one such field is enough to lose a 27-element database. The
+    repair is deliberately confined to fields holding a single number, because
+    inside an expression those same characters are addition and ``116000+58*T``
+    has to keep meaning what it says.
+    """
+    try:
+        return float(text)
+    except ValueError:
+        return float(re.sub(r"(?<=[\d.])([+-])(\d+)$", r"E\1\2", text.strip()))
+
+
+def parse_tdb(text: str, db=None, *, skipped: list | None = None):
+    """Parse TDB text into ``db`` (a new :class:`ThermoDatabase` if None) and return it.
+
+    Given a list for ``skipped``, a command that will not parse is appended to it
+    as ``{"command", "reason"}`` and parsing continues; by default one bad command
+    raises and the whole file is lost. COST507 is why: it has a ``!`` typed where
+    a ``1`` belongs, and because ``!`` ends a command that one keystroke both
+    truncates a PARAMETER and leaves the rest of its number as an orphan command
+    -- two casualties that would otherwise cost the other 2,584. Reporting is not
+    optional, though: a dropped G parameter is wrong energies rather than a
+    missing feature, so the caller is handed every command it lost.
+    """
     from discopt.calphad.database import Element, Parameter, Phase, Species, ThermoDatabase
 
     db = ThermoDatabase() if db is None else db
@@ -68,14 +94,15 @@ def parse_tdb(text: str, db=None):
         cmd = raw.strip().lstrip('"').strip()  # stray quotes after '!' occur in some published files
         if not cmd:
             continue
-        head, rest = cmd.split(None, 1) if len(cmd.split(None, 1)) == 2 else (cmd, "")
-        kw = _keyword(head)
-        if kw in _IGNORED:
-            continue
+        kw = None
         try:
+            head, rest = cmd.split(None, 1) if len(cmd.split(None, 1)) == 2 else (cmd, "")
+            kw = _keyword(head)
+            if kw in _IGNORED:
+                continue
             if kw == "ELEMENT":
                 toks = rest.split()
-                nums = [float(v) for v in toks[2:5]] + [0.0] * (3 - len(toks[2:5]))
+                nums = [_num(v) for v in toks[2:5]] + [0.0] * (3 - len(toks[2:5]))
                 db.elements[toks[0].upper()] = Element(toks[0].upper(), toks[1] if len(toks) > 1 else "", *nums)
             elif kw == "SPECIES":
                 toks = rest.split()
@@ -94,7 +121,7 @@ def parse_tdb(text: str, db=None):
                     typecodes, nsub, ratios = toks[1], int(toks[2]), toks[3:]
                 if len(ratios) != nsub:
                     raise TDBSyntaxError(f"PHASE {name}: {nsub} sublattices but {len(ratios)} site ratios")
-                db.phases[name] = Phase(name, typecodes, tuple(float(r) for r in ratios), None, hints)
+                db.phases[name] = Phase(name, typecodes, tuple(_num(r) for r in ratios), None, hints)
             elif kw == "CONSTITUENT":
                 name_tok, subl_text = rest.split(None, 1)
                 if ":" in name_tok and not name_tok.split(":", 1)[1].isalpha():
@@ -117,10 +144,14 @@ def parse_tdb(text: str, db=None):
                 phase, _ = _split_name(m.group(2))
                 array = tuple(tuple(sorted(_constituent_list(s))) for s in m.group(3).split(":"))
                 db.parameters.append(Parameter(kind, phase, array, int(m.group(4) or 0), parse_piecewise(m.group(5))))
-        except TDBSyntaxError:
-            raise
+        except TDBSyntaxError as err:
+            if skipped is None:
+                raise
+            skipped.append({"command": " ".join(cmd.split())[:120], "reason": str(err)})
         except (ValueError, IndexError) as err:
-            raise TDBSyntaxError(f"malformed {kw} command {cmd[:80]!r}: {err}") from None
+            if skipped is None:
+                raise TDBSyntaxError(f"malformed {kw} command {cmd[:80]!r}: {err}") from None
+            skipped.append({"command": " ".join(cmd.split())[:120], "reason": f"malformed {kw}: {err}"})
     return db
 
 

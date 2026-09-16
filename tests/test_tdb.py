@@ -137,6 +137,41 @@ def test_unknown_and_ambiguous_commands():
         ThermoDatabase.from_string("PHASE FOO % 2 1 !")
 
 
+def test_fortran_exponent_without_e():
+    # A fixed-width number with the 'E' left out. The ELEMENT line here is
+    # COST507's yttrium verbatim, and that one field used to lose the whole
+    # 27-element database.
+    db = ThermoDatabase.from_string("ELEMENT Y HCP_A3 8.89059+01 5.9664E+03 4.4434E+01 ! PHASE RATIO % 1 1.5+01 !")
+    y = db.elements["Y"]
+    assert (y.mass, y.h298, y.s298) == pytest.approx((88.9059, 5966.4, 44.434))
+    assert db.phases["RATIO"].site_ratios == (15.0,)
+    # The repair must not reach inside an expression, where those same characters
+    # are addition: 116000+58*T has to keep meaning what it says.
+    db2 = ThermoDatabase.from_string("FUNCTION FZ 298.15 116000+58*T; 6000 N !")
+    assert db2.evaluate("FZ", 1000.0) == pytest.approx(174000.0)
+
+
+def test_skipped_commands_are_collected_not_fatal():
+    # COST507 has a '!' typed where a '1' belongs. Because '!' ends a command,
+    # that one keystroke truncates a PARAMETER and leaves the rest of its number
+    # as an orphan command -- and strict parsing loses the other 2,584 with it.
+    text = (
+        " PHASE LIQUID % 1 1.0 ! CONST LIQUID :A,B: !"
+        " PARA G(LIQUID,A;0) 298.15 -1000; 3000 N !"
+        " PARA L(LIQUID,A,B;0) 298.15 !.0E-4; 6000 N !"
+        " PARA G(LIQUID,B;0) 298.15 -2000; 3000 N !"
+    )
+    with pytest.raises(TDBSyntaxError):
+        ThermoDatabase.from_string(text)
+    skipped = []
+    db = ThermoDatabase.from_string(text, skipped=skipped)
+    assert [s["command"][:14] for s in skipped] == ["PARA L(LIQUID,", ".0E-4; 6000 N"]
+    assert "T_low" in skipped[0]["reason"] and "unsupported" in skipped[1]["reason"]
+    # the commands on either side of the corruption still landed
+    assert {p.label for p in db.parameters} == {"G(LIQUID,A;0)", "G(LIQUID,B;0)"}
+    assert "LIQUID" in db.phase_models(("A", "B"))
+
+
 def test_round_trip_synthetic(synth):
     text = synth.to_tdb()
     db2 = ThermoDatabase.from_string(text)
@@ -178,6 +213,28 @@ def test_phase_model_kinds_and_errors(synth):
     assert set(synth.phase_models(("A", "B"))) == {"LIQUID", "FCC_A1", "AB2", "HCP_A3", "SIGMA"}
     with pytest.raises(UnsupportedModelError):
         synth.phase_models(("A", "B"), phases=["LIQUID", "BCC_MAG"])
+
+
+def test_missing_endmember_is_not_applicable():
+    # A multicomponent file parameterizes a phase only for the subsystems it was
+    # assessed in, so the constituent test passes and then an endmember has no G:
+    # COST507's ALLI does exactly that for Al-Mg. The phase is not applicable to
+    # this system rather than the database being broken, so `phase_models` has to
+    # skip it -- raised as a bare ValueError it escaped and cost the whole solve.
+    db = ThermoDatabase.from_string(
+        " PHASE LIQUID % 1 1.0 ! CONST LIQUID :A,B: !"
+        " PARA G(LIQUID,A;0) 298.15 -1000; 3000 N !"
+        " PARA G(LIQUID,B;0) 298.15 -2000; 3000 N !"
+        " PHASE HALF % 1 1.0 ! CONST HALF :A,B: !"
+        " PARA G(HALF,A;0) 298.15 -3000; 3000 N !"
+    )
+    assert set(db.phase_models(("A", "B"))) == {"LIQUID"}
+    assert "no G parameter for endmember B" in db.applicability(("A", "B"))["HALF"]
+    with pytest.raises(PhaseNotApplicable, match="no G parameter"):
+        db.phase_model("HALF", ("A", "B"))
+    with pytest.raises(PhaseNotApplicable):  # naming it explicitly still fails
+        db.phase_models(("A", "B"), phases=["HALF"])
+    assert issubclass(PhaseNotApplicable, ValueError)  # callers catching ValueError are unaffected
 
 
 def test_element_order_flips_odd_rk_terms(synth):

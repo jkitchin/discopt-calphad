@@ -32,12 +32,18 @@ def load_database(name: str, text: str, pressure: float = 101325.0) -> str:
 
     The page fetches the file and passes its text, so the database never has to
     exist as a file inside the Pyodide sandbox.
+
+    A file the user picked is parsed leniently: one corrupt command should cost
+    that command rather than the file, so the commands that would not parse come
+    back in ``skipped`` for the page to report. It reports rather than swallows,
+    because a dropped parameter shows up as wrong energies, not as an error.
     """
-    db = ThermoDatabase.from_string(text)
+    skipped: list[dict] = []
+    db = ThermoDatabase.from_string(text, skipped=skipped)
     db.pressure = float(pressure)
     _DATABASES[name] = (db, float(pressure), {})
     elements = sorted(e for e in db.elements if e not in ("/-", "VA"))
-    return json.dumps({"name": name, "elements": elements, "phases": sorted(db.phases)})
+    return json.dumps({"name": name, "elements": elements, "phases": sorted(db.phases), "skipped": skipped})
 
 
 def _models(name: str, elements: tuple[str, ...], pressure: float):
