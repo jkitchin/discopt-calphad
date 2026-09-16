@@ -86,6 +86,15 @@ bounding crossings face outwards, away from it, so nothing names it and it stays
 bare — which is correct, a lens is two phases. Every unnamed interval stays bare
 for the same reason.
 
+Whatever names an interval has to close it as well: its far edge must be the
+same phase's curve, or the axis. Two single-phase fields never touch, so an edge
+carrying a different phase is proof that the interval between them is not
+single-phase. A stoichiometric phase is what forces the rule. Its field has no
+width, so both of its crossings sit at one composition, and each then points
+away from its own two-phase region — straight into the neighbouring one. Without
+the close rule that washed the whole CuMg2 + Cu2Mg field of Cu–Mg, which is two
+phases, as a single one.
+
 Reading the phase from a cell instead cannot work, and not only because a cell
 with a boundary through it is single-phase just *at* its sample. A field
 narrower than a cell has no cell sample inside it at all: nearly every cell

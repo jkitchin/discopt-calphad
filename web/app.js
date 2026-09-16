@@ -1219,11 +1219,22 @@ function washFills(brs, tLo, tHi) {
         // curves of two different assemblages, as the Al-Zn FCC field is by its
         // solidus and the dome. Two that disagree, or none at all, paints
         // nothing -- the lenses land here, both of their crossings facing away.
+        const left = k >= 2 ? mid[k - 2] : null;
+        const right = k - 1 < mid.length ? mid[k - 1] : null;
         const votes = [];
-        if (k >= 2 && side[k - 2] === 1) votes.push(mid[k - 2].phase);
-        if (k - 1 < mid.length && side[k - 1] === -1) votes.push(mid[k - 1].phase);
+        if (left && side[k - 2] === 1) votes.push(left.phase);
+        if (right && side[k - 1] === -1) votes.push(right.phase);
         if (votes.some((v) => v !== votes[0])) continue;
         let phase = votes[0];
+        // Whatever names an interval has to close it too: the far edge must be
+        // the same phase's curve, or the axis. A stoichiometric phase is why.
+        // Its field has no width, so both of its crossings sit at one
+        // composition, and each then points away from its own two-phase region
+        // -- straight into the neighbouring one. On Cu-Mg that washed the whole
+        // CuMg2 + Cu2Mg field as a single phase. Two single-phase fields never
+        // touch, so an edge carrying a different phase is proof the interval
+        // between them is not single-phase.
+        if (phase && ((left && left.phase !== phase) || (right && right.phase !== phase))) continue;
         if (!phase && tm > topOfCurves) {
           // Above every curve, and only there. No branch reaches this row to
           // name what it holds, and above the last boundary a binary holds
