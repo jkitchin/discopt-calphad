@@ -1225,6 +1225,30 @@ function washFills(brs, tLo, tHi) {
     for (const p of b.pts) if (p.T > topOfCurves) topOfCurves = p.T;
   }
 
+  // How far across the composition axis each phase's own boundaries ever reach.
+  // The close rule below asks whether the far edge of an interval carries the
+  // same phase, and treats the axis as always allowed. For a terminal solution
+  // that is right -- FCC runs into pure Cu and there is no crossing beyond it to
+  // agree with. An intermediate phase never touches an axis, so for one of those
+  // the axis is not a legitimate far edge at all, and nothing else in the rule
+  // can tell: the axis side has no crossing to disagree with.
+  //
+  // Cu2Mg is intermediate -- in cumg_nims.tdb a four-end-member reciprocal
+  // solution, so it has real width, but only from about x(Cu) 0.652 to 0.671.
+  // At the handful of rows where no other branch survives (the bottom three
+  // bands above tLo, and two near 1060 K) the interval left of its crossing ran
+  // unobstructed to x=0 and washed five quads of nearly pure Mg as Cu2Mg. The
+  // same hole washed the CuMg2 + HCP field as CuMg2 in seven more.
+  const reach = new Map();
+  for (const b of brs) {
+    const r = reach.get(b.phase) || { lo: Infinity, hi: -Infinity };
+    for (const p of b.pts) {
+      if (p.x < r.lo) r.lo = p.x;
+      if (p.x > r.hi) r.hi = p.x;
+    }
+    reach.set(b.phase, r);
+  }
+
   // One quad per band per interval, accumulated by phase. They are not stitched
   // into field-shaped polygons: doing that means tracking which interval
   // continues which, and a track that closes and reopens on a wobble leaves a
@@ -1270,6 +1294,16 @@ function washFills(brs, tLo, tHi) {
         // touch, so an edge carrying a different phase is proof the interval
         // between them is not single-phase.
         if (phase && ((left && left.phase !== phase) || (right && right.phase !== phase))) continue;
+        // The axis closes an interval only for a phase that actually gets there.
+        // DISCONTINUITY is already the answer to "how far from a branch is still
+        // this branch", which is the same question asked of the edge of the
+        // diagram: FCC stopping at 0.993 reaches pure Cu, Cu2Mg stopping at
+        // 0.652 does not reach pure Mg.
+        if (phase) {
+          const r = reach.get(phase);
+          if (r && m[k - 1] <= 0 && r.lo > DISCONTINUITY) continue;
+          if (r && m[k] >= 1 && r.hi < 1 - DISCONTINUITY) continue;
+        }
         if (!phase && tm > topOfCurves) {
           // Above every curve, and only there. No branch reaches this row to
           // name what it holds, and above the last boundary a binary holds
