@@ -132,17 +132,22 @@ const handlers = {
     self.postMessage({ type: 'point', point: result });
   },
 
-  async diagram({ db, elements, tLo, tHi, nT, xLo, xHi, nX, pressure }) {
+  // One pass of a run: solve exactly these points, in this order. The page
+  // decides where they are -- it starts from a coarse grid and then subdivides
+  // only the cells a phase boundary runs through, which is a shape this side
+  // could not reconstruct from a few numbers. So a pass is a list of
+  // coordinates, each labelled, and the answers carry the label back.
+  async points({ db, elements, coords, pressure }) {
     await ensureDatabase(db);
-    self.postMessage({ type: 'diagram-start', total: nT * nX });
+    self.postMessage({ type: 'pass-start', total: coords.length });
     // Points leave Python through this callback, one JSON string each, as they
     // are solved. `emit` is passed in rather than imported so the Python side
     // has no JavaScript in it.
-    const emit = (json) => self.postMessage({ type: 'diagram-point', point: JSON.parse(json) });
+    const emit = (json) => self.postMessage({ type: 'pass-point', point: JSON.parse(json) });
     const summary = JSON.parse(
-      app.diagram(db.name, elements, tLo, tHi, nT, xLo, xHi, nX, pressure ?? 101325, emit),
+      app.points(db.name, elements, JSON.stringify(coords), pressure ?? 101325, emit),
     );
-    self.postMessage({ type: 'diagram-done', summary });
+    self.postMessage({ type: 'pass-done', summary });
   },
 };
 

@@ -22,10 +22,25 @@ const state = {
   points: [],          // every point received for the current run
   phaseColors: new Map(),
   running: false,
-  expected: 0,
-  started: 0,
   selected: null,      // the point whose detail is shown
   hover: null,         // the point under the cursor, described by the tooltip
+};
+
+/**
+ * The run in progress. A run is several passes: the starting grid, then one
+ * pass per refinement round. Kept apart from `state` because none of it
+ * outlives the run -- `state.points` is the result, this is the bookkeeping.
+ */
+const run = {
+  cells: new Map(),    // id -> cell, for every cell this run has asked for
+  round: 0,            // pass number; 1 is the starting grid
+  rounds: 0,           // how many refinement passes were asked for
+  expected: 0,         // points in the current pass
+  arrived: 0,          // points received in the current pass
+  started: 0,
+  seconds: 0,
+  failed: 0,
+  stopped: false,
 };
 
 // Distinguishable at small sizes and in both themes; assigned in order of first
@@ -115,11 +130,19 @@ function updateEstimate() {
     return;
   }
   const n = Number($('n-t').value) * Number($('n-x').value);
+  const rounds = Number($('n-refine').value);
   const seconds = (n * db.ms) / 1000;
   $('estimate').textContent =
-    `${n} points, about ${seconds < 1 ? '1' : seconds.toFixed(0)} s — ` +
-    `${db.elements.join('–')} measures ${db.ms} ms per point in the browser. ` +
-    'They are drawn as they are solved, and Cancel stops the run.';
+    `${n} points to start, about ${seconds < 1 ? '1' : seconds.toFixed(0)} s — `
+    + `${db.elements.join('–')} measures ${db.ms} ms per point in the browser. `
+    + (rounds
+      ? `Then ${rounds} refinement round${rounds === 1 ? '' : 's'}, each subdividing only the `
+        + 'cells a phase boundary runs through, and only across the boundary — so the added cost '
+        + 'follows how long the boundaries are, not how large the diagram is. How many points '
+        + 'that comes to depends on the system, so the run reports what it actually cost. '
+      : 'Refinement is off, so the boundaries are spaced in temperature no more finely than the '
+        + 'starting grid. ')
+    + 'Points are drawn as they are solved, and Cancel stops the run.';
 }
 
 function setXLabels(db) {
@@ -240,9 +263,12 @@ function boundaries() {
       const key = `${assemblage}|${s.phase}`;
       if (!fields.has(key)) fields.set(key, new Map());
       const byT = fields.get(key);
-      const xs = byT.get(p.T) || [];
+      // Rounded, because refinement bisects: two cells that reach the same
+      // temperature by different arithmetic must still group together.
+      const T = Math.round(p.T * 1e4) / 1e4;
+      const xs = byT.get(T) || [];
       if (!xs.some((x) => Math.abs(x - s.x[0]) < 1e-6)) xs.push(s.x[0]);
-      byT.set(p.T, xs);
+      byT.set(T, xs);
     }
   }
 
@@ -285,6 +311,182 @@ function boundaries() {
   return out;
 }
 
+// --- adaptive grid ----------------------------------------------------------
+//
+// A uniform T-x sweep is a poor way to find a phase boundary. The boundary
+// composition at a given temperature is a property of the temperature alone:
+// every overall composition inside a two-phase field sits on the same tie-line
+// and so reports the same pair of coexisting compositions. Refining in x
+// therefore adds no boundary detail at all -- all eleven points across the
+// Al-Zn field at 400 K carry one answer between them. What adds detail is
+// temperature, where each new value is one more vertex on every branch. And a
+// grid fine enough in T to place the Al-Zn eutectic spends almost all of its
+// solves deep inside single-phase fields, where nothing is happening.
+//
+// So sample adaptively. The diagram is covered by cells, each holding one solve
+// at its centre, and a cell is subdivided when its assemblage differs from a
+// neighbour's -- which is exactly the statement that a boundary runs between
+// them. The part that makes it affordable is that a cell is split only *across*
+// the boundary: a disagreement with the neighbour above or below splits it in
+// temperature, one to the left or right splits it in composition, and only a
+// diagonal splits it into four. A boundary running left to right therefore
+// keeps the same number of cells along its length while doubling its
+// temperature resolution every round, so a round costs about what the
+// boundaries are long, not what the diagram is large.
+
+// Cells span the full width, so the wash covers the plot and no inset is needed
+// to keep off a pure element -- a cell centre is never one. Deep refinement
+// against x = 0 or 1 does get very close, though, so the sample is held just
+// inside while the cell keeps its true extent.
+const X_LO = 0;
+const X_HI = 1;
+// A ceiling on a run, so a large starting grid and seven rounds cannot quietly
+// turn into a quarter of an hour. Reaching it stops refinement and says so.
+const POINT_BUDGET = 2500;
+
+// A cell's solve sits at a low-discrepancy offset inside it rather than at its
+// centre, which is the one change here that buys resolution for nothing. On a
+// uniform grid every cell in a row shares a temperature, so a row of eight
+// cells reports one temperature eight times over -- and because a boundary
+// composition depends only on temperature, seven of those solves tell the
+// boundaries nothing the first has not already said. Offset them and the same
+// eight solves report eight temperatures, each contributing its own vertex.
+//
+// The offsets come from the Halton sequence rather than a random generator, so
+// they are spread instead of clustered and the same run twice draws the same
+// diagram. This is quasi-random sampling kept inside a cell decomposition: the
+// cells are what make "my neighbour disagrees" a cheap, exact test for a
+// boundary running between two solves, which a scattered set could only answer
+// by triangulating.
+let seq = 0;
+
+/** Radical inverse of n in `base`: van der Corput, the 1-D Halton sequence. */
+function radicalInverse(n, base) {
+  let out = 0;
+  let f = 1 / base;
+  for (let k = n; k > 0; k = Math.floor(k / base)) {
+    out += (k % base) * f;
+    f /= base;
+  }
+  return out;
+}
+
+function cellAt(x0, x1, t0, t1, level) {
+  seq += 1;
+  // Held well away from the edges, so a sample never lands on the line between
+  // two cells, where which one it belongs to would be a rounding accident.
+  const u = 0.15 + 0.7 * radicalInverse(seq, 2);
+  const v = 0.15 + 0.7 * radicalInverse(seq, 3);
+  return {
+    x0, x1, t0, t1, level,
+    id: `${level}:${x0.toFixed(7)}:${t0.toFixed(4)}`,
+    xc: (x0 + x1) / 2,                                  // geometric centre
+    // A pure element has nothing for a solve to balance, and refinement pressed
+    // against x = 0 or 1 gets very close, so the sample is held just inside.
+    x: Math.min(0.998, Math.max(0.002, x0 + u * (x1 - x0))),
+    T: t0 + v * (t1 - t0),
+  };
+}
+
+/** The starting grid: uniform cells, one solve at the centre of each. */
+function initialCells() {
+  const tLo = Number($('t-lo').value);
+  const tHi = Number($('t-hi').value);
+  const nT = Math.max(1, Number($('n-t').value));
+  const nX = Math.max(1, Number($('n-x').value));
+  const out = [];
+  for (let j = 0; j < nT; j += 1) {
+    for (let i = 0; i < nX; i += 1) {
+      out.push(cellAt(
+        X_LO + ((X_HI - X_LO) * i) / nX, X_LO + ((X_HI - X_LO) * (i + 1)) / nX,
+        tLo + ((tHi - tLo) * j) / nT, tLo + ((tHi - tLo) * (j + 1)) / nT,
+        0,
+      ));
+    }
+  }
+  return out;
+}
+
+/** What phases hold a point, as one comparable label. */
+function assemblageOf(p) {
+  return uniqueSets(p).map((s) => s.phase).sort().join('+');
+}
+
+/** The cells that still own a patch of the diagram, with their solved point. */
+function liveCells() {
+  return state.points.filter((p) => p.cell && !p.superseded && !p.error);
+}
+
+/**
+ * Which cells a boundary runs through, and across which axis, as
+ * point -> { x, t }.
+ *
+ * Neighbours are found by probing just outside the middle of each edge and
+ * asking which cell contains that point. That needs no adjacency bookkeeping
+ * and stays correct however unevenly the cells have been subdivided. Both sides
+ * of a disagreement are marked, so a large cell beside a small one is refined
+ * too, rather than leaving the boundary resolved from one side only.
+ *
+ * A cell that failed to solve is left out entirely: refining around it would
+ * spend the budget chasing a solver failure, which more points cannot fix.
+ */
+function crossedCells() {
+  const live = liveCells();
+  const holding = (x, T) => live.find((p) => x >= p.cell.x0 && x < p.cell.x1
+    && T >= p.cell.t0 && T < p.cell.t1);
+  const marks = new Map();
+  const mark = (p, axis) => {
+    const m = marks.get(p) || { x: false, t: false };
+    m[axis] = true;
+    marks.set(p, m);
+  };
+  for (const p of live) {
+    const c = p.cell;
+    const mine = assemblageOf(p);
+    const e = Math.min(c.x1 - c.x0, c.t1 - c.t0) * 1e-4;
+    for (const [probe, axis] of [
+      [holding(c.x0 - e, c.T), 'x'], [holding(c.x1 + e, c.T), 'x'],
+      [holding(c.xc, c.t0 - e), 't'], [holding(c.xc, c.t1 + e), 't'],
+    ]) {
+      // No neighbour means the edge of the diagram, which is not a boundary.
+      if (!probe || probe === p || assemblageOf(probe) === mine) continue;
+      mark(p, axis);
+      mark(probe, axis);
+    }
+  }
+  return marks;
+}
+
+/** How many points a refinement of these marks would cost. */
+function refinementCost(marks) {
+  let n = 0;
+  for (const [, m] of marks) n += (m.x ? 2 : 1) * (m.t ? 2 : 1);
+  return n;
+}
+
+/**
+ * Split each marked cell across the axis whose boundary crosses it.
+ *
+ * The parent's solve is real data at a real temperature, so it keeps its vertex
+ * on the boundary and is never thrown away; it only stops owning a patch of the
+ * diagram, which its children now cover.
+ */
+function refinementCells(marks) {
+  const out = [];
+  for (const [p, m] of marks) {
+    const c = p.cell;
+    const xm = (c.x0 + c.x1) / 2;
+    const tm = (c.t0 + c.t1) / 2;
+    const xs = m.x ? [[c.x0, xm], [xm, c.x1]] : [[c.x0, c.x1]];
+    const ts = m.t ? [[c.t0, tm], [tm, c.t1]] : [[c.t0, c.t1]];
+    for (const [x0, x1] of xs) {
+      for (const [t0, t1] of ts) out.push(cellAt(x0, x1, t0, t1, c.level + 1));
+    }
+    p.superseded = true;
+  }
+  return out;
+}
+
 /** Data ranges for the current run, so axes do not jump as points stream in. */
 function ranges() {
   if (state.mode === 'point') {
@@ -320,12 +522,10 @@ function drawPlot() {
   const { xLo, xHi, tLo, tHi } = ranges();
   const sx = (x) => PAD.left + ((x - xLo) / (xHi - xLo)) * (W - PAD.left - PAD.right);
   const sy = (t) => H - PAD.bottom - ((t - tLo) / (tHi - tLo || 1)) * (H - PAD.top - PAD.bottom);
-  const nX = state.mode === 'diagram' ? Number($('n-x').value) : 20;
-  const nT = state.mode === 'diagram' ? Number($('n-t').value) : 10;
   // Remember the frame the cursor will be read against. Recomputing it from the
   // inputs on each pointermove would describe a diagram that is no longer on
   // screen, as soon as someone edits a field after a run.
-  frame = { xLo, xHi, tLo, tHi, nX, nT };
+  frame = { xLo, xHi, tLo, tHi };
 
   for (let i = 0; i <= 10; i += 1) {
     const x = xLo + ((xHi - xLo) * i) / 10;
@@ -358,17 +558,20 @@ function drawPlot() {
 
   // Three layers, back to front: a wash marking which single phase holds each
   // cell, the boundary lines traced from the tie-lines, then the tie-line ends
-  // themselves. The wash is deliberately faint -- it is one cell per solved
-  // point and so only ever as fine as the grid, which is exactly why the
-  // boundaries are drawn as lines instead.
-  const cellW = (W - PAD.left - PAD.right) / Math.max(nX - 1, 1);
-  const cellH = (H - PAD.top - PAD.bottom) / Math.max(nT - 1, 1);
-
+  // themselves. Each cell is drawn at its own extent, so refinement shows in
+  // the wash directly -- fine where a boundary runs, coarse where nothing
+  // happens. A superseded cell is skipped because its children cover the same
+  // ground, and drawing both would double the wash there.
   for (const p of state.points) {
-    if (p.error || p.phases.length !== 1) continue;
+    if (p.error || p.superseded || !p.cell) continue;
+    const sets = uniqueSets(p);
+    // Merged, not `p.phases`: a lone phase returned as two composition sets is
+    // still one phase holding the cell, and would otherwise get no wash.
+    if (sets.length !== 1) continue;
+    const c = p.cell;
     svg.append(node('rect', {
-      x: sx(p.x) - cellW / 2, y: sy(p.T) - cellH / 2, width: cellW, height: cellH,
-      fill: colorFor(p.phases[0]), 'fill-opacity': 0.11, stroke: 'none',
+      x: sx(c.x0), y: sy(c.t1), width: sx(c.x1) - sx(c.x0), height: sy(c.t0) - sy(c.t1),
+      fill: colorFor(sets[0].phase), 'fill-opacity': 0.11, stroke: 'none',
     }));
   }
 
@@ -398,8 +601,14 @@ function drawPlot() {
       // immediately, where a native tooltip only fires over the dot itself and
       // only after a delay.
       const dot = node('circle', {
-        cx: sx(s.x[0]), cy: sy(p.T), r: sets.length > 1 ? 3.1 : 2.1,
-        fill: colorFor(s.phase), 'fill-opacity': sets.length > 1 ? 0.95 : 0.5,
+        // Refinement turned a few hundred points into a few thousand, and at that
+        // density a single-phase dot stops being information: it is one sample
+        // inside a field whose wash already says what holds it. Kept small and
+        // faint, so it reads as a stipple of where the solves actually went and
+        // still answers a click, while the multi-phase dots -- which sit exactly
+        // on a boundary -- stay the ones the eye follows.
+        cx: sx(s.x[0]), cy: sy(p.T), r: sets.length > 1 ? 3.1 : 1.4,
+        fill: colorFor(s.phase), 'fill-opacity': sets.length > 1 ? 0.95 : 0.26,
         stroke: chosen ? 'var(--ink)' : 'none', 'stroke-width': chosen ? 1.5 : 0,
       });
       dot.style.cursor = 'pointer';
@@ -523,28 +732,18 @@ function onMessage({ data }) {
       state.databaseInfo = { ...state.databaseInfo, [data.info.name]: data.info };
       renderSelection();
       break;
-    case 'diagram-start':
-      state.points = [];
-      clearHover();
-      state.expected = data.total;
-      state.started = performance.now();
+    case 'pass-start':
+      run.expected = data.total;
+      run.arrived = 0;
       drawPlot();
       break;
-    case 'diagram-point':
-      state.points.push(data.point);
-      $('progress-bar').style.width = `${(100 * state.points.length) / state.expected}%`;
-      // Redrawing on every point is cheap next to a solve, and is the point of
-      // streaming: the diagram fills in row by row.
-      drawPlot();
-      setStatus(`${state.points.length} of ${state.expected} points · ${((performance.now() - state.started) / 1000).toFixed(1)} s`);
+    case 'pass-point':
+      receivePoint(data.point);
       break;
-    case 'diagram-done':
-      finishRun();
-      setStatus(
-        `${data.summary.solved} points in ${data.summary.seconds.toFixed(1)} s` +
-        (data.summary.failed ? ` · ${data.summary.failed} failed` : '') +
-        ' · hover for the composition, click a point for its certificate',
-      );
+    case 'pass-done':
+      run.seconds += data.summary.seconds;
+      run.failed += data.summary.failed;
+      nextPass();
       break;
     case 'point':
       state.points = state.mode === 'point' ? [...state.points, data.point] : state.points;
@@ -593,6 +792,87 @@ function runPoint({ T, x, b }) {
     type: 'point', db, elements: db.elements, T, x, b,
     pressure: Number($('pressure').value),
   });
+}
+
+// --- passes -----------------------------------------------------------------
+
+// Redrawing on every point is the whole value of streaming, but a refined run
+// carries far more of them than a grid did and every redraw retraces every
+// boundary. Cap the rate: the eye cannot read faster than this, and each pass
+// draws once more when it ends, so nothing is left off the screen.
+let lastDraw = 0;
+
+function drawSoon() {
+  const now = performance.now();
+  if (now - lastDraw < 60) return;
+  lastDraw = now;
+  drawPlot();
+}
+
+function receivePoint(point) {
+  // The cell is matched back by the label it was asked for, because a pass is a
+  // list of coordinates and nothing about the order says where they came from.
+  const cell = run.cells.get(point.id);
+  if (cell) point.cell = cell;
+  state.points.push(point);
+  run.arrived += 1;
+  $('progress-bar').style.width = `${(100 * run.arrived) / (run.expected || 1)}%`;
+  drawSoon();
+  setStatus(
+    `${run.round === 1 ? 'grid' : `refining (round ${run.round - 1})`}: `
+    + `${run.arrived} of ${run.expected} · ${state.points.length} points so far · `
+    + `${((performance.now() - run.started) / 1000).toFixed(1)} s`,
+  );
+}
+
+/** Ask the worker for one pass: exactly these cells, in this order. */
+function sendPass(cells) {
+  const db = currentDatabase();
+  if (!db || !cells.length) {
+    endRun();
+    return;
+  }
+  run.round += 1;
+  for (const c of cells) run.cells.set(c.id, c);
+  worker.postMessage({
+    type: 'points', db, elements: db.elements,
+    coords: cells.map((c) => ({ id: c.id, T: c.T, x: c.x })),
+    pressure: Number($('pressure').value),
+  });
+}
+
+/** After a pass: subdivide the cells a boundary runs through, or stop. */
+function nextPass() {
+  if (run.stopped) return;
+  if (run.round > run.rounds) {
+    endRun();
+    return;
+  }
+  const marks = crossedCells();
+  if (!marks.size) {
+    endRun('every cell agrees with its neighbours');
+    return;
+  }
+  // Counted before the cells are made, because making them supersedes their
+  // parents -- and a run that stops at the budget should keep the wash it has.
+  if (state.points.length + refinementCost(marks) > POINT_BUDGET) {
+    endRun(`stopped at the ${POINT_BUDGET}-point budget`);
+    return;
+  }
+  sendPass(refinementCells(marks));
+}
+
+function endRun(why) {
+  finishRun();
+  drawPlot();
+  const rounds = Math.max(0, run.round - 1);
+  setStatus(
+    `${state.points.length} points in ${run.seconds.toFixed(1)} s · `
+    + `${rounds} refinement round${rounds === 1 ? '' : 's'}`
+    + (run.failed ? ` · ${run.failed} failed` : '')
+    + (why ? ` · ${why}` : '')
+    + ' · hover for the composition, click a point for its certificate',
+  );
 }
 
 // --- wiring -----------------------------------------------------------------
@@ -644,15 +924,18 @@ function toSvg(svg, ev) {
 /**
  * The solved point the cursor is pointing at, or null in the gaps.
  *
- * Two ways to point at one. The first is its cell: a point owns a little over
- * half a grid step in each direction, which tiles the swept area so anywhere
- * inside the diagram answers, and nowhere outside it pretends to.
+ * Two ways to point at one. The first is its cell. Cells tile the diagram
+ * exactly, so containment is unambiguous and, unlike a nearest-node test, needs
+ * no assumption about the spacing -- which matters now that refinement makes
+ * the spacing deliberately uneven. A cell whose children have replaced it no
+ * longer owns its patch, so it is passed over here.
  *
  * The second is its dots. A tie-line end is drawn at the coexisting
- * composition, which can be a long way from the overall composition at the
- * centre of the cell -- for a nearly pure phase it lands outside the swept
- * range altogether, owning no cell at all. Those dots are the most inviting
- * thing on the plot to point at, so they have to answer too.
+ * composition, which can be a long way from the overall composition the cell
+ * was solved at -- for a nearly pure phase it sits against the edge of the
+ * diagram. Those dots are the most inviting thing on the plot to point at, so
+ * they have to answer too, and they are matched by distance on screen, because
+ * that is what pointing at something a few pixels wide means.
  *
  * The cell wins when both match: it is the region the cursor is actually in,
  * and every point across a two-phase field shares the same pair of tie-line
@@ -660,34 +943,26 @@ function toSvg(svg, ev) {
  */
 function pointAt(svgPt) {
   if (!frame || !state.points.length) return null;
-  const { xLo, xHi, tLo, tHi, nX, nT } = frame;
+  const { xLo, xHi, tLo, tHi } = frame;
   const x = xLo + ((svgPt.x - PAD.left) / (W - PAD.left - PAD.right)) * (xHi - xLo);
   const T = tLo + ((H - PAD.bottom - svgPt.y) / (H - PAD.top - PAD.bottom)) * (tHi - tLo);
-  // The sweep runs just inside the pure elements, matching the run request.
-  const dx = (0.98 - 0.02) / Math.max(nX - 1, 1);
-  const dT = (tHi - tLo) / Math.max(nT - 1, 1);
-  let cell = null;
-  let cellD = Infinity;
+  const px = (v) => PAD.left + ((v - xLo) / (xHi - xLo)) * (W - PAD.left - PAD.right);
+  const py = (v) => H - PAD.bottom - ((v - tLo) / (tHi - tLo || 1)) * (H - PAD.top - PAD.bottom);
   let dot = null;
-  let dotD = Infinity;
+  let dotD = 7;   // px, a little wider than the largest dot drawn
   for (const p of state.points) {
-    const at = Math.abs(p.T - T) / (dT || 1);
-    if (at > 0.6) continue;
-    const ax = Math.abs(p.x - x) / dx;
-    if (ax <= 0.6 && ax * ax + at * at < cellD) {
-      cellD = ax * ax + at * at;
-      cell = p;
-    }
+    const c = p.cell;
+    if (c && !p.superseded && x >= c.x0 && x < c.x1 && T >= c.t0 && T < c.t1) return p;
     if (p.error) continue;
     for (const s of uniqueSets(p)) {
-      const adot = Math.abs(s.x[0] - x) / dx;
-      if (adot <= 0.3 && adot * adot + at * at < dotD) {
-        dotD = adot * adot + at * at;
+      const d = Math.hypot(px(s.x[0]) - svgPt.x, py(p.T) - svgPt.y);
+      if (d < dotD) {
+        dotD = d;
         dot = p;
       }
     }
   }
-  return cell || dot;
+  return dot;
 }
 
 function tipHtml(p) {
@@ -752,7 +1027,7 @@ $('mode-diagram').addEventListener('click', () => setMode('diagram'));
 $('mode-point').addEventListener('click', () => setMode('point'));
 $('comp-fraction').addEventListener('click', () => setComposition('fraction'));
 $('comp-amounts').addEventListener('click', () => setComposition('amounts'));
-for (const id of ['n-t', 'n-x']) $(id).addEventListener('input', updateEstimate);
+for (const id of ['n-t', 'n-x', 'n-refine']) $(id).addEventListener('input', updateEstimate);
 
 $('run').addEventListener('click', () => {
   const db = currentDatabase();
@@ -769,21 +1044,29 @@ $('run').addEventListener('click', () => {
     }
     return;
   }
+  state.points = [];
+  clearHover();
+  // Reset the sampling sequence too, so the same run twice draws the same
+  // diagram rather than a differently jittered one.
+  seq = 0;
+  run.cells = new Map();
+  run.round = 0;
+  run.rounds = Number($('n-refine').value);
+  run.started = performance.now();
+  run.seconds = 0;
+  run.failed = 0;
+  run.stopped = false;
   startRun();
   setStatus('solving…');
-  worker.postMessage({
-    type: 'diagram', db, elements: db.elements,
-    tLo: Number($('t-lo').value), tHi: Number($('t-hi').value), nT: Number($('n-t').value),
-    // The endpoints are pure elements, where a solve has nothing to balance, so
-    // the sweep stays just inside them.
-    xLo: 0.02, xHi: 0.98, nX: Number($('n-x').value),
-    pressure: Number($('pressure').value),
-  });
+  sendPass(initialCells());
 });
 
 $('cancel').addEventListener('click', () => {
   // A solve runs synchronously inside the worker, so nothing short of killing
   // the thread can interrupt one. The points already drawn stay.
+  // Stop the refinement loop as well as the thread: a pass already in flight
+  // must not queue the next one up on its way out.
+  run.stopped = true;
   setStatus('cancelled — restarting Python…');
   finishRun();
   spawnWorker();

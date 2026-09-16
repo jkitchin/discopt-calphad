@@ -101,43 +101,82 @@ def point(name: str, elements, T: float, x=None, b=None, pressure: float = 10132
     return json.dumps(out)
 
 
-def diagram(name, elements, t_lo, t_hi, n_t, x_lo, x_hi, n_x, pressure=101325.0, emit=None) -> str:
-    """Sweep a T-x grid, handing each point to ``emit`` as it is solved.
+def _emit_point(models, elements, T: float, x: float, ident, emit) -> bool:
+    """Solve one point and hand it to ``emit``. True if it solved.
 
-    ``emit`` is a JavaScript callback. Calling it per point is the whole reason
-    the work happens here rather than behind a single ``run()``: a Cu-Mg grid is
-    tens of seconds, and the page fills in as it goes.
+    ``ident`` is echoed back untouched. Where to sample is the caller's
+    decision, and for the browser it is no longer a grid this module could
+    reconstruct -- it subdivides adaptively -- so each request carries a label
+    and the answers are matched up by label rather than by position.
     """
-    elements = tuple(elements)
-    models = _models(name, elements, pressure)
-    temperatures = np.linspace(float(t_lo), float(t_hi), int(n_t))
-    fractions = np.linspace(float(x_lo), float(x_hi), int(n_x))
-    started, solved, failed = time.perf_counter(), 0, 0
+    T = float(T)
+    x = float(x)
+    try:
+        result = equilibrium(models, x=x, T=T, certify="none")
+    except Exception as exc:  # noqa: BLE001 - one bad point must not end the sweep
+        failure = f"{type(exc).__name__}: {exc}"
+    else:
+        # A restricted solve that did not converge has nothing to draw.
+        failure = None if result.composition_sets else "restricted solve did not converge"
+    if failure is not None:
+        if emit is not None:
+            emit(json.dumps({"T": T, "x": x, "id": ident, "error": failure}))
+        return False
+    if emit is not None:
+        out = _describe(result, elements, T)
+        out["id"] = ident
+        emit(json.dumps(out))
+    return True
 
-    for T in temperatures:
-        for x in fractions:
-            try:
-                result = equilibrium(models, x=float(x), T=float(T), certify="none")
-            except Exception as exc:  # noqa: BLE001 - one bad point must not end the sweep
-                failed += 1
-                if emit is not None:
-                    emit(json.dumps({"T": float(T), "x": float(x), "error": f"{type(exc).__name__}: {exc}"}))
-                continue
-            if not result.composition_sets:
-                # A restricted solve that did not converge has nothing to draw.
-                failed += 1
-                if emit is not None:
-                    emit(json.dumps({"T": float(T), "x": float(x), "error": "restricted solve did not converge"}))
-                continue
-            solved += 1
-            if emit is not None:
-                emit(json.dumps(_describe(result, elements, float(T))))
 
+def _sweep_summary(total: int, solved: int, failed: int, started: float) -> str:
     return json.dumps(
         {
-            "points": int(n_t) * int(n_x),
+            "points": total,
             "solved": solved,
             "failed": failed,
             "seconds": time.perf_counter() - started,
         }
     )
+
+
+def points(name, elements, coords_json: str, pressure=101325.0, emit=None) -> str:
+    """Solve an explicit list of ``{"T", "x", "id"}`` points, in order.
+
+    The browser drives this rather than ``diagram``: it starts from a coarse
+    grid and then subdivides only the cells a phase boundary runs through, which
+    is not a shape ``linspace`` can describe. Passing the coordinates keeps that
+    decision in one place -- the page, which is what has the solved points to
+    decide from.
+    """
+    elements = tuple(elements)
+    models = _models(name, elements, pressure)
+    coords = json.loads(coords_json)
+    started, solved, failed = time.perf_counter(), 0, 0
+    for item in coords:
+        if _emit_point(models, elements, item["T"], item["x"], item.get("id"), emit):
+            solved += 1
+        else:
+            failed += 1
+    return _sweep_summary(len(coords), solved, failed, started)
+
+
+def diagram(name, elements, t_lo, t_hi, n_t, x_lo, x_hi, n_x, pressure=101325.0, emit=None) -> str:
+    """Sweep a uniform T-x grid, handing each point to ``emit`` as it is solved.
+
+    ``emit`` is a JavaScript callback in the browser. Calling it per point is
+    the whole reason the work happens here rather than behind a single
+    ``run()``: a Cu-Mg grid is tens of seconds, and the page fills in as it
+    goes. This is the entry point for a caller that just wants the grid; the
+    page itself uses ``points``.
+    """
+    elements = tuple(elements)
+    models = _models(name, elements, pressure)
+    started, solved, failed = time.perf_counter(), 0, 0
+    for T in np.linspace(float(t_lo), float(t_hi), int(n_t)):
+        for x in np.linspace(float(x_lo), float(x_hi), int(n_x)):
+            if _emit_point(models, elements, T, x, None, emit):
+                solved += 1
+            else:
+                failed += 1
+    return _sweep_summary(int(n_t) * int(n_x), solved, failed, started)
