@@ -70,8 +70,37 @@ const ready = (async () => {
   say('ready');
   self.postMessage({ type: 'ready' });
 })().catch((err) => {
-  self.postMessage({ type: 'fatal', message: String(err && err.message ? err.message : err) });
+  self.postMessage({ type: 'fatal', message: explain(err) });
 });
+
+/**
+ * Turn a boot failure into something a visitor can act on.
+ *
+ * The one that actually reaches people is the solver's wasm refusing to
+ * compile. The build pulls in pulp (through faer), and pulp 0.22.2 compiles
+ * its wasm `RelaxedSimd` backend unconditionally: 46 `f64x2.relaxed_madd` in
+ * three functions that can never run, because nothing ever sets the flag that
+ * would select them. Dead code is still fatal here -- WebAssembly validates
+ * the whole module up front, so a browser without the relaxed-SIMD proposal
+ * rejects all of it. pulp 0.22.3 puts that backend behind a cargo feature
+ * which this dependency graph leaves off, so a rebuilt wheel is clean; until
+ * a visitor gets one, say this plainly rather than letting Pyodide's micropip
+ * CompileError traceback be the answer.
+ */
+function explain(err) {
+  const text = String((err && (err.message || err.toString())) || err);
+  if (/relaxed[ _-]?simd/i.test(text) || (/CompileError/.test(text) && /doesn't parse/.test(text))) {
+    return (
+      'this browser cannot run the solver: its WebAssembly build uses relaxed SIMD, ' +
+      'which this browser does not support. That needs Chrome or Edge 114+, Firefox 120+, ' +
+      'or Safari 18.4+ (where it may still be behind a flag).'
+    );
+  }
+  if (/Could not load dynamic lib|LinkError/i.test(text)) {
+    return `the solver failed to load in this browser — ${text}`;
+  }
+  return text;
+}
 
 /** Parse a database into Python once, and remember that we did. */
 async function ensureDatabase(db) {
