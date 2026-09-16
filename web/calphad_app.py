@@ -10,8 +10,12 @@ was measured to be wrong: across a 120-point Cu-Mg grid it disagreed with cold
 at 10 points, and at 9 of them its G was *higher* -- it had settled into a
 single-phase minimum and stayed there. Certified solves refereed three of those
 points and matched the cold answer exactly. The failure is silent, so the speed
-is not worth it. (Path continuation is the principled version of that idea and
-does keep the right branch; see issue #4.)
+is not worth it. Re-solving only the disagreeing points and keeping the lower G
+was measured too: it repairs those rows but fragments the drawn boundaries and
+costs a third again in wall clock, because the tracer keys on neighbouring
+points agreeing rather than on each point being optimal. See ``web/README.md``.
+(Path continuation is the principled version of the idea and does keep the
+right branch.)
 """
 
 from __future__ import annotations

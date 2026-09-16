@@ -287,19 +287,35 @@ compositions are within 0.004. The sixth is the Al-rich FCC at the monotectoid,
 the method — the solved FCC+HCP branch just below that temperature sits at
 0.860.
 
-A fourth round doubles the cost to 1944
-points for the same ten boundaries and no new feature, which is why the default
-stops at three; a coarser 6×8 start saves only 7% and fragments the branches,
-so the cost is in the rounds, not the starting grid.
+A fourth round doubles the cost — 971 points
+at three rounds against 1951 at four, on Al–Zn over 400–950 K from an 8×8
+start — and draws the same 12 polylines, 2 invariants and 1 critical point, which
+is why the default stops at three; a coarser 6×8 start saves only 7% and
+fragments the branches, so the cost is in the rounds, not the starting grid.
 
 Every point is solved cold. Warm starting from the neighbouring point
 (`initial_sets=`) is twice as fast and was measured to be *wrong*: on a
 120-point Cu–Mg grid it disagreed with cold at 10 points and had the higher G at
 9 of them, having settled into a single-phase minimum and stayed there.
-Certified referees matched the cold answer. The failure is silent — a plausible
-single-phase result, no error — so the speed is not worth it. Path continuation
-is the principled version of that idea and does hold the right branch; see
-issue #4.
+Certified referees matched the cold answer, and the failure is silent — a
+plausible single-phase result, no error.
+
+Solving a second time and keeping *the lower G* looks like the safe version of
+that idea, since a starting set can put a solve in the wrong basin but cannot
+make G smaller than the true value, and per point it does work: seeding each
+disagreeing point from its neighbour repaired every row it changed, 10 of 10 on
+Al–Zn and 10 of 10 on Cu–Mg, none made worse. Drawn end to end it is still a
+loss. On Cu–Mg over 400–1200 K from an 8×8 start with four rounds it gives 25
+polylines against 22, breaks the CU2MG liquidus short of the congruent point at
+1067.5 K and x 0.640 instead of reaching 1070.4 and 0.660, adds three
+two-vertex fragments, and costs 350 s against 261 s. The reason is that the
+tracer keys on neighbouring points *agreeing*, not on each point being
+individually optimal: repairing a scattered subset while their neighbours stay
+metastable creates more adjacent disagreements, not fewer, and it changes which
+cells are marked, so the refinement diverges too. A partly repaired field is
+less self-consistent than a uniformly wrong one, so this is not enabled. Path
+continuation is the principled version of the idea and does hold the right
+branch.
 
 Pressure is wired through to the database, but neither bundled TDB has a
 pressure-dependent parameter: G at 1 GPa is identical to G at 1 atm to the last
