@@ -782,8 +782,16 @@ function refinementCells(marks) {
 
 /** Within this many kelvin, a bracket is as narrow as it needs to be. */
 const INVARIANT_TOL = 0.05;
-/** A guard on the loop, not a target: 12 halvings take 550 K under the tol. */
-const INVARIANT_STEPS = 12;
+/**
+ * A guard on the loop, not a target. A bracket spans two adjacent solved
+ * temperatures once refinement has run -- a few K -- and converges in far fewer
+ * steps than this, so the guard only bites on one that somehow spans the run.
+ * It was 12, which did not cover its own stated worst case: 550 K halved 12
+ * times is 0.134 K and 13 times is 0.067 K, both still above INVARIANT_TOL, and
+ * Cu-Mg's 800 K needs 14 to reach 0.049 K. The confirming probe wants a step
+ * after that, so the guard is set clear of both.
+ */
+const INVARIANT_STEPS = 16;
 
 /**
  * Temperature brackets that contain a three-phase reaction, one per reaction.
@@ -952,7 +960,17 @@ function bisectionCells() {
   for (const b of run.brackets) {
     // A bracket that has landed on its reaction is done, however wide it still
     // is: three phases in one solve is the answer bisection was looking for.
-    if (b.hit || b.tHi - b.tLo <= INVARIANT_TOL) continue;
+    if (b.hit) continue;
+    // Converged without ever landing. Bisection stops at the tolerance whether
+    // or not it got lucky, so "never landed" has meant two different things --
+    // there is no reaction in here, and bisection quit one solve short of it --
+    // and nothing downstream could tell them apart. Spend one more solve at the
+    // converged midpoint, which is the test the bracket was otherwise never
+    // given: at this width the midpoint is the reaction's temperature if the
+    // bracket holds one at all.
+    const narrow = b.tHi - b.tLo <= INVARIANT_TOL;
+    if (narrow && b.probed) continue;
+    if (narrow) b.probed = true;
     const T = (b.tLo + b.tHi) / 2;
     // A bisection point owns no patch of the diagram -- it is a probe at one
     // temperature, not a cell -- so it carries no extent and gets no wash. The
@@ -989,6 +1007,14 @@ function applyBisection(points) {
       b.hit = got;
       continue;
     }
+    // The confirming solve at a converged midpoint came back with two phases:
+    // there is no reaction in this bracket to find. Narrowing it further would
+    // only re-probe the same temperature, and keeping it would let a bracket
+    // that failed its own test still reach invariantLines.
+    if (b.probed) {
+      b.dead = true;
+      continue;
+    }
     const key = assemblageOf(got);
     if (key === b.loKey) {
       b.tLo = got.T;
@@ -1007,21 +1033,21 @@ function applyBisection(points) {
  * The finished horizontals: temperature, the compositions it spans, and the
  * phases that meet there.
  *
- * A bracket that landed on the reaction has all three phases in one solve, and
- * that is used as it stands. Otherwise the span is taken from both sides of the
- * converged bracket together, because each side is a two-phase solve that knows
- * only its own two compositions while the reaction needs all three.
+ * Every surviving bracket has been solved at its own converged midpoint, so a
+ * reaction here means one solve returned all three phases at one temperature,
+ * and that solve is used as it stands.
  */
 function invariantLines() {
   const out = [];
-  // A landed probe describes a reaction better than a merely narrow bracket, so
-  // those are considered first and the duplicate check below keeps them.
-  const brackets = [...run.brackets].sort((a, b) => (b.hit ? 1 : 0) - (a.hit ? 1 : 0));
-  for (const b of brackets) {
-    const lo = b.hit || b.loPoint;
-    const hi = b.hit || b.hiPoint;
-    if (!lo || !hi) continue;
-    const sets = b.hit ? uniqueSets(b.hit) : [...uniqueSets(lo), ...uniqueSets(hi)];
+  for (const b of run.brackets) {
+    // Pooling the compositions from the solves above and below a bracket that
+    // never landed is two temperatures wearing one label, and three of those
+    // can pass the test below without ever coexisting: it drew a Cu-Mg
+    // horizontal at 484 K through CuMg2, Cu2Mg and Cu-rich FCC, an assemblage
+    // no equilibrium has, at a temperature that appears nowhere in the TDB.
+    // A bracket reaches here only by having been solved at its own midpoint.
+    if (!b.hit) continue;
+    const sets = uniqueSets(b.hit);
     const xs = [];
     for (const s of sets) {
       // Merge the phase that sits on both sides of the reaction: it is one
@@ -1032,11 +1058,10 @@ function invariantLines() {
     // Two compositions is not a reaction -- it is one two-phase field whose
     // assemblage label changed for some other reason. Three is the binary case;
     // more means the bracket still holds something unresolved.
-    if (xs.length < 3) continue;
-    // A landed probe knows the temperature exactly -- the three phases it
-    // returned coexist at that one temperature and nowhere else -- so the
-    // bracket midpoint is only the fallback for a bracket that never landed.
-    const T = b.hit ? b.hit.T : (b.tLo + b.tHi) / 2;
+    if (xs.length !== 3) continue;
+    // The three phases coexist at that one temperature and nowhere else, so the
+    // solve's own temperature is the reaction's.
+    const T = b.hit.T;
     // Two brackets can converge on one reaction, and the Al-Zn eutectic does: it
     // is bracketed both as L+FCC over FCC+HCP and as L+HCP over FCC+HCP, two
     // different assemblage pairs that `invariantBrackets` is right to keep, which
