@@ -68,6 +68,17 @@ cannot be rebuilt here or in CI — it is not on PyPI in that form — so a fres
 clone would otherwise need a POUNCE checkout to build the page at all. It is
 also why `vendor/` is not `wheels/`: staging starts with `rm -rf wheels/`.
 
+That wheel also has to be free of **relaxed SIMD**, which is easy to ship by
+accident. pulp 0.22.2, reached through faer, compiled a `RelaxedSimd` backend
+unconditionally; WebAssembly validates an entire module before executing any of
+it, so 46 `f64x2.relaxed_madd` sitting in functions nothing could ever reach
+were enough to stop the page starting in any browser without that proposal —
+and it is invisible on a current one. pulp 0.22.3 puts the backend behind a
+cargo feature this dependency graph leaves off, and POUNCE's `build-wheel.sh`
+now inspects the module it built and refuses to stage one carrying a relaxed
+opcode. If this page ever dies in micropip with a `CompileError`, check there
+first.
+
 ## Published
 
 The docs workflow stages the app and copies it next to the built site, at
