@@ -24,12 +24,14 @@ const state = {
   running: false,
   selected: null,      // the point whose detail is shown
   hover: null,         // the point under the cursor, described by the tooltip
+  invariants: [],      // three-phase horizontals: { T, xs, phases }
 };
 
 /**
- * The run in progress. A run is several passes: the starting grid, then one
- * pass per refinement round. Kept apart from `state` because none of it
- * outlives the run -- `state.points` is the result, this is the bookkeeping.
+ * The run in progress. A run is several passes: the starting grid, one pass per
+ * refinement round, then a few narrow passes bisecting for the invariant
+ * temperatures. Kept apart from `state` because none of it outlives the run --
+ * `state.points` and `state.invariants` are the result, this is the bookkeeping.
  */
 const run = {
   cells: new Map(),    // id -> cell, for every cell this run has asked for
@@ -41,6 +43,13 @@ const run = {
   seconds: 0,
   failed: 0,
   stopped: false,
+  // 'grid' while the cells are being refined, then 'invariants' while the
+  // three-phase temperatures are bisected. The two phases send the same kind of
+  // pass and are told apart by this, because what to do when a pass lands
+  // differs entirely.
+  phase: 'grid',
+  brackets: [],        // the invariants being bisected, see invariants section
+  steps: 0,            // bisection passes so far, as a stopping guard
 };
 
 // Distinguishable at small sizes and in both themes; assigned in order of first
@@ -487,6 +496,186 @@ function refinementCells(marks) {
   return out;
 }
 
+// --- invariants -------------------------------------------------------------
+//
+// The horizontals a published diagram draws: the eutectic, the monotectoid --
+// a three-phase reaction, which in a binary at fixed pressure happens at one
+// temperature only, so it is a line rather than a field.
+//
+// `boundaries()` cannot produce one. It emits an x(T) branch per assemblage, so
+// a reaction shows up only as several branches that happen to stop near the same
+// temperature, and "near" is as coarse as the cells are tall.
+//
+// They are found instead, and the signature is simple. Crossing an ordinary
+// phase boundary, one side is single-phase and the other is not: liquid above,
+// liquid+FCC below. Crossing an invariant, *both* sides are multi-phase and the
+// assemblages disagree -- L+HCP above the Al-Zn eutectic and FCC+HCP below,
+// FCC+FCC above the monotectoid and FCC+HCP below. In a binary two different
+// two-phase fields cannot touch, so something invariant lies between them.
+//
+// Note the monotectoid: both of its upper composition sets are FCC_A1, one
+// Al-rich and one Zn-rich. Counting distinct phase *names* would see two phases
+// and miss the reaction entirely, so this counts composition sets.
+//
+// Once bracketed, the temperature is bisected -- about ten solves each, and all
+// the brackets step together in one pass, so the whole thing costs a second.
+
+/** Within this many kelvin, a bracket is as narrow as it needs to be. */
+const INVARIANT_TOL = 0.05;
+/** A guard on the loop, not a target: 12 halvings take 550 K under the tol. */
+const INVARIANT_STEPS = 12;
+
+/**
+ * Temperature brackets that contain a three-phase reaction, one per reaction.
+ *
+ * Every x between the outer two compositions brackets the same invariant, so
+ * the pairs are grouped by which assemblages meet and only the narrowest
+ * bracket of each group is kept -- the refinement has usually already made one
+ * of them much tighter than the rest.
+ */
+function invariantBrackets() {
+  const live = liveCells();
+  const holding = (x, T) => live.find((p) => x >= p.cell.x0 && x < p.cell.x1
+    && T >= p.cell.t0 && T < p.cell.t1);
+  const best = new Map();
+  for (const p of live) {
+    const c = p.cell;
+    const below = uniqueSets(p);
+    if (below.length < 2) continue;
+    const above = holding(c.xc, c.t1 + (c.t1 - c.t0) * 1e-4);
+    if (!above || above.cell.t0 < c.t1 - 1e-9) continue;
+    const upper = uniqueSets(above);
+    if (upper.length < 2) continue;
+    const loKey = assemblageOf(p);
+    const hiKey = assemblageOf(above);
+    if (loKey === hiKey) continue;
+    // The two assemblages have to share a phase. At a real reaction one phase
+    // is on both sides of it; two assemblages with nothing in common are two
+    // unrelated fields with something skipped between them, and bisecting
+    // would invent a line across compositions that never coexist.
+    const names = new Set(below.map((s) => s.phase));
+    if (!upper.some((s) => names.has(s.phase))) continue;
+    // Solved temperatures, not cell edges: those are where the assemblages are
+    // actually known, so they are what genuinely brackets the reaction.
+    const key = [loKey, hiKey].sort().join(' / ');
+    // The bracketing solves are carried along, not looked up again later: they
+    // are what knows the compositions on each side, and matching a point back by
+    // its floating-point temperature is a needless way to lose it.
+    const found = { x: c.xc, tLo: p.T, tHi: above.T, loKey, hiKey, loPoint: p, hiPoint: above };
+    const prev = best.get(key);
+    if (!prev || found.tHi - found.tLo < prev.tHi - prev.tLo) best.set(key, found);
+  }
+  return [...best.values()];
+}
+
+/** The midpoint solve each unconverged bracket wants next. */
+function bisectionCells() {
+  const out = [];
+  for (const b of run.brackets) {
+    // A bracket that has landed on its reaction is done, however wide it still
+    // is: three phases in one solve is the answer bisection was looking for.
+    if (b.hit || b.tHi - b.tLo <= INVARIANT_TOL) continue;
+    const T = (b.tLo + b.tHi) / 2;
+    // A bisection point owns no patch of the diagram -- it is a probe at one
+    // temperature, not a cell -- so it carries no extent and gets no wash. The
+    // label ties the answer back to its bracket.
+    b.probe = { id: `inv${out.length}:${T.toFixed(5)}`, T, x: b.x };
+    out.push(b.probe);
+  }
+  return out;
+}
+
+/**
+ * Narrow each bracket by the midpoint that just came back.
+ *
+ * Three phases in one solve is the answer, not a surprise: the reaction is
+ * invariant, so a solve that lands on it reports every phase taking part, at
+ * exactly the temperature and the compositions where they do. Keep it and stop.
+ * Bisection only exists to get close enough for that to happen.
+ *
+ * Otherwise the midpoint agrees with one side or the other and that half is
+ * kept. An assemblage matching neither, with fewer than three phases, means
+ * something else lies in between -- a field thinner than the bracket -- and the
+ * bracket is abandoned rather than narrowed onto a reaction it cannot name.
+ */
+function applyBisection(points) {
+  for (const b of run.brackets) {
+    if (!b.probe) continue;
+    const got = points.get(b.probe.id);
+    b.probe = null;
+    if (!got || got.error) {
+      b.dead = true;
+      continue;
+    }
+    if (uniqueSets(got).length >= 3) {
+      b.hit = got;
+      continue;
+    }
+    const key = assemblageOf(got);
+    if (key === b.loKey) {
+      b.tLo = got.T;
+      b.loPoint = got;
+    } else if (key === b.hiKey) {
+      b.tHi = got.T;
+      b.hiPoint = got;
+    } else {
+      b.dead = true;
+    }
+  }
+  run.brackets = run.brackets.filter((b) => !b.dead);
+}
+
+/**
+ * The finished horizontals: temperature, the compositions it spans, and the
+ * phases that meet there.
+ *
+ * A bracket that landed on the reaction has all three phases in one solve, and
+ * that is used as it stands. Otherwise the span is taken from both sides of the
+ * converged bracket together, because each side is a two-phase solve that knows
+ * only its own two compositions while the reaction needs all three.
+ */
+function invariantLines() {
+  const out = [];
+  // A landed probe describes a reaction better than a merely narrow bracket, so
+  // those are considered first and the duplicate check below keeps them.
+  const brackets = [...run.brackets].sort((a, b) => (b.hit ? 1 : 0) - (a.hit ? 1 : 0));
+  for (const b of brackets) {
+    const lo = b.hit || b.loPoint;
+    const hi = b.hit || b.hiPoint;
+    if (!lo || !hi) continue;
+    const sets = b.hit ? uniqueSets(b.hit) : [...uniqueSets(lo), ...uniqueSets(hi)];
+    const xs = [];
+    for (const s of sets) {
+      // Merge the phase that sits on both sides of the reaction: it is one
+      // composition, reported twice, a hair either side of one temperature.
+      if (!xs.some((v) => Math.abs(v - s.x[0]) < 2e-3)) xs.push(s.x[0]);
+    }
+    xs.sort((a, b2) => a - b2);
+    // Two compositions is not a reaction -- it is one two-phase field whose
+    // assemblage label changed for some other reason. Three is the binary case;
+    // more means the bracket still holds something unresolved.
+    if (xs.length < 3) continue;
+    // A landed probe knows the temperature exactly -- the three phases it
+    // returned coexist at that one temperature and nowhere else -- so the
+    // bracket midpoint is only the fallback for a bracket that never landed.
+    const T = b.hit ? b.hit.T : (b.tLo + b.tHi) / 2;
+    // Two brackets can converge on one reaction, and the Al-Zn eutectic does: it
+    // is bracketed both as L+FCC over FCC+HCP and as L+HCP over FCC+HCP, two
+    // different assemblage pairs that `invariantBrackets` is right to keep, which
+    // then bisect onto the same temperature and the same three compositions. That
+    // is one reaction, and drawing it twice doubles the ink and the label.
+    const twice = out.some((o) => Math.abs(o.T - T) < 1 && o.xs.length === xs.length
+      && o.xs.every((v, i) => Math.abs(v - xs[i]) < 2e-3));
+    if (twice) continue;
+    out.push({
+      T,
+      xs,
+      phases: [...new Set(sets.map((s) => s.phase))].sort(),
+    });
+  }
+  return out;
+}
+
 /** Data ranges for the current run, so axes do not jump as points stream in. */
 function ranges() {
   if (state.mode === 'point') {
@@ -584,6 +773,42 @@ function drawPlot() {
       fill: 'none', stroke: colorFor(b.phase), 'stroke-width': 1.7,
       'stroke-opacity': 0.9, 'stroke-linejoin': 'round', 'stroke-linecap': 'round',
     }));
+  }
+
+  // The invariant horizontals, over the boundaries rather than under them: the
+  // branches run into this line and stop, so it is what should read as
+  // continuous where they meet it. Drawn in the ink colour, not a phase colour,
+  // because three phases meet on it and none of them owns it.
+  for (const inv of state.invariants) {
+    const y = sy(inv.T);
+    const rule = node('line', {
+      x1: sx(inv.xs[0]), x2: sx(inv.xs[inv.xs.length - 1]), y1: y, y2: y,
+      stroke: 'var(--ink)', 'stroke-width': 1.5, 'stroke-opacity': 0.75,
+      'stroke-linecap': 'round',
+    });
+    // The rule is the one feature on the plot that is not a dot the tooltip can
+    // read, and nothing about it says which phases meet on it. A title names the
+    // reaction on hover.
+    rule.append(node('title', {}, `${inv.phases.join(' + ')} at ${inv.T.toFixed(1)} K`));
+    svg.append(rule);
+    // A tick at each composition the reaction actually involves. The line spans
+    // the outer two, but the middle one -- the phase being consumed -- is the
+    // reaction, and without a mark there is nothing to say where it sits.
+    for (const x of inv.xs) {
+      svg.append(node('line', {
+        x1: sx(x), x2: sx(x), y1: y - 3.5, y2: y + 3.5,
+        stroke: 'var(--ink)', 'stroke-width': 1.5, 'stroke-opacity': 0.75,
+      }));
+    }
+    // The right end of an invariant is exactly where a branch runs into it, so
+    // the label lands on that branch -- 654 K read as "65_ K" over the Al-Zn
+    // liquidus. A background-coloured stroke painted under the glyphs keeps it
+    // legible without moving it off the end it belongs to.
+    svg.append(node('text', {
+      x: sx(inv.xs[inv.xs.length - 1]) + 5, y: y - 4, 'font-size': 10,
+      'fill-opacity': 0.75, stroke: 'var(--bg)', 'stroke-width': 3,
+      'paint-order': 'stroke', 'stroke-linejoin': 'round',
+    }, `${inv.T.toFixed(0)} K`));
   }
 
   for (const p of state.points) {
@@ -809,31 +1034,45 @@ function drawSoon() {
   drawPlot();
 }
 
+/** The points of the pass in flight, by label, for a pass that needs them. */
+let arriving = new Map();
+
 function receivePoint(point) {
   // The cell is matched back by the label it was asked for, because a pass is a
   // list of coordinates and nothing about the order says where they came from.
+  // A bisection probe has no cell, by design -- it owns no patch of the diagram.
   const cell = run.cells.get(point.id);
   if (cell) point.cell = cell;
+  arriving.set(point.id, point);
   state.points.push(point);
   run.arrived += 1;
   $('progress-bar').style.width = `${(100 * run.arrived) / (run.expected || 1)}%`;
   drawSoon();
+  const what = run.phase === 'invariants'
+    ? `locating invariants (${run.steps})`
+    : (run.round === 1 ? 'grid' : `refining (round ${run.round - 1})`);
   setStatus(
-    `${run.round === 1 ? 'grid' : `refining (round ${run.round - 1})`}: `
-    + `${run.arrived} of ${run.expected} · ${state.points.length} points so far · `
+    `${what}: ${run.arrived} of ${run.expected} · ${state.points.length} points so far · `
     + `${((performance.now() - run.started) / 1000).toFixed(1)} s`,
   );
 }
 
-/** Ask the worker for one pass: exactly these cells, in this order. */
-function sendPass(cells) {
+/**
+ * Ask the worker for one pass: exactly these points, in this order.
+ *
+ * `countsAsRound` separates the two kinds of pass. A refinement pass is a round
+ * and is reported as one; a bisection pass is a handful of probes and should not
+ * make the run look like it refined another time.
+ */
+function sendPass(cells, countsAsRound = true) {
   const db = currentDatabase();
   if (!db || !cells.length) {
     endRun();
     return;
   }
-  run.round += 1;
-  for (const c of cells) run.cells.set(c.id, c);
+  if (countsAsRound) run.round += 1;
+  arriving = new Map();
+  for (const c of cells) if (c.x0 !== undefined) run.cells.set(c.id, c);
   worker.postMessage({
     type: 'points', db, elements: db.elements,
     coords: cells.map((c) => ({ id: c.id, T: c.T, x: c.x })),
@@ -841,36 +1080,72 @@ function sendPass(cells) {
   });
 }
 
-/** After a pass: subdivide the cells a boundary runs through, or stop. */
+/**
+ * After a pass: refine, bisect, or stop.
+ *
+ * The two phases run one after the other. Refinement has to finish first
+ * because the brackets are read off the cells it leaves behind -- a coarse cell
+ * brackets an invariant across 70 K, and bisecting from there would work but
+ * would spend its solves recovering resolution the refinement was going to
+ * produce anyway.
+ */
 function nextPass() {
   if (run.stopped) return;
-  if (run.round > run.rounds) {
+  if (run.phase === 'invariants') {
+    applyBisection(arriving);
+    run.steps += 1;
+    const probes = run.steps < INVARIANT_STEPS ? bisectionCells() : [];
+    if (probes.length) {
+      sendPass(probes, false);
+      return;
+    }
+    state.invariants = invariantLines();
     endRun();
+    return;
+  }
+  if (run.round > run.rounds) {
+    startInvariants();
     return;
   }
   const marks = crossedCells();
   if (!marks.size) {
-    endRun('every cell agrees with its neighbours');
+    startInvariants('every cell agrees with its neighbours');
     return;
   }
   // Counted before the cells are made, because making them supersedes their
   // parents -- and a run that stops at the budget should keep the wash it has.
   if (state.points.length + refinementCost(marks) > POINT_BUDGET) {
-    endRun(`stopped at the ${POINT_BUDGET}-point budget`);
+    startInvariants(`stopped at the ${POINT_BUDGET}-point budget`);
     return;
   }
   sendPass(refinementCells(marks));
+}
+
+/** Hand over from refining to locating the three-phase horizontals. */
+function startInvariants(why) {
+  run.why = why;
+  run.phase = 'invariants';
+  run.brackets = invariantBrackets();
+  run.steps = 0;
+  const probes = bisectionCells();
+  if (!probes.length) {
+    endRun();
+    return;
+  }
+  sendPass(probes, false);
 }
 
 function endRun(why) {
   finishRun();
   drawPlot();
   const rounds = Math.max(0, run.round - 1);
+  const n = state.invariants.length;
   setStatus(
     `${state.points.length} points in ${run.seconds.toFixed(1)} s · `
     + `${rounds} refinement round${rounds === 1 ? '' : 's'}`
+    + ` · ${n} invariant${n === 1 ? '' : 's'}`
     + (run.failed ? ` · ${run.failed} failed` : '')
-    + (why ? ` · ${why}` : '')
+    + (why || run.why ? ` · ${why || run.why}` : '')
     + ' · hover for the composition, click a point for its certificate',
   );
 }
@@ -1049,6 +1324,7 @@ $('run').addEventListener('click', () => {
   // Reset the sampling sequence too, so the same run twice draws the same
   // diagram rather than a differently jittered one.
   seq = 0;
+  state.invariants = [];
   run.cells = new Map();
   run.round = 0;
   run.rounds = Number($('n-refine').value);
@@ -1056,6 +1332,12 @@ $('run').addEventListener('click', () => {
   run.seconds = 0;
   run.failed = 0;
   run.stopped = false;
+  // Back to refining. Without this a second run picks up where the first one
+  // finished -- in the bisection phase -- and never lays a grid at all.
+  run.phase = 'grid';
+  run.brackets = [];
+  run.steps = 0;
+  run.why = undefined;
   startRun();
   setStatus('solving…');
   sendPass(initialCells());

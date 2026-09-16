@@ -95,17 +95,47 @@ resolves from the cell the cursor is in, which is exact and needs no catchment
 radius; failing that, from the nearest drawn tie-line end within a few pixels,
 which is how a point solved outside any live cell still answers.
 
+### The invariant horizontals
+
+The eutectic and the monotectoid are *lines*: in a binary at fixed pressure
+three phases coexist at one temperature only. `boundaries()` cannot draw one,
+because it emits an x(T) branch per assemblage — a reaction would show up merely
+as the place where several branches happen to stop near the same temperature,
+and "near" is as coarse as the cells are tall.
+
+So they are found instead, after refinement, and the signature is simple.
+Crossing an ordinary boundary, one side is single-phase and the other is not:
+liquid above, liquid+FCC below. Crossing an invariant, **both** sides are
+multi-phase and the assemblages disagree — L+HCP above the Al–Zn eutectic and
+FCC+HCP below, FCC+FCC above the monotectoid and FCC+HCP below. In a binary two
+different two-phase fields cannot touch, so something invariant lies between
+them. The two assemblages must also share a phase; with nothing in common they
+are unrelated fields with something skipped between them, and bisecting would
+invent a line across compositions that never coexist.
+
+Note the monotectoid: both of its upper composition sets are `FCC_A1`, one
+Al-rich and one Zn-rich. Counting distinct phase *names* would see two phases
+and miss the reaction entirely, so this counts composition sets.
+
+Each bracket is then bisected in temperature, all of them in one pass together,
+which is why the whole thing costs about a second. A solve that lands on the
+reaction is the answer rather than a surprise: the reaction is invariant, so
+such a solve reports every phase taking part, at exactly the temperature and
+the three compositions where they do, and nothing is interpolated. Bisection
+exists only to get close enough for that to happen. Two brackets can converge
+on one reaction — the eutectic is bracketed both as L+FCC over FCC+HCP and as
+L+HCP over FCC+HCP — so a line matching one already found, in temperature and
+in all its compositions, is dropped rather than drawn twice.
+
+The rule is drawn in the ink colour rather than a phase colour, because three
+phases meet on it and none of them owns it, with a tick at each composition the
+reaction involves: the line spans the outer two, but the middle one is the phase
+being consumed, and without a mark there is nothing to say where it sits.
+Hovering it names the reaction.
+
 ### Not drawn yet
 
-The invariant horizontals are missing. The 654 K eutectic and the 550 K
-monotectoid are lines on a published diagram, but `boundaries()` only ever
-emits an x(T) branch per assemblage, so a three-phase reaction appears as the
-place where several branches happen to stop at the same temperature rather than
-as the line joining them. Finding one properly means bisecting in T for the
-temperature where the assemblage changes and drawing across the compositions
-there, which is a few solves, not a sweep.
-
-The liquidus and solidus also stop just short of the pure elements. A cell's
+The liquidus and solidus stop just short of the pure elements. A cell's
 sample is held inside x = 0.002…0.998, because a pure element has nothing for a
 solve to balance, so the two branches approach the melting points — 933 K for
 Al, 693 K for Zn — without meeting at them.
@@ -182,7 +212,9 @@ Per point, on an M4 Pro — the browser costs about twice native:
 | Cu–Mg | 74 ms | 144 ms |
 
 The default is 8×8 starting cells and three refinement rounds, which on Al–Zn
-comes to 954 points and 66 s. That is measured rather than estimated: how far
+comes to 970 points and 67 s — 954 of them laying and refining the grid, and
+16 more bisecting for the two invariant temperatures. That is measured rather
+than estimated: how far
 refinement spreads depends on how long the boundaries are, which is a property
 of the system, so the page states the starting cost before the run and what it
 actually cost after. Pyodide itself is a ~10 MB download, cached after the
@@ -193,7 +225,18 @@ cheap and drew the wrong diagram. Against Massalski's Al–Zn the adaptive run
 puts the eutectic at 650 K, x(Al) 0.118 (reference 654 K, 0.113), the FCC
 composition there at 0.325 (0.330), the HCP composition at 0.031 (0.028), the
 Zn-rich monotectoid corner at 548 K, 0.410 (550 K, 0.410), and closes the
-miscibility dome near 622 K (624.6 K). A fourth round doubles the cost to 1944
+miscibility dome near 622 K (624.6 K).
+
+Both invariants are then located exactly. The eutectic comes out at 654 K
+across x(Al) 0.031, 0.117 and 0.327 (reference 654 K and 0.028, 0.113, 0.330)
+and the monotectoid at 550 K across 0.016, 0.410 and 0.859 (550 K and 0.016,
+0.410, 0.835). Both temperatures match to the degree; five of the six
+compositions are within 0.004. The sixth is the Al-rich FCC at the monotectoid,
+0.859 against Massalski's 0.835, and that looks like the database rather than
+the method — the solved FCC+HCP branch just below that temperature sits at
+0.860.
+
+A fourth round doubles the cost to 1944
 points for the same ten boundaries and no new feature, which is why the default
 stops at three; a coarser 6×8 start saves only 7% and fragments the branches,
 so the cost is in the rounds, not the starting grid.
