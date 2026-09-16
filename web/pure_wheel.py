@@ -89,8 +89,7 @@ def repack(site_packages: Path, package: str, out_dir: Path) -> Path:
         write(f"{dist.name}/METADATA", "".join(out_lines).encode())
         write(
             f"{dist.name}/WHEEL",
-            b"Wheel-Version: 1.0\nGenerator: discopt-calphad build-web.sh\n"
-            b"Root-Is-Purelib: true\nTag: py3-none-any\n",
+            b"Wheel-Version: 1.0\nGenerator: discopt-calphad build-web.sh\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
         )
         for extra in ("entry_points.txt", "top_level.txt", "licenses/LICENSE", "LICENSE"):
             p = dist / extra
