@@ -1,0 +1,232 @@
+---
+name: discopt-calphad
+description: >
+  Use when computing CALPHAD phase equilibria, phase diagrams or thermodynamic
+  properties with discopt-calphad (the discopt.calphad package): loading a TDB
+  file or fetching a published database by name, solving and certifying an
+  equilibrium, reading a certificate level, viewing or editing parameters
+  symbolically and exporting TDB, plotting G–x curves, or fitting CALPHAD
+  parameters to experimental data. Also use it when writing a custom phase
+  model for its solver.
+---
+
+# discopt-calphad
+
+discopt-calphad computes CALPHAD phase equilibria with a **certificate**. A
+local solver (POUNCE) finds a candidate equilibrium. discopt's global solver
+then prices every phase, which proves that no phase or composition set is
+missing, to a stated tolerance. pycalphad serves as a test oracle only; the
+package never imports it.
+
+Import everything from `discopt.calphad`. It is a namespace subpackage of
+`discopt`.
+
+## 1. Get a database
+
+Published TDB files are fetched by name from a registry, downloaded once and
+checked against a pinned SHA-256. A local file works too:
+`ThermoDatabase.from_tdb(path)`.
+
+```python
+from discopt.calphad import databases
+
+db = databases.load("alzn_mey")                        # a ThermoDatabase
+[e.name for e in databases.find(["AL", "ZN"])]          # every registered file that forms Al–Zn
+entry = databases.get("alzn_mey")
+print(entry.reference)                                  # the assessment the parameters come from
+print(databases.find(["CR", "FE"], complete=True)[0].name)  # a file that models every Cr–Fe phase
+```
+
+Always check what the database can model in your system before trusting a
+result. A phase the package cannot model is **skipped**, not approximated:
+
+```python
+status = db.applicability(("AL", "ZN"))     # {phase: "ok" | "<Error>: reason"}
+assert all(v == "ok" for v in status.values()), status
+phases = db.phase_models(("AL", "ZN"))      # {name: phase model}, supported phases only
+print(sorted(phases))                        # ['FCC_A1', 'HCP_A3', 'LIQUID']
+```
+
+The order of the element tuple matters: `x` below is the mole fraction of the
+**first** element.
+
+## 2. Solve an equilibrium
+
+```python
+from discopt.calphad import equilibrium
+
+res = equilibrium(list(phases.values()), x=0.5, T=500.0, certify="none")  # x = x_AL, T in K
+print(res.summary())
+for cs in res.composition_sets:          # one per coexisting phase instance
+    print(cs.phase.name, cs.x, cs.amount)   # overall mole fractions, amount in formula units
+print(res.phase_names, res.mu, res.G)    # mu and G are in units of RT (see Conventions)
+```
+
+- Give the composition either as `x=` (binary only) or as element amounts `b=`.
+  In a ternary: `b=(0.2, 0.3, 0.5)`, in the order of the phase model's
+  `elements`.
+- The same phase can appear twice, for example two FCC_A1 sets in a
+  miscibility gap.
+- `certify` modes:
+  - `"final"` (default): local pricing while composition sets are generated,
+    then global pricing once. Typically 10–20 s per equilibrium.
+  - `"none"`: local pricing only. About 0.05 s for Al–Zn. Use it for sweeps and
+    diagrams, then call `res.certify()` on the points that matter.
+  - `"every"`: global pricing in every iteration. Slowest; for debugging.
+
+```python
+# slow
+cert = res.certify()                     # global pricing at the stored μ, about 20 s here
+print(cert.level.name, cert.gap_bound)   # CERTIFIED_TO_TOLERANCE, bound on G_R − G_global in RT
+```
+
+## 3. Read the certificate
+
+`res.certificate.level` is a `CertificateLevel`, ordered from weakest to
+strongest:
+
+| level | what it guarantees |
+|---|---|
+| `FAILED` | the restricted (local) solve did not converge. Nothing. |
+| `LOCAL_EQUILIBRIUM` | a local minimum. Either no pricing ran, or a phase still destabilizes (the result is not the equilibrium). |
+| `STABILITY_SEARCHED` | a local search over every phase found nothing destabilizing. This is what `certify="none"` and the browser app reach. A search is not a proof. |
+| `GLOBAL_SEARCH_INCOMPLETE` | global pricing ran, but some phase has no valid lower bound, or its bound is below −ε. Read `certificate.messages` for which phase and why. Magnetic phases are always here for now. |
+| `CERTIFIED_TO_TOLERANCE` | every phase is proven to have Ψ ≥ −ε. No missing phase or set can lower G by more than `gap_bound` (in RT). |
+| `GLOBALLY_CERTIFIED` | as above, with ε at 1e-9 and a KKT residual ≤ 1e-8. |
+
+`certificate.lower_bounds` and `upper_bounds` give the per-phase pricing
+bounds. `certificate.messages` explains anything short of certified.
+
+## 4. Symbolic parameters, editing, export
+
+The database keeps every FUNCTION and PARAMETER as SymPy expressions:
+
+```python
+liq = phases["LIQUID"]
+print(liq.L[0].expr())                    # 10465.5 - 3.39259*T, the L0 interaction of the liquid
+print(db.evaluate("GHSERAL", 700.0))      # a named FUNCTION, in J, at 700 K
+
+db2 = databases.load("alzn_mey")
+db2.add_tdb("PARAMETER G(LIQUID,AL,ZN;1) 298.15 -500; 6000 N !")  # edit in TDB syntax
+text = db2.to_tdb()                       # write TDB
+from discopt.calphad import ThermoDatabase
+
+assert len(ThermoDatabase.from_string(text).parameters) == len(db2.parameters)
+```
+
+Parameters with the same label **add**. Adding a line that already exists
+doubles it rather than replacing it.
+
+A CEF phase (several sublattices) gives its full G as SymPy with
+`phase.gibbs_expr()`.
+
+## 5. Plot G–x curves
+
+Needs matplotlib, the `plot` extra.
+
+```python
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from discopt.calphad.plot import plot_gx
+
+fig, ax = plt.subplots()
+plot_gx(list(phases.values()), result=res, T=500.0, ax=ax)   # curves, the μ tangent, the sets
+fig.savefig("alzn_500K.png")
+```
+
+## 6. Phase diagrams
+
+There is no diagram function in the package yet. A T–x diagram is a sweep of
+`certify="none"` equilibria; certify selected points afterward. For each point,
+record the phases and their compositions. The coexisting compositions are the
+phase boundaries.
+
+```python
+import numpy as np
+
+rows = []
+for T in (500.0, 600.0):
+    for x in np.linspace(0.05, 0.95, 7):
+        r = equilibrium(list(phases.values()), x=float(x), T=T, certify="none")
+        rows.append((T, float(x), [(cs.phase.name, round(float(cs.x[0]), 4)) for cs in r.composition_sets]))
+print(rows[0])
+```
+
+The browser app (`web/`, published at
+https://kitchingroup.cheme.cmu.edu/discopt-calphad/app/) does this with adaptive
+refinement, boundary tracing and invariants.
+
+## 7. Fit parameters to data
+
+Parameters enter G linearly, so the fit is weighted linear least squares and
+needs no initial guess. Data kinds:
+- `GM`, `HM`, `SM`, `CPM` and their `_MIX` forms, via `add_thermo`;
+- activities, via `add_activity`;
+- tie-lines and invariants with measured compositions, via `add_equilibrium`.
+
+```python
+import dataclasses
+
+from discopt.calphad.fit import Dataset, fit
+
+x = np.linspace(0.1, 0.9, 9)
+L0 = (10465.5, -3.39259)                  # the true liquid L0 = a + b*T
+data = Dataset()
+data.add_thermo("HM_MIX", "LIQUID", 1000.0, x, x * (1 - x) * L0[0], 1.0)   # H_mix = x(1-x) a
+data.add_thermo("SM_MIX", "LIQUID", 1000.0, x, -x * (1 - x) * L0[1] - 8.314462618 * (x * np.log(x) + (1 - x) * np.log(1 - x)), 1e-3)
+
+start = dataclasses.replace(db, parameters=[p for p in db.parameters if p.label != "G(LIQUID,AL,ZN;0)"])
+fitted = fit(start, data, ("AL", "ZN"), {"L(LIQUID,AL,ZN;0)": "a + b*T"})
+print(fitted.summary())                   # values ± σ, residuals by kind
+new_tdb = fitted.to_tdb()                 # with a provenance header
+```
+
+`FitResult` also has `database`, `correlation`, `residuals_by_kind()`,
+`plot_residuals(ax)` and `check_equilibria()`. The last solves a certified
+equilibrium at each tie-line datum. `fit` refuses magnetic phases, because G
+is not linear in TC or BMAGN.
+
+## Conventions and pitfalls
+
+- **Units.**
+  - `phase.gibbs(y, T=T)` is **G/RT per formula unit**, not J/mol.
+  - `res.mu` is μ/RT per mole of each element.
+  - `res.G` is G/RT for the whole amount `b`.
+  - To get J per mole of atoms: `G * R_GAS * T / atoms`, with
+    `atoms = sum(phase.amounts(y))`.
+- **R.** `R_GAS = 8.314462618` (CODATA). pycalphad uses 8.3145, so comparisons
+  differ by about 4e-5·T·S_mix J/mol. The tests correct for this.
+- **x is the first element.** `equilibrium(..., x=0.3)` with elements
+  `("AL", "ZN")` means x_Al = 0.3. `cs.x` lists every element in the same order.
+- **Temperature ranges.**
+  - TDB ranges are `[lo, hi)`, and the last one includes its upper end, as in
+    pycalphad. This matters at a discontinuous breakpoint.
+  - A T outside the ranges raises `ValueError`. Set
+    `ThermoDatabase.extrapolate = True` to use the nearest range instead.
+- **Unsupported models raise with the reason.** `UnsupportedModelError` covers:
+  - order–disorder (`DISORDERED_PART`);
+  - ionic liquids;
+  - the Xiong magnetic model;
+  - some high-order CEF interactions.
+
+  `phase_models()` skips such phases silently, so check `applicability()`.
+  Inden–Hillert–Jarl magnetic phases are supported, but certify at most to
+  `GLOBAL_SEARCH_INCOMPLETE` (no interval bounds for that term yet).
+- **Speed.**
+  - A local (`certify="none"`) solve takes tens of milliseconds.
+  - Certification takes seconds to tens of seconds, and longer for active
+    multi-sublattice (CEF) phases.
+  - Global pricing uses `time_limit` seconds per phase at most (default 600).
+- **Stoichiometric phases** have `n_y == 0` and are priced exactly.
+- **Browser build.** Nothing certifies in the browser; discopt's Rust extension
+  has no WebAssembly build.
+
+## More
+
+- `docs/architecture.md`: the formulation, the certificate theorem, the solver
+  decomposition, and §9 (every convention, measured against pycalphad).
+- `docs/databases.md`: the registry, and where to find more TDB files.
+- [reference/phase-protocol.md](reference/phase-protocol.md): the interface a
+  custom phase model implements.

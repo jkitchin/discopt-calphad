@@ -383,3 +383,14 @@ def test_alzn_equilibrium_matches_pycalphad():
     assert res.mu * R_GAS * t == pytest.approx(mu_ref, abs=1.0)
     names = sorted(set(str(p) for p in np.squeeze(eq.Phase.values) if str(p)))
     assert sorted(set(res.phase_names)) == names
+
+
+def test_coincident_composition_sets_are_merged():
+    """Al–Zn at x_Al = 0.05, 500 K: two HCP_A3 sets used to converge onto one composition and split its amount."""
+    from discopt.calphad import databases, equilibrium
+
+    pycalphad_db("alzn_mey.tdb")  # the registry reads pycalphad's copy; skip rather than download
+    phases = list(databases.load("alzn_mey").phase_models(("AL", "ZN")).values())
+    res = equilibrium(phases, x=0.05, T=500.0, certify="none")
+    assert sorted(cs.phase.name for cs in res.composition_sets) == ["FCC_A1", "HCP_A3"]
+    assert sum(cs.amount * cs.atoms for cs in res.composition_sets) == pytest.approx(1.0)

@@ -121,6 +121,23 @@ def is_duplicate(sets, phase, y, tol: float) -> bool:
     return any(s.phase is phase and (y.size == 0 or float(np.max(np.abs(s.y - y))) < tol) for s in sets)
 
 
+def _merge_coincident(sets, tol: float) -> list[CompositionSet]:
+    """Merge sets of the same phase whose site fractions agree within ``tol``, adding the amounts.
+
+    Sets that need no merge are returned as the same objects, so a caller can
+    tell, by identity, which sets were removed.
+    """
+    out: list[CompositionSet] = []
+    for s in sets:
+        twin = next((o for o in out if is_duplicate([o], s.phase, s.y, tol)), None)
+        if twin is None:
+            out.append(s)
+        else:
+            i = next(i for i, o in enumerate(out) if o is twin)
+            out[i] = CompositionSet(twin.phase, twin.y, twin.amount + s.amount)
+    return out
+
+
 def initial_set(phases, b, T=None) -> CompositionSet:
     """Starting set: among phases that can meet ``b`` alone, the one with the lowest G per atom."""
     best = None
@@ -238,6 +255,9 @@ def equilibrium(
             return s.amount < small and float(tangent_distance(s.phase, s.y, mu, NUM, T)) > eps
 
         active = [s for s in R.sets if not inactive(s)] or [max(R.sets, key=lambda s: s.amount)]
+        # Two sets of one phase can converge onto the same composition. Then they are one
+        # set whose amount is split between them, and the output would list it twice.
+        active = _merge_coincident(active, dedup_tol)
         record.removed = [s for s in R.sets if all(s is not a for a in active)]
         if record.removed:
             sets, new = active, []

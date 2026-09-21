@@ -212,3 +212,24 @@ uv run python benchmarks/simplex_bound_study.py  # pricing formulations for 2-su
 ```
 
 pycalphad is a dev dependency used only as a test oracle; the package never imports it.
+
+### Agent skill
+
+`skills/discopt-calphad/SKILL.md` teaches coding agents (Claude Code and others)
+to use the package: workflows with runnable snippets, certificate levels,
+conventions and pitfalls. `reference/phase-protocol.md` describes the interface
+for writing a custom phase model. `tests/test_skill.py` runs every snippet.
+To use it with Claude Code, copy or link the directory into `~/.claude/skills/`.
+
+### Release checklist
+
+1. `uv run pytest` passes, including the slow tests (or run the `tests`
+   workflow with `slow: true`).
+2. `uv run ruff check . && uv run ruff format --check .`
+3. `uv run mkdocs build --strict`
+4. The database registry is current: `uv run python tools/refresh_registry.py`
+   leaves `databases.json` unchanged.
+5. **The agent skill is current.** `skills/discopt-calphad/SKILL.md` covers
+   every new or changed workflow, convention and unsupported model, and
+   `tests/test_skill.py` passes.
+6. Bump `version` in `pyproject.toml` and `__version__`, then tag.
