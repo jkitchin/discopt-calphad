@@ -2,7 +2,7 @@ name: tests
 
 # Fast test suite (slow solves are deselected) and lint on every push and pull
 # request. The slow tests (pycalphad-oracle equilibria, full certified solves)
-# run weekly and on demand.
+# run only on demand: workflow_dispatch with slow: true.
 on:
   push:
     branches: [main]
@@ -13,8 +13,6 @@ on:
         description: "Also run the slow tests"
         type: boolean
         default: false
-  schedule:
-    - cron: "17 6 * * 1"  # Mondays 06:17 UTC: slow tests
 
 permissions:
   contents: read
@@ -25,7 +23,6 @@ concurrency:
 
 jobs:
   test:
-    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -45,7 +42,6 @@ jobs:
         run: uv run --no-sync pytest -q -m "not slow"
 
   lint:
-    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -64,7 +60,7 @@ jobs:
         run: uv run --no-sync ruff format --check .
 
   slow:
-    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.slow)
+    if: github.event_name == 'workflow_dispatch' && inputs.slow
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
