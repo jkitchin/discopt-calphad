@@ -13,7 +13,7 @@ import { ELEMENTS } from './elements.js';
  *
  * A registry entry says, for each binary it can form, which phases this
  * package cannot model yet. Only a binary with none missing is offered. A
- * diagram without, say, a magnetic BCC_A2 would be drawn with complete
+ * diagram without, say, an ordered B2 phase would be drawn with complete
  * confidence and would be wrong.
  *
  * `ms` is the measured cost of one point under Pyodide (M4 Pro, Pyodide 0.28.3)
@@ -271,7 +271,7 @@ function renderSelection() {
     const partial = incompleteFor(state.chosen);
     $('systems').innerHTML = partial.length
       ? `${state.chosen.join('–')} is in the registry, but some of its phases use models this package does not `
-        + `support yet (magnetic or order–disorder), and a diagram without them would be wrong: `
+        + `support yet (order–disorder or ionic), and a diagram without them would be wrong: `
         + `${partial.join('; ')}. Open a TDB file below to try another description.`
       : `No database covers ${state.chosen.join('–')}. Available: ${pairs} — open a TDB file below for more.`;
   } else {

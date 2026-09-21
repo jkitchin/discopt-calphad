@@ -10,7 +10,9 @@ Points are drawn as they are solved.
 
 The systems come from the package's [database registry](databases.md). The app
 offers every binary in which all phases can be modeled: Al–Zn, Cu–Mg, Al–Mg,
-Pb–Sn, Au–Sn, Nb–Re, Cu–O, Al–Cu, Al–Y, Cu–Y, Ti–V, and a few more from COST 507.
+Pb–Sn, Au–Sn, Nb–Re, Cu–O, Al–Cu, Al–Y, Cu–Y, Ti–V, Cr–Ti, Cr–V, Cr–Fe, Cr–Nb,
+Fe–Nb, and a few more from COST 507. Five of them (Cr–Ti, Cr–V, Cr–Fe, Cr–Nb,
+Fe–Nb) have magnetic phases.
 No TDB file is served with the app. Each one is downloaded from its pinned URL
 the first time a pair needs it, and checked against the registry's SHA-256. You
 can also open a TDB file of your own, and solve a single point with the

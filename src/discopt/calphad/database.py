@@ -16,8 +16,12 @@ Supported phase structures, for any system of two or more elements:
   sublattice, three or more constituents, reciprocal and ternary parameters):
   becomes a :class:`~discopt.calphad.models.cef.CEFPhase`, one term per parameter.
 
-Everything else raises :class:`UnsupportedModelError` with the reason: magnetic
-TC/BMAGN parameters, order–disorder descriptions, ionic phases, other parameter
+A phase whose type code has a ``MAGNETIC`` TYPE_DEFINITION, and that has
+TC/BMAGN parameters, always becomes a :class:`CEFPhase` with the
+Inden–Hillert–Jarl term (see :mod:`discopt.calphad.models.magnetic`).
+
+Everything else raises :class:`UnsupportedModelError` with the reason: the
+Xiong magnetic model, order–disorder descriptions, ionic phases, other parameter
 kinds, or CEF structures pycalphad also rejects.
 """
 
@@ -30,6 +34,7 @@ from pathlib import Path
 import sympy as sp
 
 from discopt.calphad.models.cef import CEFPhase, CEFTerm
+from discopt.calphad.models.magnetic import Magnetic
 from discopt.calphad.models.solution import BinarySolution
 from discopt.calphad.models.stoichiometric import StoichiometricPhase
 from discopt.calphad.symbolic import P, PiecewiseT, T, function_ref, function_refs
@@ -44,6 +49,10 @@ __all__ = [
     "UnsupportedModelError",
     "PhaseNotApplicable",
 ]
+
+
+#: parameter kinds of the magnetic contribution; ``BM`` is the TDB abbreviation of ``BMAGN``
+MAGNETIC_KINDS = ("TC", "BMAGN", "BM")
 
 
 class UnsupportedModelError(NotImplementedError):
@@ -268,15 +277,15 @@ class ThermoDatabase:
         for p in params:
             if len(p.constituents) != len(subl):
                 raise ValueError(f"{p.label}: {len(p.constituents)} sublattices, but {key} has {len(subl)}")
-        kinds = {p.kind for p in params} - {"G"}
-        if kinds & {"TC", "BMAGN", "BM"}:
-            raise UnsupportedModelError(f"{key}: magnetic contribution (TC/BMAGN parameters) is not supported yet")
+        kinds = {p.kind for p in params} - {"G"} - set(MAGNETIC_KINDS)
         if kinds:
             raise UnsupportedModelError(f"{key}: parameter kinds {sorted(kinds)} are not supported yet")
         if any("DIS_PART" in a or "DISORDERED_PART" in a for a in self.amendments(key)):
             raise UnsupportedModelError(f"{key}: order-disorder (DISORDERED_PART) models are not supported yet")
         if "I" in ph.hints:
             raise UnsupportedModelError(f"{key}: ionic liquid models are not supported yet")
+        magnetic = self._magnetic(key, ph, [p for p in params if p.kind in MAGNETIC_KINDS])
+        params = [p for p in params if p.kind == "G"]
 
         mixing = [i for i, s in enumerate(subl) if len(s) > 1]
         for arr in product(*subl):
@@ -290,6 +299,8 @@ class ThermoDatabase:
                 # ValueError, had already reported the phase unusable. An explicit
                 # `phases=` list still raises, so asking for one by name still fails.
                 raise PhaseNotApplicable(f"{key}: no G parameter for endmember {':'.join(arr)}")
+        if magnetic is not None:
+            return self._cef_phase(key, ph, subl, params, elements, magnetic)
         if len(elements) == 2 and len(mixing) == 1 and "VA" not in subl[mixing[0]]:
             model = self._binary_solution(key, ph, subl, params, elements, mixing[0])
             if model is not None:
@@ -306,7 +317,44 @@ class ThermoDatabase:
             raise UnsupportedModelError(f"{key}: interaction parameters on a phase without mixing: {unused}")
         return StoichiometricPhase(key, elements, tuple(fixed), g=DatabaseValue(self, tuple((1.0, p) for p in params)))
 
-    def _cef_phase(self, key, ph, subl, params, elements) -> CEFPhase:
+    def magnetic_type(self, phase: str) -> tuple[float, float] | None:
+        """``(afm, p)`` from the MAGNETIC TYPE_DEFINITION that applies to the phase, or None.
+
+        As in pycalphad, a TYPE_DEFINITION applies through the phase's type-code
+        characters, not through the phase name written on the line. For example,
+        Al-Fe_sundman2009.tdb writes ``A_P_D @ MAGNETIC``. When several apply, the
+        last one wins.
+        """
+        codes = self.phases[phase.upper()].typecodes
+        out = None
+        for body in self.type_definitions:
+            toks = body.replace(",", " ").split()
+            # <char> GES A_P_D <phase> MAGNETIC <afm> <p>
+            if len(toks) >= 7 and toks[0] in codes and len(toks[4]) >= 3 and "MAGNETIC".startswith(toks[4].upper()):
+                out = (float(toks[5]), float(toks[6]))
+        return out
+
+    def _magnetic(self, key, ph, params) -> Magnetic | None:
+        """The phase's magnetic description. None if it has no MAGNETIC type or no TC/BMAGN parameters.
+
+        Parameters without a MAGNETIC type definition are ignored, as pycalphad
+        ignores them.
+        """
+        hint = self.magnetic_type(key)
+        if hint is None or not params:
+            return None
+        afm, p = hint
+        if afm == 0:
+            raise UnsupportedModelError(f"{key}: the Xiong magnetic model (AFM factor 0) is not supported yet")
+
+        def terms(kinds):
+            return tuple(
+                CEFTerm(q.constituents, q.order, DatabaseValue(self, ((1.0, q),))) for q in params if q.kind in kinds
+            )
+
+        return Magnetic(afm=afm, p=p, tc=terms(("TC",)), beta=terms(("BMAGN", "BM")))
+
+    def _cef_phase(self, key, ph, subl, params, elements, magnetic: Magnetic | None = None) -> CEFPhase:
         """Every parameter becomes one CEF term (see :mod:`discopt.calphad.models.cef`)."""
         terms = [CEFTerm(p.constituents, p.order, DatabaseValue(self, ((1.0, p),))) for p in params]
         # pycalphad/Thermo-Calc convention: a lone ternary L0 implies L1 = L2 = L0
@@ -315,7 +363,7 @@ class ThermoDatabase:
                 if not any(q is not p and q.constituents == p.constituents for q in params):
                     terms += [CEFTerm(p.constituents, k, DatabaseValue(self, ((1.0, p),))) for k in (1, 2)]
         try:
-            return CEFPhase(key, elements, tuple(ph.site_ratios), tuple(subl), tuple(terms))
+            return CEFPhase(key, elements, tuple(ph.site_ratios), tuple(subl), tuple(terms), magnetic)
         except NotImplementedError as err:
             raise UnsupportedModelError(str(err)) from err
 

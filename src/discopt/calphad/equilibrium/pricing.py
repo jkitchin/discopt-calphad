@@ -163,7 +163,9 @@ def price_phase(
     """
     mu = np.asarray(mu, dtype=float)
     if phase.n_y == 0:
-        return _price_fixed(phase, mu, T)
+        return _price_fixed(phase, mu, T)  # exact, magnetic or not
+    if getattr(phase, "magnetic", None) is not None:
+        return _price_without_bound(phase, mu, T, domain_floor)
     m = dm.Model(f"price_{phase.name}")
     box = inner_bounds(phase, domain_floor)
     y = [m.continuous(f"y{i}", lb=lo, ub=hi) for i, (lo, hi) in enumerate(box)]
@@ -222,6 +224,23 @@ def price_phase(
         bound_source=source,
         stages=stages,
     )
+
+
+def _price_without_bound(phase, mu, T, domain_floor) -> PricingResult:
+    """Search a phase that cannot be priced globally yet. The result has an upper bound and no lower bound.
+
+    A magnetic phase has no interval extension yet (issue #6), so neither the
+    global solve nor the boundary bound can run. It is searched locally. The
+    certificate then reports ``GLOBAL_SEARCH_INCOMPLETE`` for it, or
+    ``LOCAL_EQUILIBRIUM`` if the search found a destabilizing point.
+    """
+    res = price_phase_local(phase, mu, T=T, domain_floor=domain_floor)
+    res.lb = res.solver_lb = None
+    res.boundary_lb = -math.inf
+    res.gap_certified = False
+    res.bound_source = "none"
+    res.status = "no global bound: magnetic phases have no interval extension yet"
+    return res
 
 
 def _psi_many(phase, pts, mu, T) -> np.ndarray:

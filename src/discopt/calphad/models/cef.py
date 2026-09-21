@@ -29,6 +29,11 @@ fits the solver's phase protocol (box bounds, interval bounds on the boundary
 slabs) without linear constraints. For a product of factors,
 x ln x = Σ_i f_i ln f_i Π_{j≠i} f_j. Every ``xlogx`` call therefore acts on a
 single u or 1 − u, where discopt's ``entropy`` rules are tightest.
+
+**Magnetic ordering.** With ``magnetic`` set, G also gets the Inden–Hillert–Jarl
+term RT ln(β' + 1) f(T/T_c'). T_c(y) and β(y) are built from TC and BMAGN terms
+with the same products as above. See :mod:`discopt.calphad.models.magnetic`.
+The term is piecewise in y, so a discopt expression of it needs a branch.
 """
 
 from __future__ import annotations
@@ -40,6 +45,7 @@ from itertools import product
 import numpy as np
 
 from discopt.calphad.equilibrium.common import R_GAS
+from discopt.calphad.models.magnetic import Branch, Magnetic, branch_constraints, branch_of, ihj
 from discopt.calphad.models.tfunc import coef
 from discopt.calphad.ops import NUM
 
@@ -92,6 +98,8 @@ class CEFPhase:
     #: sorted constituents per sublattice; each is an element of ``elements`` or VA
     constituents: tuple[tuple[str, ...], ...]
     terms: tuple[CEFTerm, ...] = ()
+    #: the magnetic ordering contribution, if the phase has one
+    magnetic: Magnetic | None = None
     _layout: tuple = field(init=False, repr=False, compare=False)
 
     def __post_init__(self):
@@ -103,7 +111,7 @@ class CEFPhase:
                 raise ValueError(f"{self.name}: bad constituents {cons} on sublattice {s}")
             if tuple(sorted(cons)) != tuple(cons):
                 raise ValueError(f"{self.name}: constituents on sublattice {s} must be sorted")
-        for t in self.terms:
+        for t in self.terms + (self.magnetic.tc + self.magnetic.beta if self.magnetic else ()):
             self._check_term(t)
         layout, i = [], 0
         for cons in self.constituents:
@@ -177,7 +185,52 @@ class CEFPhase:
             for f in d.values():
                 if f:
                     G = G + a * _xlogx_prod(f, ops)
+        if self.magnetic is not None:
+            tc, beta = self._magnetic_sums(Y, T)
+            G = G + ihj(self.magnetic, tc, beta, T, ops)
         return G
+
+    # ------------------------------------------------------------------ magnetism
+
+    def _sum(self, terms, Y, T):
+        total = 0.0
+        for t in terms:
+            v = coef(t.value, T)
+            if v != 0.0:
+                total = total + v * self._term_factor(t, Y)
+        return total
+
+    def _magnetic_sums(self, Y, T):
+        return self._sum(self.magnetic.tc, Y, T), self._sum(self.magnetic.beta, Y, T)
+
+    def _Y(self, y):
+        return [{c: _prod(f) for c, f in d.items()} for d in self._factors(y)]
+
+    def curie_temperature(self, y, T: float) -> float:
+        """T_c(y) in K, before the AFM division (0 for a phase without magnetism)."""
+        if self.magnetic is None:
+            return 0.0
+        return float(self._sum(self.magnetic.tc, self._Y(np.asarray(y, float)), T))
+
+    def magnetic_moment(self, y, T: float) -> float:
+        """β(y) in Bohr magnetons, before the AFM division (0 for a phase without magnetism)."""
+        if self.magnetic is None:
+            return 0.0
+        return float(self._sum(self.magnetic.beta, self._Y(np.asarray(y, float)), T))
+
+    def magnetic_branch(self, y, T: float) -> Branch | None:
+        """The smooth piece of the magnetic term at numeric ``y``, or None without magnetism."""
+        if self.magnetic is None:
+            return None
+        return branch_of(self.curie_temperature(y, T), self.magnetic_moment(y, T), T, self.magnetic.afm)
+
+    def branch_constraints(self, y, T: float, branch: Branch) -> list:
+        """discopt expressions in ``y`` that are ≥ 0 exactly on ``branch``.
+
+        See :func:`discopt.calphad.models.magnetic.branch_constraints`.
+        """
+        tc, beta = self._magnetic_sums(self._Y(y), T)
+        return branch_constraints(self.magnetic, tc, beta, T, branch)
 
     def _term_factor(self, t: CEFTerm, Y):
         mixing = [s for s, c in enumerate(t.constituents) if len(c) > 1]
@@ -288,4 +341,26 @@ class CEFPhase:
         R = sp.Symbol("R", positive=True)
         for a, d in zip(self.site_ratios, Y):
             G += sp.nsimplify(a) * R * T_ * sum(yc * sp.log(yc) for yc in d.values() if yc != 1)
+        if self.magnetic is not None:
+            G += R * T_ * self._magnetic_expr(Y)
         return G
+
+    def _magnetic_expr(self, Y):
+        """G_mag / RT as a SymPy ``Piecewise`` (see :mod:`~discopt.calphad.models.magnetic`)."""
+        import sympy as sp
+
+        from discopt.calphad.models.magnetic import _ordered, _paramagnetic
+        from discopt.calphad.symbolic import T as T_
+
+        def value(t):
+            return t.value.expr() if hasattr(t.value, "expr") else sp.sympify(t.value)
+
+        mag = self.magnetic
+        tc = sum((self._term_factor(t, Y) * value(t) for t in mag.tc), sp.Integer(0))
+        beta = sum((self._term_factor(t, Y) * value(t) for t in mag.beta), sp.Integer(0))
+        afm = sp.nsimplify(mag.afm)
+        tc_eff = sp.Piecewise((tc / afm, tc <= 0), (tc, True))
+        beta_eff = sp.Piecewise((beta / afm, beta <= 0), (beta, True))
+        s = sp.Symbol("s", positive=True)
+        f = sp.Piecewise((_ordered(s, mag.p, mag.A), s > 1), (_paramagnetic(s, mag.A), True))
+        return sp.log(beta_eff + 1) * f.subs(s, tc_eff / T_)

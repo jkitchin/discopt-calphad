@@ -110,30 +110,47 @@ def solve_restricted(
 
     atoms_min = min(s.phase.atoms_min for s in sets)
     n_max = 2.0 * b.sum() / atoms_min
-    m = dm.Model("restricted")
-    # declaration order is the evaluator's variable order: all N, then each set's y
-    N = [m.continuous(f"N{k}", lb=0.0, ub=n_max) for k in range(len(sets))]
-    Y, y0 = [], []
+    y0, boxes = [], []
     for k, s in enumerate(sets):
         box = inner_bounds(s.phase, domain_floor)
         yk = np.clip(s.y, [lo for lo, _ in box], [hi for _, hi in box]) if box else s.y
         if fixed is not None and fixed[k]:
             box = [(float(v), float(v)) for v in yk]
-        Y.append([m.continuous(f"y{k}_{i}", lb=lo, ub=hi) for i, (lo, hi) in enumerate(box)])
         y0.append(yk)
-
-    m.minimize(sum(N[k] * s.phase.gibbs(Y[k], EXPR, T) for k, s in enumerate(sets)))
-    for j, e in enumerate(els):
-        lhs = sum(N[k] * s.phase.amounts(Y[k])[j] for k, s in enumerate(sets))
-        m.subject_to(lhs == float(b[j]), name=f"balance_{e}")
+        boxes.append(box)
 
     # start amounts: nonnegative least squares at the starting compositions, kept off the bound
     n0, _ = nnls(amount_matrix([CompositionSet(s.phase, yk) for s, yk in zip(sets, y0)]), b)
     n0 = np.maximum(n0, 1e-3 * b.sum() / atoms_min / len(sets))
     x0 = np.concatenate([n0, *y0])
 
+    # A magnetic phase is smooth only within one branch (see models/magnetic.py).
+    # Each free set is solved inside the branch it starts in, held there by
+    # constraints. If one of those constraints is active at the solution, the
+    # set has reached the edge of its branch: switch to the neighbouring branch
+    # and solve again from there. The IHJ function is C¹ at τ = 1, so a solution
+    # that sits exactly on that edge is valid on both sides.
+    branches = {k: s.phase.magnetic_branch(y0[k], T) for k, s in enumerate(sets) if getattr(s.phase, "magnetic", None)}
+    # a fixed set cannot leave its branch, so it needs no constraints
+    held = [k for k in branches if sets[k].phase.n_y and not (fixed is not None and fixed[k])]
     t0 = time.perf_counter()
-    r = local_nlp_solve(m, x0, options)
+    seen, best = set(), None
+    for _ in range(1 + 3 * len(held)):
+        seen.add(tuple(sorted(branches.items())))
+        r, active = _solve_once(sets, b, T, boxes, branches, held, n_max, x0, els, options)
+        ok = str(getattr(r.status, "value", r.status)) == "optimal"
+        if best is None or (ok and (not best[1] or r.objective < best[0].objective)):
+            best = (r, ok)
+        if not ok or not active:
+            break
+        nxt = dict(branches)
+        for k, i in active:
+            nxt[k] = nxt[k]._replace(**{nxt[k]._fields[i]: not nxt[k][i]})
+        if tuple(sorted(nxt.items())) in seen:
+            break  # the solution sits on an edge between branches already tried
+        branches = nxt
+        x0 = np.asarray(r.x, dtype=float)
+    r = best[0]
     wall = time.perf_counter() - t0
 
     K = len(sets)
@@ -143,7 +160,7 @@ def solve_restricted(
     if r.multipliers is None:
         mu = np.full(len(els), np.nan)
     else:
-        mu = -np.asarray(r.multipliers, dtype=float)
+        mu = -np.asarray(r.multipliers, dtype=float)[: len(els)]  # the balance rows come first
 
     G = float(sum(cs.amount * float(cs.phase.gibbs(cs.y, NUM, T)) for cs in new))
     amounts = np.array([cs.amount for cs in new])
@@ -163,3 +180,40 @@ def solve_restricted(
         iterations=int(getattr(r, "iterations", -1) or -1),
         wall_time=wall,
     )
+
+
+#: a branch constraint within this of zero, at the solution, is active
+BRANCH_TOL = 1e-7
+
+
+def _solve_once(sets, b, T, boxes, branches, held, n_max, x0, els, options):
+    """One local solve of R(S), with each magnetic set in ``held`` kept on its branch.
+
+    Returns the NLP result, and the ``(set, component)`` pairs whose branch
+    constraint is active at the solution.
+    """
+    m = dm.Model("restricted")
+    # declaration order is the evaluator's variable order: all N, then each set's y
+    N = [m.continuous(f"N{k}", lb=0.0, ub=n_max) for k in range(len(sets))]
+    Y = [[m.continuous(f"y{k}_{i}", lb=lo, ub=hi) for i, (lo, hi) in enumerate(box)] for k, box in enumerate(boxes)]
+    ops = [EXPR.with_branch(branches[k]) if k in branches else EXPR for k in range(len(sets))]
+    m.minimize(sum(N[k] * s.phase.gibbs(Y[k], ops[k], T) for k, s in enumerate(sets)))
+    # the balance rows first: their multipliers are −μ
+    for j, e in enumerate(els):
+        lhs = sum(N[k] * s.phase.amounts(Y[k])[j] for k, s in enumerate(sets))
+        m.subject_to(lhs == float(b[j]), name=f"balance_{e}")
+    for k in held:
+        for i, g in enumerate(sets[k].phase.branch_constraints(Y[k], T, branches[k])):
+            if g is not None:
+                m.subject_to(g >= 0, name=f"branch{k}_{i}")
+
+    r = local_nlp_solve(m, x0, options)
+    active = []
+    if held and r.x is not None:
+        x = np.asarray(r.x, dtype=float)
+        ys = np.split(x[len(sets) :], np.cumsum([s.phase.n_y for s in sets])[:-1])
+        for k in held:
+            for i, g in enumerate(sets[k].phase.branch_constraints(ys[k], T, branches[k])):
+                if g is not None and float(g) <= BRANCH_TOL:
+                    active.append((k, i))
+    return r, active

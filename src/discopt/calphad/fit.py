@@ -332,6 +332,11 @@ class _PhaseBasis:
         db, el = lm.db, lm.elements
         self.lm, self.name = lm, name
         self.model = db.phase_model(name, el)
+        if getattr(self.model, "magnetic", None) is not None:
+            # The probe below reads each parameter's coefficient in G. That works
+            # only because G is linear in every parameter, and TC and BMAGN enter
+            # through ln(β + 1) f(T/T_c).
+            raise NotImplementedError(f"{name}: fitting data on a magnetic phase is not supported yet")
         self.params = [i for i, p in enumerate(db.parameters) if p.phase == name]
         zero = {i: _CONST0 for i in self.params}
         self.model0 = _replace(db, zero).phase_model(name, el)

@@ -40,6 +40,14 @@ class _Num:
 class _Expr:
     name = "expr"
 
+    def __init__(self, branch=None):
+        #: the piece of a piecewise model to lower (see :mod:`discopt.calphad.models.magnetic`)
+        self.branch = branch
+
+    def with_branch(self, branch) -> _Expr:
+        """This backend, lowering a piecewise model on ``branch``."""
+        return _Expr(branch)
+
     @staticmethod
     def xlogx(x):
         return FunctionCall("entropy", x)

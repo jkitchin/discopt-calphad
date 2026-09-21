@@ -29,7 +29,8 @@ A file whose hash differs from the registry's is never used.
 
 "Complete" lists the binaries in which every phase can be modeled. The browser
 app offers exactly these. "Incomplete" lists binaries with at least one phase that
-uses a model not supported yet: magnetic (TC/BMAGN) or order–disorder.
+uses a model not supported yet, in practice order–disorder (DISORDERED_PART).
+Magnetic phases are supported, but without a global certificate yet.
 
 | name | system | complete | incomplete | reference |
 |---|---|---|---|---|
@@ -41,12 +42,12 @@ uses a model not supported yet: magnetic (TC/BMAGN) or order–disorder.
 | `nbre_liu` | Nb–Re | Nb–Re | — | X. L. Liu, C. Z. Hargather, Z.-K. Liu, CALPHAD 41 (2013) 119–127; TDB file by T. Abe et al. (NIMS, 2014) |
 | `cuo_schramm` | Cu–O | Cu–O | — | L. Schramm, G. Behr, W. Löser, K. Wetzig, J. Phase Equilib. Diffus. 26 (2005) 605–612; TDB file by K. Hashimoto, T. Abe (NIMS, 2008) |
 | `alcuy_zhang` | Al–Cu–Y | Al–Cu, Al–Y, Cu–Y | — | Database file written by L. Zhang (2011); the file header names no publication |
-| `crtiv_ghosh` | Cr–Ti–V | Ti–V | Cr–Ti, Cr–V | G. Ghosh, J. Phase Equilib. 23 (2002) 310–328; TDB file by T. Abe, T. Bolotova (NIMS, 2014) |
+| `crtiv_ghosh` | Cr–Ti–V | Cr–Ti, Cr–V, Ti–V | — | G. Ghosh, J. Phase Equilib. 23 (2002) 310–328; TDB file by T. Abe, T. Bolotova (NIMS, 2014) |
 | `alfe_cost507` | Al–Fe | — | Al–Fe | COST 507, Thermochemical database for light metal alloys, vol. 2, eds. I. Ansara, A. T. Dinsdale, M. H. Rand (1998); TDB file by K. Hashimoto, T. Abe (NIMS, 2007) |
 | `alfe_sundman` | Al–Fe | — | Al–Fe | B. Sundman et al., Acta Mater. 57 (2009) 2896–2908, https://doi.org/10.1016/j.actamat.2009.02.046 |
 | `alni_dupin` | Al–Ni | — | Al–Ni | N. Dupin, I. Ansara, B. Sundman, CALPHAD 25 (2001) 279–298 |
-| `crfenb_jacob` | Cr–Fe–Nb | — | Cr–Fe, Cr–Nb, Fe–Nb | TDB file by A. Jacob (2016); the file header names no publication |
-| `cost507` | COST 507 light alloys | 7 binaries | 334 binaries | COST 507, Thermochemical database for light metal alloys, round II (1999), eds. I. Ansara, A. T. Dinsdale, M. H. Rand |
+| `crfenb_jacob` | Cr–Fe–Nb | Cr–Fe, Cr–Nb, Fe–Nb | — | TDB file by A. Jacob (2016); the file header names no publication |
+| `cost507` | COST 507 light alloys | 7 binaries | 338 binaries | COST 507, Thermochemical database for light metal alloys, round II (1999), eds. I. Ansara, A. T. Dinsdale, M. H. Rand |
 
 ## Finding more TDB files
 

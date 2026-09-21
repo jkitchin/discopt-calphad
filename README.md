@@ -29,8 +29,9 @@ the tangent-plane distance Ψ(y) = G(y) − μ·A(y):
   disappearance.
 - **MVP 3:** TDB import and export into a symbolic `ThermoDatabase` (SymPy
   expressions with named functions kept), and binary phase models built from
-  it. Unsupported models (magnetic, order–disorder, ionic) raise with the
-  reason.
+  it. Unsupported models (order–disorder, ionic) raise with the reason.
+  Magnetic phases (Inden–Hillert–Jarl) are solved, but not yet certified
+  globally.
 - **MVP 4:** compound-energy-formalism phases (`CEFPhase`: several sublattices,
   endmembers, binary/reciprocal/ternary interactions, vacancies) in any number
   of elements, checked against pycalphad. Pricing stops as soon as its answer
@@ -180,7 +181,7 @@ hash. A copy that pycalphad installs is used without downloading.
 from discopt.calphad import databases
 
 [e.name for e in databases.find(["AL", "FE"])]       # files that form Al–Fe
-databases.find(["AL", "FE"], complete=True)          # [] -- every one has a magnetic phase
+databases.find(["AL", "FE"], complete=True)          # [] -- every one has an order–disorder phase
 databases.get("alzn_mey").reference                  # 'S. an Mey, Z. Metallkd. 84 (1993) 451–455; ...'
 ```
 

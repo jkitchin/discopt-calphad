@@ -103,7 +103,11 @@ def certify(
         msgs.append("no phase has a valid global lower bound")
     elif len(valid) < len(pricing) or worst_lb < -eps:
         level = CertificateLevel.GLOBAL_SEARCH_INCOMPLETE
-        msgs += [f"{n}: no valid lower bound" for n, lb in lbs.items() if lb is None]
+        msgs += [
+            f"{p.phase.name}: no valid lower bound" + (f" ({p.status})" if getattr(p, "status", "") else "")
+            for p in pricing
+            if p.lb is None
+        ]
         msgs += [f"{n}: LB = {lb:.3e} < -eps" for n, lb in lbs.items() if lb is not None and lb < -eps]
     elif -worst_lb <= certify_tol and restricted.residual <= kkt_tol:
         level = CertificateLevel.GLOBALLY_CERTIFIED

@@ -373,7 +373,7 @@ building the prototype. The upstream requests are tracked in discopt#1249.
     reason:
     - a missing endmember G parameter;
     - interaction structures pycalphad also rejects (§9.16);
-    - TC/BMAGN (magnetic);
+    - the Xiong magnetic model (AFM factor 0; the IHJ model is supported, §9.18);
     - DISORDERED_PART;
     - ionic liquids;
     - parameter kinds or orders the binary model cannot represent.
@@ -437,8 +437,52 @@ building the prototype. The upstream requests are tracked in discopt#1249.
     `DOMAIN_FLOOR` to 1e-6 did not help. This is the measured case for the
     simplex structure request (discopt-feature-requests P2-2).
     `applicability(elements)` lists the reason for each one, and should be
-    checked before trusting a diagram. In Al–Fe, for example, BCC_A2 and
-    FCC_A1 are skipped because they are magnetic.
+    checked before trusting a diagram. In Al–Fe, for example, B2_BCC is
+    skipped because it is an order–disorder phase.
+18. **Magnetic ordering.** *Issue #6, first step; measured against pycalphad
+    0.11.2.* `models/magnetic.py` implements the Inden–Hillert–Jarl term
+    RT ln(β' + 1) f(T/T_c') per formula unit, and a magnetic phase is always a
+    `CEFPhase`.
+    - **Conventions, as pycalphad applies them.**
+      - A MAGNETIC TYPE_DEFINITION applies through the phase's type-code
+        character, not through the phase name on the line
+        (Al-Fe_sundman2009 writes `A_P_D @ MAGNETIC`).
+      - TC or BMAGN parameters with no MAGNETIC type are ignored.
+      - `BM` abbreviates `BMAGN`.
+      - T_c ≤ 0 and β ≤ 0 are divided by the AFM factor.
+      - AFM factor 0 selects the Xiong model, which raises for now.
+    - **Checked.** G matches `pycalphad.calculate` to 1e-9 relative for 8
+      magnetic phases in 7 databases, at 300–1800 K. Four equilibria match
+      `pycalphad.equilibrium` in phases and compositions: the Cr–Fe BCC gap,
+      the γ loop, Fe–Nb BCC + Laves, and the Cr–V antiferromagnetic gap.
+      The one difference is at T = T_c exactly. There pycalphad's Piecewise has
+      no branch for τ = 1 and returns 0; the IHJ function is continuous there
+      and we return f(1).
+    - **Branches.** Written in s = T_c'/T, f is a polynomial on s ≤ 1 and has
+      bounded negative powers on s > 1. The two branches agree in value and
+      slope at s = 1 (C¹; the heat capacity jumps). The model is also piecewise
+      in the signs of T_c and β. A `Branch` names one smooth piece. The numeric
+      backend picks it per point. A discopt expression is built on one branch
+      (`EXPR.with_branch`).
+    - **Restricted solve.** Each free magnetic set is held on the branch it
+      starts in, by three polynomial constraints that are ≥ 0 exactly on that
+      branch. The constraint rows come after the balance rows, so μ is still
+      read from the first multipliers. If a branch constraint is active at the
+      solution, that component is flipped and the problem is solved again from
+      there. A branch combination already tried ends the loop, which is the
+      case where the solution sits on the edge itself. In the Cr–Fe gap at
+      700 K, the Cr-rich set starts with T_c > 0, stops on T_c = 0, and
+      converges on the antiferromagnetic branch in the second solve.
+    - **Pricing, and what is not done.** No interval extension is implemented
+      for the magnetic term yet. So a magnetic phase is priced by the local
+      search, without a lower bound, and its certificate is at most
+      `GLOBAL_SEARCH_INCOMPLETE` (a destabilizing point still gives
+      `LOCAL_EQUILIBRIUM`). The message names the reason.
+    - **Next.** Interval rules for ln(1 + β) and for f on s-intervals that may
+      straddle 1. Then global pricing split into the branch regions, each
+      solved with its branch constraints and taking the smaller bound.
+    - **Fitting.** `fit` refuses magnetic phases, because G is not linear in
+      TC and BMAGN.
 
 ## 10. Roadmap after MVP 1
 
