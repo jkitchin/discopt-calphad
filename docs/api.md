@@ -16,6 +16,8 @@ Generated from the docstrings in `src/`.
 
 ::: discopt.calphad.database
 
+::: discopt.calphad.databases
+
 ::: discopt.calphad.symbolic
 
 ::: discopt.calphad.io.tdb

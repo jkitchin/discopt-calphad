@@ -105,19 +105,49 @@ function explain(err) {
 /**
  * Parse a database into Python once, and remember that we did.
  *
- * A bundled file is fetched from `./data/`; a file the visitor opened arrives
- * as text on the request, because it exists nowhere else — not on this origin,
- * and not fetchable from the site that published it, which sends no CORS
- * header. Either way the text reaches Python as a string, so no database ever
- * has to exist as a file inside the Pyodide sandbox.
+ * A registry database is downloaded from its pinned URL: raw.githubusercontent
+ * sends `Access-Control-Allow-Origin: *`, so this site serves no TDB files. The
+ * download is checked against the registry's SHA-256 before Python sees it.
+ * A file the visitor opened arrives as text on the request instead, because it
+ * exists nowhere else. Either way the text reaches Python as a string, so no
+ * database ever has to exist as a file inside the Pyodide sandbox.
  */
 async function ensureDatabase(db) {
   if (databases.has(db.name)) return;
+  let text = db.text;
+  if (text == null) {
+    say(`downloading ${db.file}…`);
+    const res = await fetch(db.url);
+    if (!res.ok) throw new Error(`could not download ${db.file}: HTTP ${res.status} from ${db.url}`);
+    const bytes = await res.arrayBuffer();
+    await checkHash(db, bytes);
+    // TDB files are Latin-1, as the Python reader assumes.
+    text = new TextDecoder('latin1').decode(bytes);
+  }
   say(`reading ${db.file}…`);
-  const text = db.text ?? (await (await fetch(`./data/${db.file}`)).text());
   const info = JSON.parse(app.load_database(db.name, text, db.pressure ?? 101325));
   databases.add(db.name);
   self.postMessage({ type: 'database', info });
+}
+
+/**
+ * Refuse a download whose SHA-256 is not the registry's.
+ *
+ * `crypto.subtle` exists only in a secure context: https, or localhost. On
+ * plain http elsewhere the check cannot run. The file is then used without
+ * the check, and the page says so rather than hiding it.
+ */
+async function checkHash(db, bytes) {
+  if (!db.sha256) return;
+  if (!self.crypto?.subtle) {
+    say(`reading ${db.file} — not hash-checked (this page is not served over https)`);
+    return;
+  }
+  const digest = await self.crypto.subtle.digest('SHA-256', bytes);
+  const hex = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  if (hex !== db.sha256) {
+    throw new Error(`${db.file} from ${db.url} does not match the registry's SHA-256 (got ${hex}); not used`);
+  }
 }
 
 // Neither handler reports a status when it finishes. The page writes its own --

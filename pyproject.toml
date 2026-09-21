@@ -63,3 +63,7 @@ markers = ["slow: long-running solves (deselect with '-m \"not slow\"')"]
 where = ["src"]
 include = ["discopt.calphad*"]
 namespaces = true
+
+# The database registry. The TDB files themselves are downloaded on demand.
+[tool.setuptools.package-data]
+"discopt.calphad" = ["databases.json"]

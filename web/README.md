@@ -4,7 +4,7 @@ A phase diagram computed in the browser: pick two elements, get a T–x diagram,
 with the points drawn as they are solved. No server, no upload, no install.
 
 ```bash
-./web/build-web.sh                      # stage the wheels and databases
+./web/build-web.sh                      # stage the wheels and the database registry
 python3 -m http.server -d web 8000      # then open http://localhost:8000
 ```
 
@@ -18,7 +18,7 @@ python3 -m http.server -d web 8000      # then open http://localhost:8000
 | `worker.js` | boots Pyodide, installs the three wheels, and runs one solve at a time |
 | `calphad_app.py` | the Python driver — databases in, JSON out. Runs unchanged off-browser |
 | `pure_wheel.py` | repacks discopt as a pure-Python wheel (see below) |
-| `build-web.sh` | stages `wheels/` and `data/`; `--check` verifies what is staged |
+| `build-web.sh` | stages `wheels/` and `data/registry.json` (the TDB files are downloaded by the page); `--check` verifies what is staged |
 
 Solving happens in a worker because a solve is synchronous: on the main thread
 the page would freeze and Cancel could never be read. Cancel is a
@@ -317,6 +317,6 @@ less self-consistent than a uniformly wrong one, so this is not enabled. Path
 continuation is the principled version of the idea and does hold the right
 branch.
 
-Pressure is wired through to the database, but neither bundled TDB has a
-pressure-dependent parameter: G at 1 GPa is identical to G at 1 atm to the last
-digit.
+Pressure is wired through to the database. Of the registry's databases only
+Cu–O has a pressure-dependent term; for the others G at 1 GPa is identical to G
+at 1 atm to the last digit.

@@ -13,7 +13,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
-from discopt.calphad import R_GAS, ThermoDatabase
+from discopt.calphad import R_GAS, databases
 from discopt.calphad.fit import Dataset, _LinearModel, fit
 
 HERE = Path(__file__).parent
@@ -24,7 +24,7 @@ FREE = {
     "L(LIQUID,AL,ZN;0)": "a + b*T",
 }
 
-truth = ThermoDatabase.from_tdb(HERE / "data" / "alzn_mey.tdb")
+truth = databases.load("alzn_mey")
 rng = np.random.default_rng(1)
 lm = _LinearModel(truth, EL, [])  # evaluates the true model
 data = Dataset()

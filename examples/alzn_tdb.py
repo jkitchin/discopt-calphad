@@ -1,6 +1,7 @@
 """MVP 3: certified Al–Zn equilibria from a TDB database.
 
-Reads the an Mey (1993) Al–Zn assessment (examples/data/alzn_mey.tdb), shows
+Reads the an Mey (1993) Al–Zn assessment (``alzn_mey`` in the database registry,
+downloaded on first use), shows
 the symbolic parameter view, builds the phase models, and computes certified
 equilibria at three two-phase states:
 
@@ -16,11 +17,11 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 
-from discopt.calphad import ThermoDatabase, equilibrium
+from discopt.calphad import databases, equilibrium
 from discopt.calphad.plot import plot_gx
 
 HERE = Path(__file__).parent
-db = ThermoDatabase.from_tdb(HERE / "data" / "alzn_mey.tdb")
+db = databases.load("alzn_mey")
 
 print("phases usable in Al–Zn:")
 for name, status in db.applicability(("AL", "ZN")).items():

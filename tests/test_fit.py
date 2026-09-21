@@ -1,15 +1,12 @@
 """Fitting CALPHAD parameters to data (issue #2)."""
 
-from pathlib import Path
-
 import numpy as np
 import pytest
 
-from discopt.calphad import ThermoDatabase
+from discopt.calphad import databases
 from discopt.calphad.equilibrium.common import R_GAS
 from discopt.calphad.fit import Dataset, FreeParameter, Observation, fit
 
-TDB = Path(__file__).parents[1] / "examples" / "data" / "alzn_mey.tdb"
 EL = ("AL", "ZN")
 TRUE = {
     "L(FCC_A1,AL,ZN;0)": (7297.5, 0.47512),
@@ -20,7 +17,7 @@ TRUE = {
 
 @pytest.fixture(scope="module")
 def db():
-    return ThermoDatabase.from_tdb(TDB)
+    return databases.load("alzn_mey")
 
 
 def _lm(db, free=()):

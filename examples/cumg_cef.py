@@ -1,6 +1,6 @@
 """MVP 4: certified Cu–Mg equilibria with a two-sublattice CEF phase.
 
-Reads the NIMS Cu–Mg assessment (examples/data/cumg_nims.tdb). CU2MG, the
+Reads the NIMS Cu–Mg assessment (``cumg_nims`` in the database registry). CU2MG, the
 Laves phase (CU,MG)2(CU,MG)1, has mixing on both sublattices, so it is built as
 a ``CEFPhase``. The script prints its symbolic Gibbs energy, then computes
 certified equilibria at three states:
@@ -17,11 +17,11 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 
-from discopt.calphad import ThermoDatabase, equilibrium
+from discopt.calphad import databases, equilibrium
 from discopt.calphad.plot import plot_gx
 
 HERE = Path(__file__).parent
-db = ThermoDatabase.from_tdb(HERE / "data" / "cumg_nims.tdb")
+db = databases.load("cumg_nims")
 
 phases = db.phase_models(("CU", "MG"))
 cu2mg = phases["CU2MG"]

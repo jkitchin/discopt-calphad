@@ -134,9 +134,9 @@ print(res.summary())   # FCC_A1 + AB, CERTIFIED_TO_TOLERANCE
 ```
 
 ```python
-from discopt.calphad import ThermoDatabase, equilibrium
+from discopt.calphad import databases, equilibrium
 
-db = ThermoDatabase.from_tdb("examples/data/alzn_mey.tdb")
+db = databases.load("alzn_mey")        # fetched once from its pinned URL, hash-checked
 print(db.applicability(("AL", "ZN")))        # which phases can be modelled, and why not
 phases = db.phase_models(("AL", "ZN"))
 print(phases["LIQUID"].L[0].expr())          # 10465.5 - 3.39259*T  (symbolic, SymPy)
@@ -146,9 +146,9 @@ print(db.to_tdb()[:200])
 ```
 
 ```python
-from discopt.calphad import ThermoDatabase, equilibrium
+from discopt.calphad import databases, equilibrium
 
-db = ThermoDatabase.from_tdb("examples/data/cumg_nims.tdb")
+db = databases.load("cumg_nims")
 phases = db.phase_models(("CU", "MG"))
 cu2mg = phases["CU2MG"]                      # CEFPhase (CU,MG)2(CU,MG)1
 print(cu2mg.gibbs_expr())                    # SymPy in y0_CU, y1_MG, ..., T, R
@@ -157,15 +157,44 @@ print(res.summary())                         # FCC_A1 + CU2MG
 ```
 
 ```python
-from discopt.calphad import ThermoDatabase
+from discopt.calphad import databases
 from discopt.calphad.fit import Dataset, fit
 
-db = ThermoDatabase.from_tdb("examples/data/alzn_mey.tdb")
+db = databases.load("alzn_mey")
 data = Dataset.from_json("examples/data/alzn_synthetic.json")   # HM_MIX, SM_MIX, ACR, ZPF
 res = fit(db, data, ("AL", "ZN"), {"L(FCC_A1,AL,ZN;0)": "a + b*T", "L(LIQUID,AL,ZN;0)": "a + b*T"})
 print(res.summary())                         # values ± σ, residuals by data kind
 open("alzn_fit.tdb", "w").write(res.to_tdb())
 ```
+
+## Databases
+
+The package ships no TDB files. It ships a registry,
+`src/discopt/calphad/databases.json`, of published databases. Each entry has a
+URL pinned to one commit, the file's SHA-256, the assessment it comes from, and
+a list of the phases this package cannot model yet in each binary.
+`databases.fetch(name)` downloads a file once into the user cache and checks the
+hash. A copy that pycalphad installs is used without downloading.
+
+```python
+from discopt.calphad import databases
+
+[e.name for e in databases.find(["AL", "FE"])]       # files that form Al–Fe
+databases.find(["AL", "FE"], complete=True)          # [] -- every one has a magnetic phase
+databases.get("alzn_mey").reference                  # 'S. an Mey, Z. Metallkd. 84 (1993) 451–455; ...'
+```
+
+Where to find more TDB files:
+- [TDBDB](https://avdwgroup.engin.brown.edu/) indexes the TDB files published with
+  the CALPHAD literature;
+- [NIMS CPDDB](https://cpddb.nims.go.jp/) has several hundred assessments, and needs
+  a free login;
+- [NIST](https://www.nist.gov/programs-projects/calphad-data-informatics) publishes
+  assessments in its Materials Data Repository.
+
+Any of these files can be read with `ThermoDatabase.from_tdb(path)`. To add one
+to the registry, write its hand-written fields into `databases.json` and run
+`uv run python tools/refresh_registry.py`.
 
 ## Development
 

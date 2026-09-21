@@ -8,9 +8,13 @@ WebAssembly by [Pyodide](https://pyodide.org), POUNCE solves each restricted
 Gibbs-energy minimization, and this package generates the composition sets.
 Points are drawn as they are solved.
 
-Two systems are bundled, the two that ship with the package: Al–Zn
-(`alzn_mey.tdb`) and Cu–Mg (`cumg_nims.tdb`). You can also solve a single point,
-giving the composition either as a mole fraction or as amounts in moles.
+The systems come from the package's [database registry](databases.md). The app
+offers every binary in which all phases can be modeled: Al–Zn, Cu–Mg, Al–Mg,
+Pb–Sn, Au–Sn, Nb–Re, Cu–O, Al–Cu, Al–Y, Cu–Y, Ti–V, and a few more from COST 507.
+No TDB file is served with the app. Each one is downloaded from its pinned URL
+the first time a pair needs it, and checked against the registry's SHA-256. You
+can also open a TDB file of your own, and solve a single point with the
+composition given as a mole fraction or as amounts in moles.
 
 ## What it cannot do: certify
 
@@ -47,7 +51,7 @@ in progress. Pyodide itself is a ~10 MB download, cached after the first visit.
 ## Running it locally
 
 ```bash
-./web/build-web.sh                      # stage the wheels and databases
+./web/build-web.sh                      # stage the wheels and the database registry
 python3 -m http.server -d web 8000      # then open http://localhost:8000
 ```
 

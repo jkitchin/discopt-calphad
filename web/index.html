@@ -69,8 +69,8 @@
     padding: 0; cursor: default; min-width: 0;
   }
   .el .z { font-weight: 400; font-size: .62em; opacity: .8; }
-  /* Only elements some loaded database covers can be picked -- the two bundled
-     files, plus whatever a TDB the visitor opens adds. Everything else stays
+  /* Only elements some database covers can be picked -- the registry's fully
+     supported binaries, plus whatever a TDB the visitor opens adds. Everything else stays
      visible for orientation but is plainly inert. */
   .el.has-data {
     opacity: 1; cursor: pointer; background: var(--panel); color: var(--ink);
@@ -187,10 +187,12 @@
     <div class="row pick">
       <label>Open a TDB file<input type="file" id="tdb-file" accept=".tdb,.TDB"></label>
       <span class="note">
-        Two databases ship with this page, which is why most of the table is grey. Open a
-        <code>.tdb</code> of your own — a multicomponent one such as COST507 covers tens of
-        elements — and it is read in this tab and parsed by the Python running here. Nothing is
-        uploaded, and this page redistributes no database of its own.
+        The lit elements come from the package's database registry: published TDB files,
+        each downloaded from its pinned URL the first time a pair needs it and checked
+        against its SHA-256. An element is lit only where every phase of some binary can be
+        modeled. Open a <code>.tdb</code> of your own for anything else; it is read in this tab
+        and parsed by the Python running here. Nothing is uploaded, and this page serves no
+        database of its own.
       </span>
     </div>
   </section>
@@ -232,9 +234,9 @@
     </div>
     <div class="progress"><i id="progress-bar"></i></div>
     <p class="note" id="pressure-note">
-      Pressure is passed to the database, but neither bundled file has a pressure-dependent
-      parameter: G is unchanged to the last digit at 1 GPa. The field is here because the
-      model layer supports it, not because it does anything to these two systems.
+      Pressure is passed to the database. Of the registry's databases only Cu–O has a
+      pressure-dependent term; for the others G is unchanged at any pressure. The field is here
+      because the model layer supports it.
     </p>
   </section>
 
@@ -249,9 +251,10 @@
   </section>
 
   <footer>
-    Databases: Al–Zn from <code>alzn_mey.tdb</code> and Cu–Mg from <code>cumg_nims.tdb</code> ship
-    with the package; anything else is a TDB file you open above, read in this tab rather than
-    uploaded. This is pre-alpha research code: it covers far fewer
+    Databases: published TDB files listed in the package's registry, downloaded from their
+    pinned URLs (most from <a href="https://github.com/pycalphad/pycalphad">pycalphad</a>'s test
+    suite) with the assessment cited for each; anything else is a TDB file you open above, read
+    in this tab rather than uploaded. This is pre-alpha research code: it covers far fewer
     models than <a href="https://pycalphad.org">pycalphad</a> or a commercial CALPHAD tool,
     and it is much slower. What it adds — natively, not in this tab — is a certificate.
   </footer>

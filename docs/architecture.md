@@ -523,8 +523,8 @@ database phase models).
     μ, phases).
 
   A sweep (not in CI) reads and round-trips 36 of pycalphad's 38 test TDB files.
-- **Example:** `examples/alzn_tdb.py` reads the an Mey Al–Zn database, copied
-  with attribution to `examples/data/`. It prints the symbolic view and
+- **Example:** `examples/alzn_tdb.py` reads the an Mey Al–Zn database, fetched
+  from the registry (`databases.load("alzn_mey")`). It prints the symbolic view and
   certifies three two-phase states (FCC gap, FCC + HCP, LIQUID + HCP) with
   G–x panels.
 

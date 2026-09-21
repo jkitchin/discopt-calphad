@@ -5,30 +5,66 @@
 import { ELEMENTS } from './elements.js';
 
 /**
- * The databases this page can use. The first two are what build-web.sh stages,
- * one binary each; opening a file appends to this list, which is why it is not
- * frozen.
+ * The databases this page can use: the package's registry, staged by
+ * build-web.sh as data/registry.json. No TDB file is served from this site.
+ * Each entry names a published file by a URL pinned to one commit, with its
+ * SHA-256, and the worker downloads it the first time a pair needs it. Opening
+ * a file appends to this list, which is why it is not frozen.
+ *
+ * A registry entry says, for each binary it can form, which phases this
+ * package cannot model yet. Only a binary with none missing is offered. A
+ * diagram without, say, a magnetic BCC_A2 would be drawn with complete
+ * confidence and would be wrong.
  *
  * `ms` is the measured cost of one point under Pyodide (M4 Pro, Pyodide 0.28.3)
  * — about twice the native rate. It is only used to warn before a long run.
- * `tLo`/`tHi` are a useful temperature window for that system. A file the
- * visitor opened can supply none of the three: it has never been timed here,
- * and it covers many systems, each with its own window. So it carries them as
- * null and the page says what it does not know rather than inventing it.
+ * `tLo`/`tHi` are a useful temperature window for that system. Only the systems
+ * in MEASURED have been timed. Every other system, and any file the visitor
+ * opens, carries null for all three, and the page says what it does not know
+ * rather than inventing it.
  */
-const DATABASES = [
-  { name: 'Al-Zn', file: 'alzn_mey.tdb', elements: ['AL', 'ZN'], tLo: 400, tHi: 950, ms: 69 },
-  { name: 'Cu-Mg', file: 'cumg_nims.tdb', elements: ['CU', 'MG'], tLo: 400, tHi: 1200, ms: 144 },
-];
+const MEASURED = {
+  alzn_mey: { tLo: 400, tHi: 950, ms: 69 },
+  cumg_nims: { tLo: 400, tHi: 1200, ms: 144 },
+};
+
+async function loadRegistry() {
+  try {
+    const res = await fetch('./data/registry.json');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return (await res.json()).databases;
+  } catch (err) {
+    console.error('could not read the database registry', err);
+    return [];
+  }
+}
+
+const REGISTRY = await loadRegistry();
 
 // `elements` is the ordered pair to solve -- the axis labels and Python both
 // want exactly two -- while `covers` is everything the file can do. For a
-// bundled binary they are the same; for a picked file they are not, which is
-// why the two are separate fields rather than one.
-for (const db of DATABASES) db.covers = new Set(db.elements);
+// binary file they are the same; for a multicomponent file or a picked one they
+// are not, which is why the two are separate fields rather than one. `pairs`
+// holds the binaries a registry file models completely, keyed "A-B" (sorted).
+const DATABASES = REGISTRY.map((e) => ({
+  name: e.name,
+  file: e.file,
+  url: e.url,
+  sha256: e.sha256,
+  reference: e.reference,
+  label: e.title,
+  elements: e.elements.length === 2 ? [...e.elements] : [],
+  covers: new Set(e.elements),
+  pairs: new Set(Object.keys(e.binaries).filter((k) => e.binaries[k].length === 0)),
+  missing: e.binaries,
+  tLo: null,
+  tHi: null,
+  ms: null,
+  ...MEASURED[e.name],
+})).filter((db) => db.pairs.size > 0);
 
 /** Element symbols some loaded database covers. Grows when a file is opened. */
-const WITH_DATA = new Set(DATABASES.flatMap((db) => db.elements));
+const WITH_DATA = new Set(DATABASES.flatMap((db) => [...db.pairs].flatMap((k) => k.split('-'))));
 const $ = (id) => document.getElementById(id);
 
 // Names and parse errors out of a TDB are file contents, and they are written
@@ -89,21 +125,38 @@ function colorFor(phase) {
 /**
  * The database to use for the chosen pair, if any covers it.
  *
- * A bundled file covers exactly one binary; a file the visitor opened covers
- * every binary among its elements, so "covers" is containment, not equality. A
- * bundled exact match wins where there is one, because that assessment is what
- * this page has been checked against, and an opened file answers for the rest.
+ * A registry file answers only for the binaries it models completely (its
+ * `pairs`); a file the visitor opened covers every binary among its elements,
+ * so there "covers" is containment. The registry wins where it has the pair,
+ * because its support has been checked, and an opened file answers for the rest.
  */
 function currentDatabase() {
   if (state.chosen.length !== 2) return null;
   const want = [...state.chosen].sort().join('-');
-  const exact = DATABASES.find((db) => !db.text && [...db.elements].sort().join('-') === want);
-  if (exact) return exact;
-  const covering = DATABASES.find((db) => state.chosen.every((el) => db.covers.has(el)));
+  // A dedicated binary assessment before a multicomponent file that also covers
+  // the pair: fewest elements first, then registry order.
+  const fromRegistry = DATABASES
+    .filter((db) => db.pairs?.has(want))
+    .sort((a, b) => a.covers.size - b.covers.size)[0];
+  if (fromRegistry) {
+    return fromRegistry.covers.size === 2 ? fromRegistry : { ...fromRegistry, elements: [...state.chosen] };
+  }
+  const covering = DATABASES.find((db) => db.text && state.chosen.every((el) => db.covers.has(el)));
   // The pair in play comes from the selection rather than the file, because a
   // multicomponent file has no pair of its own. Everything downstream -- the
   // axis labels, the worker message, Python's `elements` -- wants two, in order.
   return covering ? { ...covering, elements: [...state.chosen] } : null;
+}
+
+/**
+ * Registry files that form this pair but cannot model all of its phases yet,
+ * as "Al–Fe (alfe.tdb): BCC_A2, FCC_A1" — so a pair that is not offered says why.
+ */
+function incompleteFor(pair) {
+  const want = [...pair].sort().join('-');
+  return REGISTRY
+    .filter((e) => e.binaries[want]?.length)
+    .map((e) => `${esc(e.title)} (<code>${esc(e.file)}</code>): ${e.binaries[want].map(esc).join(', ')}`);
 }
 
 /** The file being parsed, until Python reports what is in it. */
@@ -170,8 +223,8 @@ function buildTable() {
  * Enable the elements some loaded database covers.
  *
  * Called again whenever a database is added, because opening a file is what
- * turns most of this table on: the two bundled files reach four elements
- * between them, and one multicomponent file reaches tens.
+ * can turn more of this table on: one multicomponent file reaches tens of
+ * elements.
  */
 function refreshTable() {
   for (const cell of document.querySelectorAll('.el')) {
@@ -207,17 +260,24 @@ function renderSelection() {
       ? ` · ${info.phases.length > 12 ? `${info.phases.length} phases` : `phases: ${info.phases.join(', ')}`}`
       : '';
     $('systems').innerHTML =
-      `<strong>${db.elements.join('–')}</strong> from <code>${esc(db.file)}</code>${phases}${skippedNote(info)}`;
+      `<strong>${db.elements.join('–')}</strong> from <code>${esc(db.file)}</code>`
+      + `${db.reference ? ` — ${esc(db.reference)}` : ''}${phases}${skippedNote(info)}`;
     // A picked file spans many systems, each with its own useful temperature
     // window, so it offers no default and the fields are left as they are.
     if (db.tLo != null) $('t-lo').value = db.tLo;
     if (db.tHi != null) $('t-hi').value = db.tHi;
     setXLabels(db);
   } else if (state.chosen.length === 2) {
-    $('systems').innerHTML =
-      `No loaded database covers ${state.chosen.join('–')}. Loaded: ${pairs} — open a TDB file below for more.`;
+    const partial = incompleteFor(state.chosen);
+    $('systems').innerHTML = partial.length
+      ? `${state.chosen.join('–')} is in the registry, but some of its phases use models this package does not `
+        + `support yet (magnetic or order–disorder), and a diagram without them would be wrong: `
+        + `${partial.join('; ')}. Open a TDB file below to try another description.`
+      : `No database covers ${state.chosen.join('–')}. Available: ${pairs} — open a TDB file below for more.`;
   } else {
-    $('systems').innerHTML = `Pick two elements. Loaded: ${pairs}`;
+    $('systems').innerHTML = DATABASES.length
+      ? `Pick two elements. Available: ${pairs}`
+      : 'The database registry could not be read, so only a TDB file you open below can be used.';
   }
   updateEstimate();
   $('run').disabled = !db || state.running || !state.ready;
@@ -252,14 +312,14 @@ function updateEstimate() {
   const seconds = (n * db.ms) / 1000;
   // An opened file has never been timed here, and a made-up number would read
   // exactly like a measured one. Say what is known: a multicomponent database
-  // carries far more phases than a bundled binary, and the run reports its real
+  // carries far more phases than a binary assessment, and the run reports its real
   // cost when it finishes.
   const cost = db.ms
     ? `${n} points to start, about ${seconds < 1 ? '1' : seconds.toFixed(0)} s — `
       + `${db.elements.join('–')} measures ${db.ms} ms per point in the browser. `
     : `${n} points to start, at a cost per point this page has not measured — `
-      + 'a multicomponent file offers many more phases per solve than the bundled binaries do at '
-      + '69–144 ms, so expect several times that. ';
+      + 'the measured binaries (Al–Zn, Cu–Mg) take 69–144 ms, and a multicomponent file offers '
+      + 'many more phases per solve, so expect several times that. ';
   $('estimate').textContent =
     cost
     + (rounds
@@ -1294,7 +1354,7 @@ function washFills(brs, tLo, tHi) {
   // the axis is not a legitimate far edge at all, and nothing else in the rule
   // can tell: the axis side has no crossing to disagree with.
   //
-  // Cu2Mg is intermediate -- in cumg_nims.tdb a four-end-member reciprocal
+  // Cu2Mg is intermediate -- in cumg.tdb a four-end-member reciprocal
   // solution, so it has real width, but only from about x(Cu) 0.652 to 0.671.
   // At the handful of rows where no other branch survives (the bottom three
   // bands above tLo, and two near 1060 K) the interval left of its crossing ran
@@ -2138,7 +2198,9 @@ $('tdb-file').addEventListener('change', async (ev) => {
     setStatus(`could not read ${file.name}: ${err.message}`, true);
     return;
   }
-  const name = file.name.replace(/\.tdb$/i, '');
+  // Prefixed so an opened file never takes the name of a registry entry, which
+  // the worker would treat as already parsed.
+  const name = `file:${file.name.replace(/\.tdb$/i, '')}`;
   picked = { name, file: file.name, text };
   // Queues if Python is still booting; the worker awaits its own readiness.
   worker.postMessage({

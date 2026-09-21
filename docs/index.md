@@ -96,9 +96,9 @@ print(res.certificate, [cs.x for cs in res.composition_sets], res.mu)
 ```
 
 ```python
-from discopt.calphad import ThermoDatabase, equilibrium
+from discopt.calphad import databases, equilibrium
 
-db = ThermoDatabase.from_tdb("examples/data/alzn_mey.tdb")
+db = databases.load("alzn_mey")        # fetched once from its pinned URL, hash-checked
 print(db.applicability(("AL", "ZN")))  # which phases can be modelled, and why not
 phases = db.phase_models(("AL", "ZN"))
 print(phases["LIQUID"].L[0].expr())  # 10465.5 - 3.39259*T  (symbolic, SymPy)
@@ -107,10 +107,10 @@ print(res.summary())
 ```
 
 ```python
-from discopt.calphad import ThermoDatabase
+from discopt.calphad import databases
 from discopt.calphad.fit import Dataset, fit
 
-db = ThermoDatabase.from_tdb("examples/data/alzn_mey.tdb")
+db = databases.load("alzn_mey")
 data = Dataset.from_json("examples/data/alzn_synthetic.json")  # HM_MIX, SM_MIX, ACR, ZPF
 res = fit(db, data, ("AL", "ZN"), {"L(FCC_A1,AL,ZN;0)": "a + b*T", "L(LIQUID,AL,ZN;0)": "a + b*T"})
 print(res.summary())  # values ± σ, residuals by data kind

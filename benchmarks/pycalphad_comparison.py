@@ -30,11 +30,10 @@ from discopt.calphad import R_GAS, ThermoDatabase, equilibrium
 
 warnings.filterwarnings("ignore")
 TL = float(sys.argv[1]) if len(sys.argv) > 1 else 60.0
-ROOT = Path(__file__).resolve().parents[1]
 PYDB = Path(pycalphad.__file__).parent / "tests" / "databases"
 
 SYSTEMS = [
-    ("Al-Zn", ROOT / "examples/data/alzn_mey.tdb", ("AL", "ZN"), [(0.5, 500.0), (0.3, 600.0), (0.8, 700.0)]),
+    ("Al-Zn", PYDB / "alzn_mey.tdb", ("AL", "ZN"), [(0.5, 500.0), (0.3, 600.0), (0.8, 700.0)]),
     ("Cu-Mg", PYDB / "cumg.tdb", ("CU", "MG"), [(0.75, 700.0), (0.62, 900.0), (0.2, 700.0)]),
 ]
 

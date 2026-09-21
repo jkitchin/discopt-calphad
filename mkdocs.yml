@@ -30,6 +30,7 @@ theme:
 nav:
   - Home: index.md
   - Examples: examples.md
+  - Databases: databases.md
   - Browser app: web-app.md
   - Design:
       - Architecture: architecture.md

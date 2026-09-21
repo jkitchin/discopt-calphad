@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Stage everything the page needs that is not source: three wheels, the
-# thermodynamic databases, and a manifest naming them.
+# Stage everything the page needs that is not source: three wheels, a manifest
+# naming them, and the database registry. The registry lists TDB files by pinned
+# URL and hash; the page downloads each one when it is needed, so no TDB file
+# is staged or served from this site.
 #
 # Nothing staged here is committed (see .gitignore). Two of the three wheels are
 # built from this checkout, so they would go stale the moment the source moved.
@@ -39,7 +41,7 @@ if [[ "${1:-}" == "--check" ]]; then
     echo "worker.js pins Pyodide $page but this script stages for $PYODIDE_VERSION" >&2
     exit 1
   fi
-  for f in "$wheels/manifest.json" "$data/alzn_mey.tdb" "$data/cumg_nims.tdb"; do
+  for f in "$wheels/manifest.json" "$data/registry.json"; do
     [[ -f "$f" ]] || { echo "not staged: $f (run web/build-web.sh)" >&2; exit 1; }
   done
   ls "$vendor"/pounce_solver-*-emscripten_*_wasm32.whl >/dev/null 2>&1 ||
@@ -81,11 +83,9 @@ fi
 cp "$pounce_src" "$wheels/"
 echo "  $(basename "$pounce_src")"
 
-echo "==> databases"
-for tdb in "$root/examples/data/alzn_mey.tdb" "$root/examples/data/cumg_nims.tdb"; do
-  cp "$tdb" "$data/"
-  echo "  $(basename "$tdb")"
-done
+echo "==> database registry"
+cp "$root/src/discopt/calphad/databases.json" "$data/registry.json"
+echo "  $data/registry.json"
 
 echo "==> manifest"
 python3 - "$wheels/manifest.json" "$PYODIDE_VERSION" "$(basename "$pounce_src")" \
