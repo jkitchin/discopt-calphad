@@ -5,8 +5,10 @@ description: >
   properties with discopt-calphad (the discopt.calphad package): loading a TDB
   file or fetching a published database by name, solving and certifying an
   equilibrium, reading a certificate level, viewing or editing parameters
-  symbolically and exporting TDB, plotting G–x curves, or fitting CALPHAD
-  parameters to experimental data. Also use it when writing a custom phase
+  symbolically and exporting TDB, plotting G–x curves, fitting CALPHAD
+  parameters to experimental data, or computing CALPHAD data (formation and
+  mixing enthalpies) from an ASE calculator such as a machine-learned
+  potential (UMA, MACE), EAM or EMT. Also use it when writing a custom phase
   model for its solver.
 ---
 
@@ -188,6 +190,65 @@ new_tdb = fitted.to_tdb()                 # with a provenance header
 equilibrium at each tie-line datum. `fit` refuses magnetic phases, because G
 is not linear in TC or BMAGN.
 
+More on data and forms:
+- `add_formation(phase, value, sigma, endmember="AL:CU")` adds an enthalpy of
+  formation (`HM_FORM`, J/mol of atoms) relative to the elements' reference
+  phases. Thermochemical observations may give `site_fractions` (one dict per
+  sublattice) instead of `x`, which reaches every endmember of a CEF phase.
+- A form may use database FUNCTIONs, as compound parameters do:
+  `{"G(ALCU_THETA,AL:CU;0)": "a + b*T + 2*GHSERAL + GHSERCU"}`.
+- Every `Observation` has a `source` label (and a `note` for approximations);
+  `to_tdb()` lists the sources in its header.
+
+## 8. Data from an ASE calculator (MLIPs, EAM, EMT)
+
+`discopt.calphad.mlip` turns any ASE calculator into fitting data: formation
+enthalpies of compounds and CEF endmembers (against the elements in their
+reference structures, same model), and mixing enthalpies from SQS (icet).
+Needs the `mlip` and `sqs` extras. The calculator produces **data**, never a
+phase model, so the certificate covers the fitted model only; the
+calculator's error enters only through σ.
+
+```python
+from ase.calculators.emt import EMT   # or FAIRChemCalculator (UMA), mace_mp(), EAM, ...
+
+from discopt.calphad import mlip
+
+alcu = databases.load("alcuy_zhang")
+model = mlip.from_ase(EMT(), name="EMT")            # name = the source label on every observation
+result = mlip.compute(
+    model, alcu, ("AL", "CU"),
+    compounds={"ALCU_THETA": ["AL:CU"]},            # endmembers; a list of phases takes all of them
+    structures={"ALCU_THETA": ("C16", ["8h"], ["4a"])},  # phases mlip.PHASES does not know
+    mixing={"FCC_A1": [0.5]},                       # site fractions of AL on the mixing sublattice
+    model_sigma=2.0,                                # kJ/mol, the calculator's own error
+    sqs=mlip.SQSOptions(n_steps=200),               # 2 SQS per composition; fewer annealing steps
+)
+print(result.table())                               # kJ/mol, and any structure that left its prototype
+fitted_alcu = fit(alcu, result.dataset, ("AL", "CU"), {"G(ALCU_THETA,AL:CU;0)": "a + 6.75*T + 2*GHSERAL + GHSERCU"})
+```
+
+- **σ.** σ² = σ_config² + σ_model². σ_config is the SQS spread, pooled over
+  a phase's compositions by default (`pool=True`), because two SQS alone give
+  a σ with one degree of freedom. σ_model is `model_sigma=` (kJ/mol, a number
+  or a dict by phase), or the model's ensemble spread from `from_ase(...,
+  uncertainty=)`. It is usually the larger part, and nothing computes it for
+  you. A formation enthalpy (one structure) without either **raises**; SQS
+  data without σ_model **warn**. `sigma=` sets σ directly.
+- **Relaxation.** `RelaxPolicy(mode="symmetry" | "full" | "fixed", fmax=,
+  steps=)`. A structure that leaves its prototype (symmetry-breaking cell
+  strain, large displacements, a space-group change, or no convergence) is
+  listed in `result.flagged` and left out of the data.
+- **Structures.** `mlip.PHASES` maps generic names (FCC_A1, BCC_A2, HCP_A3,
+  L12_FCC, B2_BCC, D019_HCP, LAVES_C14/C15/C36, SIGMA) to prototypes. For
+  other names give `(prototype, sites per sublattice...)`; `mlip.PROTOTYPES`
+  lists the prototypes.
+- **Cache.** `from_ase(..., cache=True)` keeps relaxations on disk, keyed by
+  the source label: change the label when the model changes.
+- A 0 K energy stands in for H at 298.15 K, and every observation's `note`
+  says so. Fit only enthalpy coefficients from such data, and keep or fit the
+  T coefficients from other data. Only `method="sqs"` exists yet.
+
 ## Conventions and pitfalls
 
 - **Units.**
@@ -228,5 +289,6 @@ is not linear in TC or BMAGN.
 - `docs/architecture.md`: the formulation, the certificate theorem, the solver
   decomposition, and §9 (every convention, measured against pycalphad).
 - `docs/databases.md`: the registry, and where to find more TDB files.
+- `docs/mlip.md`: data from ASE calculators, and what the certificate covers.
 - [reference/phase-protocol.md](reference/phase-protocol.md): the interface a
   custom phase model implements.

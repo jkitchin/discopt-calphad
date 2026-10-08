@@ -26,6 +26,13 @@ the tangent-plane distance Ψ(y) = G(y) − μ·A(y):
   *active*, its bound stalls near −1e-4, so the result is `GLOBAL_SEARCH_INCOMPLETE`.
 - **Fitting:** weighted linear least squares of TDB parameters to
   thermochemical, activity and tie-line data.
+- **Data from ASE calculators (issue #5, phase 1):** `discopt.calphad.mlip`
+  turns any ASE calculator (a machine-learned potential such as UMA or MACE,
+  EAM, EMT) into fitting data: formation enthalpies of compounds and CEF
+  endmembers, and SQS mixing enthalpies (icet), with σ from their spread,
+  a source label on every observation, and a check that flags structures
+  that leave their prototype. The certificate covers the fitted model, not the
+  calculator (`docs/mlip.md`).
 - **Pricing modes:** `certify="final"` (default) prices locally while
   generating sets and globally once at the end. `certify="none"` skips the
   global step, and `res.certify()` adds it later.

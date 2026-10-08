@@ -36,6 +36,16 @@ Generated from the docstrings in `src/`.
 
 ::: discopt.calphad.fit
 
+## Data from ASE calculators
+
+::: discopt.calphad.mlip.calculator
+
+::: discopt.calphad.mlip.prototypes
+
+::: discopt.calphad.mlip.sqs
+
+::: discopt.calphad.mlip.data
+
 ## Plotting
 
 ::: discopt.calphad.plot

@@ -1,0 +1,439 @@
+"""Turn relaxed energies into a fitting :class:`~discopt.calphad.fit.Dataset`.
+
+Two kinds of data come out:
+
+- **formation enthalpies** (``HM_FORM``) of compounds and CEF endmembers,
+  relative to each element in its reference (SER) structure, computed with
+  the same model so that systematic errors largely cancel;
+- **mixing enthalpies** (``HM_MIX``) of a solution phase on its own lattice,
+  relative to the phase's pure endmembers, from special quasirandom
+  structures (``method="sqs"``).
+
+Every value is a 0 K energy standing in for an enthalpy at 298.15 K, and each
+observation records that approximation in its ``note``. The pure elements are
+never fitted: their SGTE descriptions stay as they are.
+
+**σ.** With ``sigma="spread"`` (the default), σ² = σ_config² + σ_model².
+
+- **σ_config** is the spread of the SQS behind a mixing enthalpy. Two SQS at
+  one composition give a standard deviation with a single degree of freedom,
+  which can be off by an order of magnitude either way. By default
+  (``pool=True``) the variances of every composition of a phase are pooled,
+  Σ(n_i − 1)s_i² / Σ(n_i − 1), so nine compositions with two SQS each give
+  one σ_config with nine degrees of freedom. ``pool=False`` keeps one σ per
+  composition. A formation enthalpy comes from one structure and has no
+  σ_config.
+- **σ_model** is the calculator's own error, which no spread can see. It is
+  ``model_sigma=`` (kJ/mol, a number or a dict by phase) when given, and
+  otherwise the model's ensemble or committee spread (``from_ase(...,
+  uncertainty=)``) if it has one. No first-principles value exists otherwise:
+  take it from a benchmark, or from a comparison with DFT or experiment.
+
+A value with neither part raises and asks for ``model_sigma=`` or ``sigma=``,
+rather than inventing a number. A mixing enthalpy with σ_config but no
+σ_model is used with a warning that its σ covers only configurational spread.
+``sigma=`` (a number in kJ/mol, or a dict by phase) sets σ directly and
+replaces both parts. Every row of :meth:`MLIPResult.table` reports the degrees
+of freedom of its σ_config. After a fit, χ²/dof well above 1 means the σ are
+too small for the scatter in the data.
+
+**What the certificate covers.** A fit to these data, and the certified
+equilibria computed from it, are exact statements about the *fitted model*.
+They say nothing about how good the calculator is: its error reaches the
+result only through σ.
+"""
+
+from __future__ import annotations
+
+import math
+import warnings
+from dataclasses import dataclass, field
+from itertools import product
+
+import numpy as np
+
+from discopt.calphad.fit import Dataset
+from discopt.calphad.mlip.calculator import EV_TO_J_PER_MOL, Relaxation, RelaxPolicy
+from discopt.calphad.mlip.prototypes import PhaseStructure, atomic_volume, phase_structure
+
+__all__ = ["APPROXIMATION", "MLIPResult", "compute", "dataset", "reference_energies"]
+
+#: recorded on every observation made here
+APPROXIMATION = "0 K energy used as the enthalpy at 298.15 K"
+
+
+@dataclass
+class MLIPResult:
+    """The dataset, and every relaxation and computed value behind it."""
+
+    dataset: Dataset
+    #: one row per value: kind, phase, configuration, x, value and sigma in kJ/mol, structures used,
+    #: and the degrees of freedom of the configurational part of sigma (None without one)
+    rows: list[dict] = field(default_factory=list)
+    #: element -> relaxation of its reference structure
+    references: dict[str, Relaxation] = field(default_factory=dict)
+    relaxations: list[Relaxation] = field(default_factory=list)
+    #: (label, relaxation) for every structure that left its prototype
+    flagged: list[tuple[str, Relaxation]] = field(default_factory=list)
+
+    def table(self) -> str:
+        lines = [
+            f"{'kind':8s} {'phase':14s} {'config':12s} {'x':>6s} {'value':>10s} {'sigma':>8s} {'dof':>4s}  (kJ/mol)"
+        ]
+        for r in self.rows:
+            x = "" if r["x"] is None else f"{r['x']:.3f}"
+            dof = "" if r.get("sigma_dof") is None else str(r["sigma_dof"])
+            lines.append(
+                f"{r['kind']:8s} {r['phase']:14s} {r['config']:12s} {x:>6s} {r['value']:10.3f} {r['sigma']:8.3f}"
+                f" {dof:>4s}"
+            )
+        for label, rel in self.flagged:
+            lines.append(f"flagged {label}: {rel.reason}")
+        return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------- helpers
+
+
+def _structure_for(name: str, structures) -> PhaseStructure:
+    spec = (structures or {}).get(name)
+    if spec is None:
+        return phase_structure(name)
+    if isinstance(spec, PhaseStructure):
+        return spec
+    return phase_structure(*spec)
+
+
+def _constituents(db, name: str, elements) -> list[tuple[str, ...]]:
+    allowed = set(elements) | {"VA"}
+    return [tuple(sorted(c for c in s if c in allowed)) for s in db.phases[name].constituents]
+
+
+def _relax(model, structures, policy: RelaxPolicy) -> list[Relaxation]:
+    if hasattr(model, "relax"):
+        return model.relax(structures, policy)
+    warnings.warn(f"{model.name} has no relax(): the prototype check is skipped", stacklevel=3)
+    out = []
+    for a, e in zip(structures, model.energies(structures, policy)):
+        out.append(
+            Relaxation(model.name, a.get_chemical_formula(), len(a), float(e) * len(a), True, 0, 0.0, 0.0, 0.0, "", "")
+        )
+    return out
+
+
+def _vegard(atoms) -> float:
+    return float(np.mean([atomic_volume(s) for s in atoms.get_chemical_symbols()]))
+
+
+def _model_sigma(model, structures) -> float | None:
+    if not getattr(model, "has_uncertainty", hasattr(model, "uncertainty")):
+        return None
+    try:
+        return float(np.mean(model.uncertainty(structures)))
+    except NotImplementedError:
+        return None
+
+
+def _kj(value, phase: str, what: str) -> float | None:
+    """A number or a dict-by-phase entry in kJ/mol, as J/mol; None when not given (or ``"spread"``)."""
+    if isinstance(value, dict):
+        value = value.get(phase)
+    if value is None or isinstance(value, str):
+        if isinstance(value, str) and value != "spread":
+            raise ValueError(f"{what} must be 'spread', a number in kJ/mol, or a dict of those by phase; got {value!r}")
+        return None
+    if value <= 0:
+        raise ValueError(f"{what} must be positive")
+    return float(value) * 1000.0
+
+
+def _sigma(phase: str, label: str, config: float | None, model: float | None, single: bool) -> float:
+    """σ in J/mol from its configurational and model parts, both in J/mol (see the module docstring)."""
+    parts = [p for p in (config, model) if p]
+    if not parts:
+        why = "comes from a single structure" if single else "has zero spread over its structures"
+        raise ValueError(
+            f"{label}: the value {why} and the model has no uncertainty estimate; pass model_sigma= or sigma= "
+            f"(kJ/mol), for example model_sigma={{'{phase}': 2.0}}"
+        )
+    return math.sqrt(sum(p * p for p in parts))
+
+
+def _check(label: str, rel: Relaxation, result: MLIPResult, keep_flagged: bool) -> bool:
+    result.relaxations.append(rel)
+    if rel.left_prototype:
+        result.flagged.append((label, rel))
+        warnings.warn(
+            f"{label} left its prototype ({rel.reason}); {'kept' if keep_flagged else 'not used'}", stacklevel=3
+        )
+        return keep_flagged
+    return True
+
+
+# ---------------------------------------------------------------------------- references
+
+
+def reference_energies(model, db, elements, *, relax=None, structures=None, result=None) -> dict[str, Relaxation]:
+    """Each element relaxed in the structure of its reference phase (the database's ELEMENT line)."""
+    policy = relax or RelaxPolicy()
+    out = {}
+    for e in elements:
+        ref = db.elements[e].reference_phase if e in db.elements else ""
+        if not ref:
+            raise ValueError(f"{e} has no reference phase in the database")
+        ps = _structure_for(ref, structures)
+        cons = db.phases[ref].constituents if ref in db.phases else None
+        endmember = []
+        for s, sub in enumerate(ps.sublattices):
+            if sub is None:
+                endmember.append("VA")
+            elif cons is None or e in cons[s]:
+                endmember.append(e)
+            else:
+                raise ValueError(f"{ref}: sublattice {s} cannot hold {e}")
+        atoms = ps.build(endmember, atomic_volume(e))
+        rel = _relax(model, [atoms], policy)[0]
+        if rel.left_prototype:
+            raise ValueError(f"the reference structure of {e} ({ref}) left its prototype: {rel.reason}")
+        out[e] = rel
+        if result is not None:
+            result.relaxations.append(rel)
+    return out
+
+
+# ---------------------------------------------------------------------------- formation
+
+
+def _endmembers(db, name, elements, given):
+    cons = _constituents(db, name, elements)
+    if given is not None:
+        out = []
+        for em in given:
+            parts = tuple(p.strip().upper() for p in (em.split(":") if isinstance(em, str) else em))
+            if len(parts) != len(cons) or any(c not in s for c, s in zip(parts, cons)):
+                raise ValueError(f"{name}: endmember {':'.join(parts)} does not fit {cons}")
+            out.append(parts)
+        return out
+    out = [em for em in product(*cons) if len({c for c in em if c != "VA"}) >= 2]
+    if not out:
+        raise ValueError(f"{name} has no endmember with two or more elements in {'-'.join(elements)}")
+    return out
+
+
+def _formation(model, db, elements, compounds, refs, policy, structures, sigma, model_sigma, T, result):
+    items = compounds.items() if isinstance(compounds, dict) else ((c, None) for c in compounds)
+    for name, given in items:
+        name = name.upper()
+        ps = _structure_for(name, structures)
+        ps.check_ratios(db.phases[name].site_ratios, _constituents(db, name, elements), name)
+        for em in _endmembers(db, name, elements, given):
+            label = f"{name} {':'.join(em)}"
+            atoms = ps.build(em)
+            atoms = ps.build(em, _vegard(atoms))
+            rel = _relax(model, [atoms], policy)[0]
+            if not _check(label, rel, result, False):
+                continue
+            symbols = atoms.get_chemical_symbols()
+            x = {e: symbols.count(e.capitalize()) / len(symbols) for e in elements}
+            dh = rel.energy_per_atom - sum(x[e] * refs[e].energy_per_atom for e in elements)
+            sig = _kj(sigma, name, "sigma")
+            if sig is None:
+                unc = _kj(model_sigma, name, "model_sigma")
+                if unc is None:
+                    u = _model_sigma(model, [atoms])
+                    if u is not None:
+                        ref_unc = [_model_sigma(model, [refs[e].atoms()]) or 0.0 for e in elements]
+                        unc = math.sqrt(u**2 + sum((x[e] * r) ** 2 for e, r in zip(elements, ref_unc)))
+                        unc *= EV_TO_J_PER_MOL
+                sig = _sigma(name, label, None, unc, single=True)
+            result.dataset.add_formation(
+                name, dh * EV_TO_J_PER_MOL, sig, endmember=":".join(em), T=T, source=model.name, note=APPROXIMATION
+            )
+            result.rows.append(
+                {
+                    "kind": "HM_FORM",
+                    "phase": name,
+                    "config": ":".join(em),
+                    "x": x[elements[0]],
+                    "value": dh * EV_TO_J_PER_MOL / 1000,
+                    "sigma": sig / 1000,
+                    "structures": 1,
+                    "sigma_dof": None,
+                }
+            )
+
+
+# ---------------------------------------------------------------------------- mixing
+
+
+def _mixing(model, db, elements, mixing, method, policy, structures, sigma, model_sigma, pool, T, sqs, result):
+    from discopt.calphad.fit import Observation
+    from discopt.calphad.mlip.sqs import SQSOptions, generate
+
+    if method != "sqs":
+        raise NotImplementedError(
+            f"method={method!r}: phase 1 provides 'sqs' only ('random' and "
+            "'cluster_expansion' come later, see issue #5)"
+        )
+    options = sqs or SQSOptions()
+    if len(elements) != 2:
+        raise NotImplementedError("mixing enthalpies need a binary system")
+    for name, grid in mixing.items():
+        name = name.upper()
+        ps = _structure_for(name, structures)
+        cons = _constituents(db, name, elements)
+        ps.check_ratios(db.phases[name].site_ratios, cons, name)
+        mix = [s for s, c in enumerate(cons) if set(elements) <= set(c)]
+        if len(mix) != 1 or any(len(c) > 1 for s, c in enumerate(cons) if s != mix[0]) or "VA" in cons[mix[0]]:
+            raise NotImplementedError(
+                f"{name}: SQS mixing needs exactly one sublattice mixing {elements}, "
+                f"without VA, and every other sublattice fixed; the phase has {cons}"
+            )
+        m = mix[0]
+        fixed = {s: c[0] for s, c in enumerate(cons) if s != m}
+        ends = {}
+        for e in elements:
+            em = tuple(e if s == m else fixed[s] for s in range(len(cons)))
+            atoms = ps.build(em)
+            atoms = ps.build(em, _vegard(atoms))
+            rel = _relax(model, [atoms], policy)[0]
+            label = f"{name} {':'.join(em)}"
+            if not _check(label, rel, result, False):
+                raise ValueError(
+                    f"{label}: the pure endmember of the mixing lattice left its prototype; "
+                    "ΔH_mix needs it. Try RelaxPolicy(mode='symmetry')"
+                )
+            ends[e] = rel
+        points = []
+        for y in np.atleast_1d(np.asarray(grid, float)):
+            y = float(y)
+            # Vegard volume at this composition, from the two relaxed endmembers
+            v = y * _volume(ends[elements[0]]) + (1 - y) * _volume(ends[elements[1]])
+            cells = generate(ps, m, elements, fixed, y, v, options, getattr(model, "cache", None))
+            dh, xs, used = [], [], []
+            for k, atoms in enumerate(cells):
+                rel = _relax(model, [atoms], policy)[0]
+                if not _check(f"{name} SQS y={y:g} #{k}", rel, result, False):
+                    continue
+                dh.append(
+                    rel.energy_per_atom
+                    - y * ends[elements[0]].energy_per_atom
+                    - (1 - y) * ends[elements[1]].energy_per_atom
+                )
+                xs.append(atoms.get_chemical_symbols().count(elements[0].capitalize()) / len(atoms))
+                used.append(atoms)
+            if dh:
+                points.append((y, np.array(dh) * EV_TO_J_PER_MOL, float(np.mean(xs)), used))
+        # configurational σ: pooled over the phase's compositions, or per composition
+        dofs = [len(dh) - 1 for _, dh, _, _ in points]
+        if pool and sum(dofs) > 0:
+            pooled = math.sqrt(
+                sum(float(np.var(dh, ddof=1)) * k for (_, dh, _, _), k in zip(points, dofs) if k > 0) / sum(dofs)
+            )
+            config = [(pooled, sum(dofs))] * len(points)
+        else:
+            config = [
+                (float(np.std(dh, ddof=1)), k) if k > 0 else (None, None) for (_, dh, _, _), k in zip(points, dofs)
+            ]
+        given = _kj(sigma, name, "sigma")
+        user_model = _kj(model_sigma, name, "model_sigma")
+        warned = False
+        for (y, dh, x, used), (cfg, dof) in zip(points, config):
+            label = f"{name} y={y:g}"
+            if given is not None:
+                sig = given
+            else:
+                unc = user_model
+                if unc is None:
+                    u = _model_sigma(model, used)
+                    unc = None if u is None else u * EV_TO_J_PER_MOL
+                sig = _sigma(name, label, cfg, unc, single=len(dh) < 2 and dof is None)
+                if unc is None and not warned:
+                    warnings.warn(
+                        f"{name}: σ covers only the configurational (SQS) spread, not the error of {model.name}; "
+                        "pass model_sigma= (kJ/mol) to include it",
+                        stacklevel=3,
+                    )
+                    warned = True
+            sf = tuple({elements[0]: y, elements[1]: 1 - y} if s == m else {fixed[s]: 1.0} for s in range(len(cons)))
+            value = float(np.mean(dh))
+            result.dataset.add(
+                Observation(
+                    "HM_MIX",
+                    T,
+                    value,
+                    sig,
+                    phase=name,
+                    x=x,
+                    site_fractions=sf,
+                    source=model.name,
+                    note=APPROXIMATION,
+                )
+            )
+            result.rows.append(
+                {
+                    "kind": "HM_MIX",
+                    "phase": name,
+                    "config": f"y={y:g}",
+                    "x": x,
+                    "value": value / 1000,
+                    "sigma": sig / 1000,
+                    "structures": len(dh),
+                    "sigma_dof": None if given is not None else dof,
+                }
+            )
+
+
+def _volume(rel: Relaxation) -> float:
+    return abs(float(np.linalg.det(np.asarray(rel.cell)))) / rel.natoms
+
+
+# ---------------------------------------------------------------------------- entry points
+
+
+def compute(
+    model,
+    db,
+    elements,
+    *,
+    compounds=(),
+    mixing=None,
+    method="sqs",
+    relax=None,
+    sigma="spread",
+    model_sigma=None,
+    pool: bool = True,
+    structures=None,
+    sqs=None,
+    T: float = 298.15,
+) -> MLIPResult:
+    """Formation and mixing enthalpies from ``model``, as a dataset with everything behind it.
+
+    ``compounds`` lists phases whose endmembers with two or more elements get a
+    formation enthalpy, or maps a phase to its endmembers (``{"AL2Y":
+    ["AL:CU"]}``). ``mixing`` maps a solution phase to a grid of site
+    fractions of the first element on its mixing sublattice. ``structures``
+    maps a phase name to a :class:`PhaseStructure`, or to ``(prototype,
+    sublattice sites...)``, for phases :data:`PHASES` does not know. ``sqs``
+    is an :class:`~discopt.calphad.mlip.sqs.SQSOptions`.
+
+    ``sigma``, ``model_sigma`` and ``pool`` set the uncertainties; see the
+    module docstring.
+
+    A structure that leaves its prototype is reported in
+    :attr:`MLIPResult.flagged` and left out of the dataset.
+    """
+    elements = tuple(e.upper() for e in elements)
+    policy = relax or RelaxPolicy()
+    result = MLIPResult(Dataset())
+    result.references = reference_energies(model, db, elements, relax=policy, structures=structures, result=result)
+    if compounds:
+        _formation(model, db, elements, compounds, result.references, policy, structures, sigma, model_sigma, T, result)
+    if mixing:
+        _mixing(model, db, elements, mixing, method, policy, structures, sigma, model_sigma, pool, T, sqs, result)
+    return result
+
+
+def dataset(model, db, elements, **kwargs) -> Dataset:
+    """:func:`compute`, returning only the :class:`~discopt.calphad.fit.Dataset`."""
+    return compute(model, db, elements, **kwargs).dataset

@@ -13,6 +13,8 @@ in the coefficients θ:
 - H = G − T ∂G/∂T, S = −∂G/∂T and Cp = −T ∂²G/∂T², with the T-derivatives
   taken symbolically (SymPy) for both fixed and free parameters;
 - mixing quantities, relative to the phase's own endmembers;
+- formation enthalpies (``HM_FORM``), relative to the pure elements in their
+  reference phases (the ELEMENT lines of the database, normally SER);
 - chemical potentials μ from the tangent at a given composition, which gives
   activities, and the zero-phase-fraction conditions of a measured tie-line or
   invariant (μ equal in every listed phase, and every listed compound on the
@@ -24,7 +26,14 @@ read from the phase models by probing: every parameter of a phase is set to 0,
 then one at a time to 1 J. So this module works for any phase model the
 database can build, without re-deriving the model.
 
-Scope of this first version: μ-based data (activities, tie-lines) needs a
+A thermochemical observation gives its phase's configuration either as the
+mole fraction ``x`` (phases with one site fraction or none) or as explicit
+``site_fractions``, one dict per sublattice. The second form reaches every
+endmember of a multi-sublattice (CEF) phase, which is what calculated data
+from :mod:`discopt.calphad.mlip` supplies. Every observation carries a
+``source`` label, and :meth:`FitResult.to_tdb` lists the sources it used.
+
+Scope: μ-based data (activities, tie-lines) needs a
 binary system and phases with one site fraction or none. Phase-boundary points
 without a measured partner composition, and errors in the measured
 compositions, need equilibrium solves inside the fit and are not handled yet.
@@ -54,7 +63,7 @@ from discopt.calphad.symbolic import P, PiecewiseT, T, function_ref, function_re
 __all__ = ["Observation", "Dataset", "FreeParameter", "FitResult", "fit", "THERMO_KINDS"]
 
 #: thermochemical data kinds, in J (or J/K) per mole of atoms
-THERMO_KINDS = ("GM", "HM", "SM", "CPM", "GM_MIX", "HM_MIX", "SM_MIX", "CPM_MIX")
+THERMO_KINDS = ("GM", "HM", "SM", "CPM", "GM_MIX", "HM_MIX", "SM_MIX", "CPM_MIX", "HM_FORM")
 _PROP = {"GM": "G", "HM": "H", "SM": "S", "CPM": "CP"}
 #: at T = 1/R a coefficient of 1 J contributes exactly 1 to G/RT
 _T_UNIT = 1.0 / R_GAS
@@ -76,8 +85,16 @@ class Observation:
 
     ``kind`` is one of :data:`THERMO_KINDS`, ``"ACR"`` (activity) or ``"ZPF"``
     (phases in equilibrium). ``x`` is the mole fraction of the first element of
-    the fitted system. ``sigma`` is the standard uncertainty, in the units of
+    the fitted system. A thermochemical observation may give ``site_fractions``
+    instead: one dict ``{constituent: fraction}`` per sublattice, where missing
+    constituents are 0. ``sigma`` is the standard uncertainty, in the units of
     ``value``. For ZPF data it is in J/mol, applied to each μ-equality residual.
+
+    ``HM_FORM`` is the enthalpy of formation per mole of atoms, relative to the
+    pure elements in their reference phases: the database's ELEMENT lines, or
+    ``reference`` (one phase for every element) when it is given.
+    ``source`` names where the value came from (``"experiment"``, ``"dft"``,
+    ``"EMT"``, ...). ``note`` records an approximation made in producing it.
     """
 
     kind: str
@@ -92,6 +109,12 @@ class Observation:
     #: ZPF only: ((phase, x or None), ...); a phase may appear twice (miscibility gap)
     phases: tuple = ()
     citation: str = ""
+    #: per sublattice, {constituent: site fraction}; an alternative to ``x``
+    site_fractions: tuple | None = None
+    #: where the value came from, e.g. "experiment", "dft", "EMT", "uma-s-1p1/omat"
+    source: str = ""
+    #: an approximation made in producing the value
+    note: str = ""
 
     def __post_init__(self):
         self.kind = self.kind.upper()
@@ -104,6 +127,19 @@ class Observation:
         self.phases = tuple((str(n).upper(), None if xx is None else float(xx)) for n, xx in self.phases)
         if self.phase is not None:
             self.phase = self.phase.upper()
+        if self.site_fractions is not None:
+            sf = []
+            for sub in self.site_fractions:
+                d = {str(c).upper(): float(v) for c, v in dict(sub).items()}
+                if any(v < 0 for v in d.values()) or not math.isclose(sum(d.values()), 1.0, abs_tol=1e-9):
+                    raise ValueError(f"site fractions {d} must be nonnegative and sum to 1")
+                sf.append(d)
+            self.site_fractions = tuple(sf)
+        if self.kind in THERMO_KINDS:
+            if self.phase is None:
+                raise ValueError(f"{self.kind}: a phase is required")
+            if self.x is None and self.site_fractions is None:
+                raise ValueError(f"{self.kind}: give x or site_fractions")
 
 
 class Dataset:
@@ -146,6 +182,53 @@ class Dataset:
             )
         return self
 
+    def add_formation(
+        self,
+        phase,
+        value,
+        sigma,
+        *,
+        endmember=None,
+        site_fractions=None,
+        x=None,
+        T: float = 298.15,
+        reference=None,
+        source: str = "",
+        note: str = "",
+        citation: str = "",
+    ) -> Dataset:
+        """An enthalpy of formation (``HM_FORM``, J/mol of atoms) of one configuration of ``phase``.
+
+        The configuration is an ``endmember`` (``"AL:CU"``, one constituent per
+        sublattice), explicit ``site_fractions``, or ``x`` for a phase with one
+        site fraction or none.
+        """
+        if endmember is not None:
+            parts = endmember.split(":") if isinstance(endmember, str) else list(endmember)
+            site_fractions = tuple({c.strip(): 1.0} for c in parts)
+        return self.add(
+            Observation(
+                "HM_FORM",
+                float(T),
+                float(value),
+                float(sigma),
+                phase=phase,
+                x=None if x is None else float(x),
+                reference=reference,
+                site_fractions=site_fractions,
+                source=source,
+                note=note,
+                citation=citation,
+            )
+        )
+
+    def sources(self) -> dict[str, int]:
+        """{source label: number of observations}; an empty label is reported as ``"unspecified"``."""
+        out: dict[str, int] = {}
+        for o in self.observations:
+            out[o.source or "unspecified"] = out.get(o.source or "unspecified", 0) + 1
+        return out
+
     def add_equilibrium(self, T, phases, sigma: float = 500.0, citation: str = "") -> Dataset:
         """Coexisting phases at ``T``: a tie-line, or an invariant with three phases.
 
@@ -165,6 +248,8 @@ class Dataset:
             d = {k: v for k, v in dataclasses.asdict(o).items() if v not in (None, "", ())}
             if o.phases:
                 d["phases"] = [list(p) for p in o.phases]
+            if o.site_fractions is not None:
+                d["site_fractions"] = [dict(s) for s in o.site_fractions]
             out.append(d)
         return out
 
@@ -215,8 +300,18 @@ class FreeParameter:
     basis: tuple[sp.Expr, ...]
 
     @classmethod
-    def parse(cls, label: str, form="a + b*T") -> FreeParameter:
-        e = sp.sympify(form, locals={"T": T, "ln": sp.log, "LN": sp.log}) if isinstance(form, str) else sp.sympify(form)
+    def parse(cls, label: str, form="a + b*T", functions=()) -> FreeParameter:
+        """``functions`` are database FUNCTION names the form may use, e.g. ``"a + b*T + 2*GHSERAL + GHSERCU"``.
+
+        A trailing ``#``, as in TDB syntax, is allowed.
+        """
+        if isinstance(form, str):
+            names = {f.upper(): function_ref(f) for f in functions}
+            text = re.sub(r"([A-Za-z_][A-Za-z0-9_]*)#", r"\1", form)
+            local = {"T": T, "ln": sp.log, "LN": sp.log, **names}
+            e = sp.sympify(text, locals=local)
+        else:
+            e = sp.sympify(form)
         coefs = tuple(sorted((s for s in e.free_symbols if s != T), key=lambda s: s.name))
         if not coefs:
             raise ValueError(f"{label}: the form {form!r} has no coefficients")
@@ -307,7 +402,7 @@ class _LinearModel:
             return out
         fn = self._free_fn.get(i)
         if fn is None:
-            exprs = [fp.offset, *fp.basis]
+            exprs = [self._inline(fp.offset), *fp.basis]
             fn = sp.lambdify(T, [[e, sp.diff(e, T), sp.diff(e, T, 2)] for e in exprs], "math")
             self._free_fn[i] = fn
         vals = fn(t)
@@ -337,6 +432,9 @@ class _PhaseBasis:
             # only because G is linear in every parameter, and TC and BMAGN enter
             # through ln(β + 1) f(T/T_c).
             raise NotImplementedError(f"{name}: fitting data on a magnetic phase is not supported yet")
+        allowed = set(el) | {"VA"}
+        #: constituents per sublattice within the fitted elements, as the phase model sees them
+        self.sublattices = [tuple(sorted(c for c in s if c in allowed)) for s in db.phases[name].constituents]
         self.params = [i for i, p in enumerate(db.parameters) if p.phase == name]
         zero = {i: _CONST0 for i in self.params}
         self.model0 = _replace(db, zero).phase_model(name, el)
@@ -363,12 +461,37 @@ class _PhaseBasis:
             raise ValueError(f"{self.name}: x = {x:g} is outside the phase's composition range")
         return np.asarray(y, float)
 
+    def y_from_site_fractions(self, fractions) -> np.ndarray:
+        """Model variables for site fractions given per sublattice as ``{constituent: fraction}``."""
+        if len(fractions) != len(self.sublattices):
+            raise ValueError(
+                f"{self.name}: {len(fractions)} sublattices of site fractions given, the phase has "
+                f"{len(self.sublattices)} {self.sublattices}"
+            )
+        full = []
+        for cons, d in zip(self.sublattices, fractions):
+            stray = {c for c, v in d.items() if v > 0 and c not in cons}
+            if stray:
+                raise ValueError(f"{self.name}: {sorted(stray)} cannot occupy a sublattice of {cons}")
+            full.append({c: float(d.get(c, 0.0)) for c in cons})
+        m = self.model
+        if m.n_y == 0:
+            return np.empty(0)
+        if hasattr(m, "variables_from_site_fractions"):
+            return np.asarray(m.variables_from_site_fractions(full), float)
+        mixing = [i for i, c in enumerate(self.sublattices) if len(c) > 1]
+        if len(mixing) != 1:
+            raise ValueError(f"{self.name}: expected one mixing sublattice, found {len(mixing)}")
+        return np.array([full[mixing[0]][self.lm.elements[0]]])
+
     def atoms(self, y) -> float:
         return float(sum(self.model.amounts(y)))
 
-    def thermo(self, kind: str, x: float, t: float) -> np.ndarray:
+    def thermo(self, kind: str, x: float | None, t: float, y=None) -> np.ndarray:
+        if kind == "HM_FORM":
+            raise ValueError("HM_FORM needs reference phases: use formation()")
         prop = _PROP[kind.removesuffix("_MIX")]
-        y = self.y_of(x)
+        y = self.y_of(x) if y is None else np.asarray(y, float)
         F = self.F(prop, y, t)
         if kind.endswith("_MIX"):
             if self.model.n_y != 1:
@@ -389,15 +512,36 @@ class _PhaseBasis:
         dN = (np.array(self.model.amounts([y + h]), float) - np.array(self.model.amounts([y - h]), float)) / (2 * h)
         return np.linalg.solve(np.array([N, dN]), np.array([self.F("G", [y], t), dF]))
 
-    def pure_mu(self, element: str, t: float) -> np.ndarray:
-        """μ of the pure element in this phase, per mole of atoms."""
+    def pure_mu(self, element: str, t: float, prop: str = "G") -> np.ndarray:
+        """μ of the pure element in this phase, per mole of atoms (``prop="H"``: its enthalpy)."""
         k = self.lm.elements.index(element)
-        candidates = [np.empty(0)] if self.model.n_y == 0 else [np.array([1.0 - _ENDPOINT]), np.array([_ENDPOINT])]
+        if self.model.n_y == 0:
+            candidates = [np.empty(0)]
+        elif self.model.n_y == 1:
+            candidates = [np.array([1.0 - _ENDPOINT]), np.array([_ENDPOINT])]
+        elif all(element in c or "VA" in c for c in self.sublattices):
+            candidates = [
+                self.y_from_site_fractions([{element if element in c else "VA": 1.0} for c in self.sublattices])
+            ]
+        else:
+            candidates = []
         for y in candidates:
             N = np.array(self.model.amounts(y), float)
             if N[k] > 0 and np.all(np.delete(N, k) < 1e-9):
-                return self.F("G", y, t) / N[k]
-        raise ValueError(f"{self.name} has no pure-{element} endmember to use as an activity reference")
+                return self.F(prop, y, t) / N[k]
+        raise ValueError(f"{self.name} has no pure-{element} endmember to use as a reference")
+
+    def formation(self, y, t: float, reference: str | None = None) -> np.ndarray:
+        """Enthalpy of formation per mole of atoms at ``y``, relative to the elements' reference phases."""
+        N = np.array(self.model.amounts(y), float)
+        out = self.F("H", y, t) / N.sum()
+        for e, n in zip(self.lm.elements, N):
+            if n > 1e-12:
+                ref = reference or self.lm.db.elements[e].reference_phase
+                if not ref:
+                    raise ValueError(f"{e} has no reference phase in the database; pass reference=")
+                out = out - (n / N.sum()) * self.lm.phase(ref).pure_mu(e, t, prop="H")
+        return out
 
 
 # ---------------------------------------------------------------------------- rows
@@ -406,7 +550,13 @@ class _PhaseBasis:
 def _rows(lm: _LinearModel, obs: Observation):
     """(vectors, observed values, sigmas) for one observation."""
     if obs.kind in THERMO_KINDS:
-        return [lm.phase(obs.phase).thermo(obs.kind, obs.x, obs.T)], [obs.value], [obs.sigma]
+        ph = lm.phase(obs.phase)
+        y = None if obs.site_fractions is None else ph.y_from_site_fractions(obs.site_fractions)
+        if obs.kind == "HM_FORM":
+            vec = ph.formation(ph.y_of(obs.x) if y is None else y, obs.T, obs.reference)
+        else:
+            vec = ph.thermo(obs.kind, obs.x, obs.T, y)
+        return [vec], [obs.value], [obs.sigma]
     if obs.kind == "ACR":
         k = lm.elements.index(obs.element)
         mu = lm.phase(obs.phase).mu(obs.x, obs.T)[k]
@@ -485,6 +635,9 @@ class FitResult:
             f"(chi2 = {self.chi2:.6g}, dof = {self.dof})"
         ]
         head += [f"$   {n} = {v:.10g} +/- {s:.3g}" for n, v, s in zip(self.names, self.values, self.std)]
+        head.append("$ data sources: " + ", ".join(f"{k} ({n})" for k, n in self.data.sources().items()))
+        notes = sorted({o.note for o in self.data if o.note})
+        head += [f"$ approximation: {n}" for n in notes]
         return "\n".join(head) + "\n" + self.database.to_tdb()
 
     def plot_residuals(self, ax=None):
@@ -542,7 +695,9 @@ def fit(db: ThermoDatabase, data: Dataset, elements, free, *, bounds=None) -> Fi
     ``free`` is a list of parameter labels (each gets the form ``a + b*T``), or a
     dict ``{label: form}``, for example ``{"L(FCC_A1,AL,ZN;0)": "a + b*T"}``. A
     label that does not exist yet in the database is added as a new parameter.
-    A form may be any expression in T that is linear in its coefficients. A free
+    A form may be any expression in T that is linear in its coefficients, and
+    it may use the database's FUNCTIONs, as a compound's G usually does:
+    ``{"G(ALCU_THETA,AL:CU;0)": "a + b*T + 2*GHSERAL + GHSERCU"}``. A free
     parameter replaces every temperature range of the original.
 
     ``bounds`` maps coefficient names (``"<label>.<coef>"``, see
@@ -552,7 +707,7 @@ def fit(db: ThermoDatabase, data: Dataset, elements, free, *, bounds=None) -> Fi
     absolute: it assumes the given σ are the true uncertainties.
     """
     free = {label: "a + b*T" for label in free} if not isinstance(free, dict) else free
-    fps = [FreeParameter.parse(label, form) for label, form in free.items()]
+    fps = [FreeParameter.parse(label, form, functions=db.functions) for label, form in free.items()]
     lm = _LinearModel(db, elements, fps)
 
     vecs, obs_v, sig, owner = [], [], [], []
