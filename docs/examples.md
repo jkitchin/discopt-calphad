@@ -75,3 +75,24 @@ the Al-rich diagram is drawn for both databases (issue #5).
     ```python
     --8<-- "examples/alcu_mlip.py"
     ```
+
+## Cu–Mg fitted to real data, against the assessment
+
+The Cu–Mg datasets curated for ESPEI, read with `Dataset.from_espei`:
+
+- liquid mixing enthalpies and Mg activities;
+- formation enthalpies of Cu2Mg and CuMg2;
+- DFT mixing enthalpies of FCC;
+- 238 phase-boundary points from 1907–1978, each with only one phase's
+  composition.
+
+Ten coefficients of the liquid, FCC, Cu2Mg and CuMg2 parameters are refitted.
+One-sided points enter as driving forces, and the fit iterates linear solves.
+The fitted diagram (red) is drawn over the NIMS assessment (gray) and the data.
+
+![Cu-Mg fit to ESPEI data](assets/examples/cumg_espei_fit.png)
+
+??? example "examples/cumg_espei_fit.py"
+    ```python
+    --8<-- "examples/cumg_espei_fit.py"
+    ```

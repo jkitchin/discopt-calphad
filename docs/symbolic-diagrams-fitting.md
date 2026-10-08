@@ -149,9 +149,11 @@ The diagram object is plain data, so other backends are possible.
 
 ## 5. Fitting parameters to data
 
-> **Status (issue #2).** Steps 1 and 2 without errors in variables are
-> implemented in `src/discopt/calphad/fit.py`; see `examples/alzn_fit.py`
-> and `tests/test_fit.py`. The implemented API differs from the sketch below:
+> **Status (issue #2, closed).** Steps 1 and 2 without errors in variables
+> are implemented in `src/discopt/calphad/fit.py`, with an ESPEI JSON reader in
+> `src/discopt/calphad/io/espei.py`; see `examples/alzn_fit.py`,
+> `examples/cumg_espei_fit.py` (real Cu–Mg data) and `tests/test_fit.py`. The
+> implemented API differs from the sketch below:
 >
 > ```python
 > data = Dataset().add_thermo("HM_MIX", "LIQUID", T=1000, x=[0.1, 0.5], value=[...], sigma=200)
@@ -164,13 +166,17 @@ The diagram object is plain data, so other backends are possible.
 > Free parameters are TDB labels with a symbolic T-form that is linear in its
 > coefficients. The site-fraction factors φ_p are found by probing the phase
 > models, so no separate `linear_in` is needed. H, S and Cp come from symbolic
-> T-derivatives. μ-based data (activities, ZPF) need binary phases with at most
-> one site fraction. Not yet done:
-> - boundary points without a measured partner composition, and errors in
->   variables (step 2's nonlinear part);
-> - global consistency (step 3);
-> - FIM-based design (step 4);
-> - ESPEI import.
+> T-derivatives. μ-based data (activities, ZPF) need a binary system. Boundary
+> points without a measured partner composition use the driving-force
+> residual (the unmeasured phase touches the measured phase's tangent), and
+> μ of a multi-sublattice phase uses its internal equilibrium. Both are
+> nonlinear in θ through a minimizer, and the fit iterates linear solves
+> (Gauss–Newton with the exact, envelope-theorem Jacobian). Not yet done,
+> each now its own issue:
+> - errors in variables (step 2's nonlinear part, `discopt.estimate`): #8;
+> - global consistency (step 3): #9;
+> - FIM-based design (step 4): #10;
+> - μ-based data in ternaries: #11.
 
 ```python
 from discopt.calphad.fit import Dataset, fit

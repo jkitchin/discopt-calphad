@@ -20,11 +20,25 @@ in the coefficients θ:
   invariant (μ equal in every listed phase, and every listed compound on the
   common tangent).
 
-The fit is a weighted *linear* least-squares problem, optionally with bounds.
-It is solved exactly, and its covariance follows directly. The factors φ_p are
-read from the phase models by probing: every parameter of a phase is set to 0,
-then one at a time to 1 J. So this module works for any phase model the
-database can build, without re-deriving the model.
+Two kinds of row depend on θ through a minimization over site fractions:
+
+- μ of a phase with several site fractions (a CEF phase such as a Laves
+  phase): its site fractions at a given composition are the internal
+  equilibrium, the minimum of G at fixed x;
+- a phase-boundary point whose partner composition was not measured (a
+  liquidus or solvus point): the unmeasured phase must touch the tangent of the
+  measured one, so its driving force, the minimum over composition of
+  (G − μ·N)/ΣN, is zero. This is ESPEI's driving-force residual.
+
+At the minimizer the row's θ-derivative is exact (envelope theorem). The fit
+then iterates linear solves (Gauss–Newton with step halving) until θ stops
+changing. With only linear rows, one solve is exact.
+
+The fit is weighted least squares, optionally with bounds, and its covariance
+follows from the final linearization. The factors φ_p are read from the phase
+models by probing: every parameter of a phase is set to 0, then one at a time
+to 1 J. So this module works for any phase model the database can build,
+without re-deriving the model.
 
 A thermochemical observation gives its phase's configuration either as the
 mole fraction ``x`` (phases with one site fraction or none) or as explicit
@@ -33,12 +47,15 @@ endmember of a multi-sublattice (CEF) phase, which is what calculated data
 from :mod:`discopt.calphad.mlip` supplies. Every observation carries a
 ``source`` label, and :meth:`FitResult.to_tdb` lists the sources it used.
 
-Scope: μ-based data (activities, tie-lines) needs a
-binary system and phases with one site fraction or none. Phase-boundary points
-without a measured partner composition, and errors in the measured
-compositions, need equilibrium solves inside the fit and are not handled yet.
-:meth:`FitResult.check_equilibria` runs certified equilibria at the tie-line
-data after the fit.
+ESPEI JSON datasets are read by :meth:`Dataset.from_espei`.
+
+Scope: μ-based data (activities, phase equilibria) needs a binary system. The
+driving-force minimum is a local search (sampling, then refinement), so a very
+narrow well of an unmeasured phase can be missed. Errors in the measured
+compositions (errors in variables) are not modelled: each composition is
+taken as exact, and its uncertainty goes into the J/mol σ of the row.
+:meth:`FitResult.check_equilibria` runs certified equilibria at the
+phase-equilibrium data after the fit.
 """
 
 from __future__ import annotations
@@ -147,6 +164,8 @@ class Dataset:
 
     def __init__(self, observations=()):
         self.observations: list[Observation] = list(observations)
+        #: (file, reason) for data a reader did not use (see :meth:`from_espei`)
+        self.skipped: list[tuple[str, str]] = []
 
     def __len__(self):
         return len(self.observations)
@@ -265,6 +284,18 @@ class Dataset:
         return cls.from_records(json.loads(Path(path).read_text()))
 
     @classmethod
+    def from_espei(cls, paths, db: ThermoDatabase, elements, *, phase_map=None, sigma=None) -> Dataset:
+        """ESPEI JSON datasets (files or directories); see :mod:`discopt.calphad.io.espei`.
+
+        Data that cannot be used are listed in :attr:`skipped` with the reason.
+        """
+        from discopt.calphad.io.espei import read_espei
+
+        ds, skipped = read_espei(paths, db, elements, phase_map=phase_map, sigma=sigma)
+        ds.skipped = skipped
+        return ds
+
+    @classmethod
     def from_csv(cls, path) -> Dataset:
         """Thermochemical or activity rows.
 
@@ -377,6 +408,52 @@ class _LinearModel:
         self._phases: dict[str, _PhaseBasis] = {}
         self._fixed_fn: dict = {}
         self._free_fn: dict = {}
+        #: the coefficients at which configuration-dependent rows are evaluated (see fit())
+        self.theta = np.zeros(self.n)
+        #: set when a row depended on ``theta`` through a minimization over site fractions
+        self.nonlinear = False
+        self._db_at: dict = {}
+
+    def functions_at(self, theta) -> dict[int, PiecewiseT]:
+        """The free parameters' functions with coefficients ``theta``, by parameter index."""
+        out = {}
+        for i, fp in self.free_index.items():
+            subs = {c: sp.Float(float(theta[self.names.index(n)]), 15) for c, n in zip(fp.coefficients, fp.names)}
+            old = self.db.parameters[i].function
+            out[i] = PiecewiseT((old.t_min, old.t_max), (sp.nsimplify(fp.form.subs(subs), rational=False),))
+        return out
+
+    def model_at(self, name: str):
+        """The phase model of ``name`` with the free parameters at :attr:`theta`."""
+        key = tuple(np.round(self.theta, 12))
+        if key not in self._db_at:
+            self._db_at = {key: (_replace(self.db, self.functions_at(self.theta)), {})}
+        db, models = self._db_at[key]
+        if name not in models:
+            models[name] = db.phase_model(name, self.elements)
+        return models[name]
+
+    def initial_theta(self) -> np.ndarray:
+        """Coefficients that best reproduce each parameter's original function over 298.15–3000 K (0 if new)."""
+        theta = np.zeros(self.n)
+        for i, fp in self.free_index.items():
+            fn = self.db.parameters[i].function
+            ts = np.linspace(max(fn.t_min, 298.15), min(fn.t_max, 3000.0), 25)
+            rows, rhs = [], []
+            for t in ts:
+                try:
+                    v = self.db.evaluate(fn, float(t))
+                    d = self._derivs(i, float(t))[0]
+                except (ValueError, TypeError):  # outside a range of the parameter or of a FUNCTION it uses
+                    continue
+                cols = [self._col[(fp.label, c)] for c in fp.coefficients]
+                rows.append(d[cols])
+                rhs.append(v - d[0])
+            if rows:
+                sol = np.linalg.lstsq(np.array(rows), np.array(rhs), rcond=None)[0]
+                for c, v in zip(fp.coefficients, sol):
+                    theta[self._col[(fp.label, c)] - 1] = v
+        return theta
 
     def phase(self, name: str) -> _PhaseBasis:
         name = name.upper()
@@ -500,10 +577,75 @@ class _PhaseBasis:
             F = F - y1 * self.F(prop, [1.0 - _ENDPOINT], t) - (1 - y1) * self.F(prop, [_ENDPOINT], t)
         return F / self.atoms(y)
 
+    def y_at(self, x: float, t: float) -> np.ndarray:
+        """Site fractions at overall composition ``x``.
+
+        With one site fraction or none, ``x`` fixes them. With more, they are
+        the internal equilibrium: the minimum of G at fixed ``x``, for the free
+        parameters at :attr:`_LinearModel.theta`. That makes rows built from them
+        depend on θ, and :func:`fit` iterates.
+        """
+        if self.model.n_y <= 1:
+            return self.y_of(x)
+        if len(self.lm.elements) != 2:
+            raise NotImplementedError(f"{self.name}: compositions of multi-sublattice phases need a binary")
+        from scipy.optimize import minimize
+
+        self.lm.nonlinear = True
+        model = self.lm.model_at(self.name)
+
+        def comp(u):
+            a = np.array([float(v) for v in model.amounts(u)])
+            return a[0] / a.sum() - x
+
+        def g(u):
+            with np.errstate(all="ignore"):
+                v = float(model.gibbs(u, NUM, t))
+            return v if math.isfinite(v) else 1e300
+
+        from scipy.optimize import least_squares
+
+        rng = np.random.default_rng(0)
+        starts = []
+        for u0 in [np.full(model.n_y, 0.5), *rng.uniform(0.02, 0.98, size=(11, model.n_y))]:
+            r = least_squares(lambda u: [comp(u)], u0, bounds=(0.0, 1.0), xtol=1e-14, ftol=1e-14, gtol=1e-14)
+            if abs(r.fun[0]) < 1e-9 and all(np.max(np.abs(r.x - s)) > 1e-3 for s in starts):
+                starts.append(r.x)
+        if not starts:
+            raise ValueError(f"{self.name}: x = {x:g} is outside the phase's composition range")
+        best, best_g = None, math.inf
+        for u0 in starts:
+            r = minimize(
+                g,
+                u0,
+                method="SLSQP",
+                bounds=[(0.0, 1.0)] * model.n_y,
+                constraints=[{"type": "eq", "fun": comp}],
+                options={"ftol": 1e-14, "maxiter": 300},
+            )
+            for u in (np.clip(r.x, 0.0, 1.0), u0):
+                if abs(comp(u)) < 1e-8 and g(u) < best_g:
+                    best, best_g = np.array(u), g(u)
+        return best
+
     def mu(self, x: float, t: float) -> np.ndarray:
         """Chemical potentials (J/mol) of the two elements on the tangent at ``x``: a 2 × (n+1) array."""
-        if len(self.lm.elements) != 2 or self.model.n_y != 1:
-            raise NotImplementedError(f"{self.name}: μ data needs a binary phase with one site fraction")
+        if len(self.lm.elements) != 2:
+            raise NotImplementedError(f"{self.name}: μ data needs a binary system")
+        if self.model.n_y > 1:
+            # G per mole of atoms along the internal equilibrium; d/dθ of it is the
+            # row at y*(x) (envelope theorem), and its x-derivative a difference of rows
+            h = min(1e-4, x / 50.0, (1.0 - x) / 50.0)
+
+            def gm(xx):
+                y = self.y_at(xx, t)
+                return self.F("G", y, t) / self.atoms(y)
+
+            g0 = gm(x)
+            dg = (gm(x - 2 * h) - 8 * gm(x - h) + 8 * gm(x + h) - gm(x + 2 * h)) / (12 * h)
+            return np.array([g0 + (1 - x) * dg, g0 - x * dg])
+        if self.model.n_y != 1:
+            raise NotImplementedError(f"{self.name}: a compound has no tangent of its own")
         y = float(self.y_of(x)[0])
         h = min(1e-4, y / 50.0, (1.0 - y) / 50.0)
         Fs = [self.F("G", [y + k * h], t) for k in (-2, -1, 1, 2)]
@@ -530,6 +672,23 @@ class _PhaseBasis:
             if N[k] > 0 and np.all(np.delete(N, k) < 1e-9):
                 return self.F(prop, y, t) / N[k]
         raise ValueError(f"{self.name} has no pure-{element} endmember to use as a reference")
+
+    def driving_force(self, mu: np.ndarray, t: float) -> np.ndarray:
+        """min over composition of (G − μ·N)/ΣN, per mole of atoms, as a row linear in θ.
+
+        ``mu`` is a 2 × (n+1) array of chemical-potential rows. The minimum is
+        found at the current :attr:`_LinearModel.theta` (local search, as in
+        :func:`~discopt.calphad.equilibrium.pricing.price_phase_local`); the row is
+        exact there, and its θ-derivative is the derivative at the minimizer.
+        """
+        from discopt.calphad.equilibrium.pricing import price_phase_local
+
+        self.lm.nonlinear = True
+        theta1 = np.concatenate([[1.0], self.lm.theta])
+        mu_now = mu @ theta1 / (R_GAS * t)
+        y = price_phase_local(self.lm.model_at(self.name), mu_now, T=t).y
+        N = np.array(self.model.amounts(y), float)
+        return (self.F("G", y, t) - N @ mu) / N.sum()
 
     def formation(self, y, t: float, reference: str | None = None) -> np.ndarray:
         """Enthalpy of formation per mole of atoms at ``y``, relative to the elements' reference phases."""
@@ -562,21 +721,42 @@ def _rows(lm: _LinearModel, obs: Observation):
         mu = lm.phase(obs.phase).mu(obs.x, obs.T)[k]
         ref = lm.phase(obs.reference or obs.phase).pure_mu(obs.element, obs.T)
         return [(mu - ref) / (R_GAS * obs.T)], [math.log(obs.value)], [obs.sigma / obs.value]
-    # ZPF: μ equal across solution phases; each compound on the tangent
-    sols = [(lm.phase(n), x) for n, x in obs.phases if lm.phase(n).model.n_y > 0]
+    return _zpf_rows(lm, obs)
+
+
+def _zpf_rows(lm: _LinearModel, obs: Observation):
+    """Rows of a phase-equilibrium observation, all of them zero at equilibrium (J/mol of atoms).
+
+    μ comes from the first phase with a measured composition (its tangent), or,
+    without one, from two compounds. Then every other measured phase has the
+    same μ, every compound lies on the tangent, and every phase whose
+    composition was not measured touches it: its driving force, the minimum
+    over composition of (G − μ·N)/ΣN, is zero.
+    """
+    known = [(lm.phase(n), x) for n, x in obs.phases if lm.phase(n).model.n_y > 0 and x is not None]
+    unknown = [lm.phase(n) for n, x in obs.phases if lm.phase(n).model.n_y > 0 and x is None]
     comps = [lm.phase(n) for n, _ in obs.phases if lm.phase(n).model.n_y == 0]
-    if not sols:
-        raise ValueError("a ZPF observation needs at least one solution phase to fix μ")
-    for ph, x in sols:
-        if x is None:
-            raise ValueError(f"ZPF: composition of {ph.name} is missing")
-    ref = sols[0][0].mu(sols[0][1], obs.T)
+    if len(obs.phases) < 2:
+        raise ValueError("a ZPF observation needs at least two phases")
     vecs = []
-    for ph, x in sols[1:]:
-        vecs.extend(ref - ph.mu(x, obs.T))
+    if known:
+        ref = known[0][0].mu(known[0][1], obs.T)
+        for ph, x in known[1:]:
+            vecs.extend(ref - ph.mu(x, obs.T))
+    else:
+        if len(lm.elements) != 2 or len(comps) < 2:
+            raise ValueError("ZPF: μ needs a measured composition or, in a binary, two compounds")
+        a, b = comps[0], comps[1]
+        Nmat = np.array([a.model.amounts(), b.model.amounts()], float)
+        if abs(np.linalg.det(Nmat)) < 1e-12:
+            raise ValueError(f"ZPF: {a.name} and {b.name} have the same composition and cannot fix μ")
+        ref = np.linalg.solve(Nmat, np.array([a.F("G", np.empty(0), obs.T), b.F("G", np.empty(0), obs.T)]))
+        comps = comps[2:]
     for ph in comps:
         N = np.array(ph.model.amounts(), float)
         vecs.append((N @ ref - ph.F("G", np.empty(0), obs.T)) / N.sum())
+    for ph in unknown:
+        vecs.append(ph.driving_force(ref, obs.T))
     return vecs, [0.0] * len(vecs), [obs.sigma] * len(vecs)
 
 
@@ -602,6 +782,9 @@ class FitResult:
     elements: tuple[str, ...]
     free: list[FreeParameter] = field(default_factory=list)
     active_bounds: list[str] = field(default_factory=list)
+    #: linearizations used (1 when every row is linear in θ), and whether θ converged
+    iterations: int = 1
+    converged: bool = True
 
     @property
     def parameters(self) -> dict[str, float]:
@@ -621,6 +804,8 @@ class FitResult:
             f"fit of {len(self.names)} coefficients to {len(self.data)} observations "
             f"({self.residuals.size} residuals): chi2 = {self.chi2:.4g}, dof = {self.dof}, rank = {self.rank}"
         ]
+        if self.iterations > 1 or not self.converged:
+            lines.append(f"  {self.iterations} linearizations, {'converged' if self.converged else 'NOT converged'}")
         for n, v, s in zip(self.names, self.values, self.std):
             flag = "  (at bound)" if n in self.active_bounds else ""
             lines.append(f"  {n:32s} = {v: .6g}  ± {s:.3g}{flag}")
@@ -667,10 +852,12 @@ class FitResult:
                 continue
             xs = []
             for name, x in obs.phases:
-                if x is None:
-                    a = np.array(self.database.phase_model(name, self.elements).amounts(), float)
+                model = self.database.phase_model(name, self.elements)
+                if x is None and model.n_y == 0:
+                    a = np.array(model.amounts(), float)
                     x = a[0] / a.sum()
-                xs.append(x)
+                if x is not None:
+                    xs.append(x)
             xbar = float(np.mean(xs))
             res = equilibrium(phases, x=xbar, T=obs.T, eps=eps, **kwargs)
             observed = sorted(n for n, _ in obs.phases)
@@ -689,8 +876,33 @@ class FitResult:
         return out
 
 
-def fit(db: ThermoDatabase, data: Dataset, elements, free, *, bounds=None) -> FitResult:
-    """Fit free parameter coefficients of ``db`` to ``data`` by weighted linear least squares.
+def _design(lm: _LinearModel, data: Dataset):
+    """Rows at the current θ: (V, observed values, sigmas, owning observation)."""
+    vecs, obs_v, sig, owner = [], [], [], []
+    for j, o in enumerate(data):
+        v, ov, s = _rows(lm, o)
+        vecs += v
+        obs_v += ov
+        sig += s
+        owner += [j] * len(v)
+    if not vecs:
+        raise ValueError("no data")
+    return np.array(vecs), np.array(obs_v, float), np.array(sig, float), owner
+
+
+def fit(
+    db: ThermoDatabase,
+    data: Dataset,
+    elements,
+    free,
+    *,
+    bounds=None,
+    initial=None,
+    max_iter: int = 30,
+    tol: float = 1e-3,
+    verbose: bool = False,
+) -> FitResult:
+    """Fit free parameter coefficients of ``db`` to ``data`` by weighted least squares.
 
     ``free`` is a list of parameter labels (each gets the form ``a + b*T``), or a
     dict ``{label: form}``, for example ``{"L(FCC_A1,AL,ZN;0)": "a + b*T"}``. A
@@ -703,34 +915,27 @@ def fit(db: ThermoDatabase, data: Dataset, elements, free, *, bounds=None) -> Fi
     ``bounds`` maps coefficient names (``"<label>.<coef>"``, see
     :attr:`FreeParameter.names`) to ``(lo, hi)``.
 
-    The covariance is (JᵀJ)⁻¹, with J the σ-weighted design matrix. It is
-    absolute: it assumes the given σ are the true uncertainties.
+    Most data give rows that are linear in the coefficients, and one linear
+    solve is exact. Rows that need a minimization over site fractions (the
+    driving force of a phase whose composition was not measured, and μ of a
+    phase with several site fractions) depend on θ through the minimizer. The
+    fit then iterates: rows at θ_k, a linear solve, and a step halved until χ²
+    decreases. It stops when every coefficient moves by less than ``tol``
+    times its standard deviation, or when no step decreases χ² (the minimizers
+    are found numerically, so χ² has a small noise floor), and after
+    ``max_iter`` linearizations at most. At a minimizer the row's θ-derivative
+    is exact (envelope theorem), so this is Gauss–Newton with the exact
+    Jacobian. It starts from ``initial`` (a dict by coefficient name), or from
+    the coefficients that best reproduce each parameter's original function (0
+    for a new parameter). ``verbose=True`` prints χ² and the step at each
+    linearization.
+
+    The covariance is (JᵀJ)⁻¹, with J the σ-weighted design matrix at the
+    solution. It is absolute: it assumes the given σ are the true uncertainties.
     """
     free = {label: "a + b*T" for label in free} if not isinstance(free, dict) else free
     fps = [FreeParameter.parse(label, form, functions=db.functions) for label, form in free.items()]
     lm = _LinearModel(db, elements, fps)
-
-    vecs, obs_v, sig, owner = [], [], [], []
-    for j, o in enumerate(data):
-        v, ov, s = _rows(lm, o)
-        vecs += v
-        obs_v += ov
-        sig += s
-        owner += [j] * len(v)
-    if not vecs:
-        raise ValueError("no data")
-    V = np.array(vecs)
-    sig = np.array(sig)
-    J = V[:, 1:] / sig[:, None]
-    r0 = (np.array(obs_v) - V[:, 0]) / sig
-    scale = np.linalg.norm(J, axis=0)
-    scale[scale == 0] = 1.0
-    Js = J / scale
-    rank = int(np.linalg.matrix_rank(Js))
-    if rank < lm.n:
-        warnings.warn(
-            f"the data determine only {rank} of {lm.n} coefficients; the solution is not unique", stacklevel=2
-        )
 
     lo = np.full(lm.n, -np.inf)
     hi = np.full(lm.n, np.inf)
@@ -739,11 +944,88 @@ def fit(db: ThermoDatabase, data: Dataset, elements, free, *, bounds=None) -> Fi
             raise KeyError(f"bound on unknown coefficient {name!r}; coefficients are {lm.names}")
         k = lm.names.index(name)
         lo[k], hi[k] = (-np.inf if a is None else a), (np.inf if b is None else b)
-    if np.isfinite(lo).any() or np.isfinite(hi).any():
-        sol = lsq_linear(Js, r0, bounds=(lo * scale, hi * scale), method="bvls", tol=1e-14)
-        theta = sol.x / scale
+    bounded = bool(np.isfinite(lo).any() or np.isfinite(hi).any())
+
+    theta = lm.initial_theta()
+    for name, v in (initial or {}).items():
+        if name not in lm.names:
+            raise KeyError(f"initial value for unknown coefficient {name!r}; coefficients are {lm.names}")
+        theta[lm.names.index(name)] = float(v)
+    theta = np.clip(theta, lo, hi)
+
+    def solve(V, obs_v, sig):
+        J = V[:, 1:] / sig[:, None]
+        r0 = (obs_v - V[:, 0]) / sig
+        scale = np.linalg.norm(J, axis=0)
+        scale[scale == 0] = 1.0
+        Js = J / scale
+        if bounded:
+            sol = lsq_linear(Js, r0, bounds=(lo * scale, hi * scale), method="bvls", tol=1e-14)
+            return sol.x / scale
+        return np.linalg.lstsq(Js, r0, rcond=None)[0] / scale
+
+    def chi2(V, obs_v, sig, th):
+        r = (V[:, 0] + V[:, 1:] @ th - obs_v) / sig
+        return float(r @ r)
+
+    def std(V, sig):
+        J = V[:, 1:] / sig[:, None]
+        sc = np.linalg.norm(J, axis=0)
+        sc[sc == 0] = 1.0
+        return np.sqrt(np.clip(np.diag(np.linalg.pinv((J / sc).T @ (J / sc))), 0, None)) / sc
+
+    lm.theta = theta
+    V, obs_v, sig, owner = _design(lm, data)
+    iterations, converged = 1, True
+    if lm.nonlinear:
+        converged = False
+        current = chi2(V, obs_v, sig, theta)
+        if verbose:
+            print(f"fit: start chi2 = {current:.6g}")
+        iterations = 0
+        while iterations < max_iter:
+            iterations += 1
+            target = solve(V, obs_v, sig)
+            sd = std(V, sig)
+            step, accepted = 1.0, False
+            while step >= 1e-3:
+                trial = theta + step * (target - theta)
+                lm.theta = trial
+                Vt, ot, st, owner_t = _design(lm, data)
+                value = chi2(Vt, ot, st, trial)
+                if value <= current:
+                    accepted = True
+                    break
+                step /= 2
+            moved = np.max(np.abs(trial - theta) / np.where(sd > 0, sd, 1.0))
+            if verbose:
+                print(
+                    f"fit: linearization {iterations}: chi2 = {value:.6g}, step {step:g}, "
+                    f"largest move {moved:.3g} sigma{'' if accepted else ' (rejected)'}"
+                )
+            if not accepted:
+                lm.theta = theta  # no step decreases chi2: stationary within the minimizers' noise
+                converged = True
+                break
+            theta, V, obs_v, sig, owner, current = trial, Vt, ot, st, owner_t, value
+            if moved < tol:
+                converged = True
+                break
+        if not converged:
+            warnings.warn(f"the fit did not converge in {max_iter} iterations", stacklevel=2)
     else:
-        theta = np.linalg.lstsq(Js, r0, rcond=None)[0] / scale
+        theta = solve(V, obs_v, sig)
+
+    J = V[:, 1:] / sig[:, None]
+    r0 = (obs_v - V[:, 0]) / sig
+    scale = np.linalg.norm(J, axis=0)
+    scale[scale == 0] = 1.0
+    Js = J / scale
+    rank = int(np.linalg.matrix_rank(Js))
+    if rank < lm.n:
+        warnings.warn(
+            f"the data determine only {rank} of {lm.n} coefficients; the solution is not unique", stacklevel=2
+        )
     active = [n for n, t, a, b in zip(lm.names, theta, lo, hi) if np.isclose(t, a) or np.isclose(t, b)]
 
     resid = J @ theta - r0
@@ -752,11 +1034,6 @@ def fit(db: ThermoDatabase, data: Dataset, elements, free, *, bounds=None) -> Fi
     with np.errstate(invalid="ignore", divide="ignore"):
         corr = cov / np.outer(std, std)
 
-    fitted = {}
-    for i, fp in lm.free_index.items():
-        subs = {c: sp.Float(float(theta[lm.names.index(n)]), 15) for c, n in zip(fp.coefficients, fp.names)}
-        old = lm.db.parameters[i].function
-        fitted[i] = PiecewiseT((old.t_min, old.t_max), (sp.nsimplify(fp.form.subs(subs), rational=False),))
     return FitResult(
         names=list(lm.names),
         values=theta,
@@ -768,9 +1045,11 @@ def fit(db: ThermoDatabase, data: Dataset, elements, free, *, bounds=None) -> Fi
         chi2=float(resid @ resid),
         dof=int(resid.size - rank),
         rank=rank,
-        database=_replace(lm.db, fitted),
+        database=_replace(lm.db, lm.functions_at(theta)),
         data=data,
         elements=lm.elements,
         free=fps,
         active_bounds=active,
+        iterations=iterations,
+        converged=converged,
     )

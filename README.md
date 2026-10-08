@@ -38,9 +38,16 @@ the tangent-plane distance Ψ(y) = G(y) − μ·A(y):
   is decided: LB ≥ −ε or UB < −ε. Open: when a two-sublattice phase is
   *active*, its bound stalls near −1e-4, so the result is
   `GLOBAL_SEARCH_INCOMPLETE`.
-- **Fitting (issue #2):** weighted linear least squares of TDB parameters
-  (symbolic T-forms) to thermochemical, activity and tie-line data. Results
-  include the covariance, a fitted TDB, and certified equilibrium checks.
+- **Fitting (issue #2):** weighted least squares of TDB parameters (symbolic
+  T-forms) to thermochemical, activity and phase-equilibrium data, including
+  one-sided phase-boundary points (driving-force residuals) and multi-sublattice
+  phases. ESPEI JSON datasets are read directly. Results include the
+  covariance, a fitted TDB, and certified equilibrium checks. Fitted to the real
+  Cu–Mg data curated for ESPEI (238 one-sided boundary points plus
+  thermochemistry), the liquid and compound parameters come out close to the
+  NIMS assessment, and the diagram follows the liquidus and eutectic data.
+  The FCC interaction differs: the DFT mixing enthalpies pull the Cu-rich
+  solvus wider than the measured one (`examples/cumg_espei_fit.py`).
 - **Data from ASE calculators (issue #5, phase 1):** `discopt.calphad.mlip`
   turns any ASE calculator (a machine-learned potential such as UMA or MACE,
   EAM, EMT) into fitting data: formation enthalpies of compounds and CEF

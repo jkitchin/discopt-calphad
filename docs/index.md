@@ -24,8 +24,9 @@ the tangent-plane distance Ψ(y) = G(y) − μ·A(y):
 - **MVP 4:** compound-energy-formalism phases in any number of elements, checked
   against pycalphad, with staged pricing. Open: when a two-sublattice phase is
   *active*, its bound stalls near −1e-4, so the result is `GLOBAL_SEARCH_INCOMPLETE`.
-- **Fitting:** weighted linear least squares of TDB parameters to
-  thermochemical, activity and tie-line data.
+- **Fitting:** weighted least squares of TDB parameters to thermochemical,
+  activity and phase-equilibrium data (one-sided boundary points included),
+  with an ESPEI JSON reader and a real Cu–Mg example.
 - **Data from ASE calculators (issue #5, phase 1):** `discopt.calphad.mlip`
   turns any ASE calculator (a machine-learned potential such as UMA or MACE,
   EAM, EMT) into fitting data: formation enthalpies of compounds and CEF
