@@ -61,3 +61,17 @@ recover six interaction coefficients, then checked with a certified equilibrium.
     ```python
     --8<-- "examples/alzn_fit.py"
     ```
+
+## Al–Cu from a machine-learned potential
+
+Formation and SQS mixing enthalpies from an ASE calculator (UMA here), compared
+with the Zhang assessment in kJ/mol. The enthalpy parts of the FCC
+interactions and of θ-Al2Cu are then refitted to the calculated data alone, and
+the Al-rich diagram is drawn for both databases (issue #5).
+
+![Al-Cu from UMA](assets/examples/alcu_mlip_uma.png)
+
+??? example "examples/alcu_mlip.py"
+    ```python
+    --8<-- "examples/alcu_mlip.py"
+    ```

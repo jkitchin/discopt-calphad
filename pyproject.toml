@@ -20,6 +20,11 @@ dependencies = [
 
 [project.optional-dependencies]
 plot = ["matplotlib>=3.7"]
+# CALPHAD data from any ASE calculator (issue #5). Model packages (fairchem,
+# mace-torch, LAMMPS, ...) are installed by the user.
+mlip = ["ase>=3.23", "spglib>=2.0"]
+# SQS generation (and later cluster expansions) through icet
+sqs = ["ase>=3.23", "spglib>=2.0", "icet>=3.1,<5"]
 
 [dependency-groups]
 dev = [
@@ -27,6 +32,9 @@ dev = [
     "matplotlib>=3.7",
     "pycalphad>=0.11.1",
     "ruff>=0.16",
+    "ase>=3.23",
+    "spglib>=2.0",
+    "icet>=3.1,<5",
 ]
 docs = [
     "mkdocs>=1.6,<2",  # MkDocs 2 drops the plugin system that Material and mkdocstrings use
