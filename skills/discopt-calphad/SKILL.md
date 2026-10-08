@@ -162,11 +162,18 @@ refinement, boundary tracing and invariants.
 
 ## 7. Fit parameters to data
 
-Parameters enter G linearly, so the fit is weighted linear least squares and
-needs no initial guess. Data kinds:
+Parameters enter G linearly, so for most data the fit is weighted linear
+least squares and needs no initial guess. Data kinds:
 - `GM`, `HM`, `SM`, `CPM` and their `_MIX` forms, via `add_thermo`;
 - activities, via `add_activity`;
-- tie-lines and invariants with measured compositions, via `add_equilibrium`.
+- phase equilibria via `add_equilibrium`: tie-lines, invariants, and one-sided
+  boundary points (a liquidus point is `[("LIQUID", 0.3), ("FCC_A1", None)]`).
+
+A phase whose composition is `None` must touch the tangent of the measured
+one (its driving force is zero), and μ of a multi-sublattice phase comes from
+its internal equilibrium. Both depend on the parameters, so the fit then
+iterates linear solves (`res.iterations`, `res.converged`), starting from the
+database's own values or from `initial={coefficient: value}`.
 
 ```python
 import dataclasses
@@ -189,6 +196,27 @@ new_tdb = fitted.to_tdb()                 # with a provenance header
 `plot_residuals(ax)` and `check_equilibria()`. The last solves a certified
 equilibrium at each tie-line datum. `fit` refuses magnetic phases, because G
 is not linear in TC or BMAGN.
+
+ESPEI JSON datasets are read directly. Phases are renamed to the database's
+names, and anything that cannot be used is listed with the reason:
+
+```python
+from pathlib import Path
+
+import discopt.calphad
+
+cumg = databases.load("cumg_nims")
+espei_dir = Path(discopt.calphad.__file__).parents[3] / "examples" / "data" / "espei-cu-mg"  # in a checkout
+espei = Dataset.from_espei(espei_dir, cumg, ("CU", "MG"), phase_map={"LAVES_C15": "CU2MG"})
+print(len(espei), espei.skipped[0])          # 313 observations; (file, reason) for what was not used
+liquid = Dataset([o for o in espei if o.phase == "LIQUID" and o.kind in ("HM_MIX", "ACR")])
+res_liq = fit(cumg, liquid, ("CU", "MG"), {"L(LIQUID,CU,MG;0)": "a + b*T", "L(LIQUID,CU,MG;1)": "a"})
+print(res_liq.summary())
+```
+
+ESPEI's default σ apply (500 J/mol for H, 1000 J/mol for a ZPF driving
+force, ...); `sigma={"HM": 300.0}` overrides them. The full Cu–Mg fit, with
+all 238 phase-boundary points, is `examples/cumg_espei_fit.py`.
 
 More on data and forms:
 - `add_formation(phase, value, sigma, endmember="AL:CU")` adds an enthalpy of

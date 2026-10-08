@@ -134,3 +134,113 @@ def test_dataset_round_trip(tmp_path):
     assert back.observations == ds.observations
     (tmp_path / "d.csv").write_text("kind,phase,T,x,value,sigma\nHM_MIX,LIQUID,1000,0.5,-500,10\n")
     assert Dataset.from_csv(tmp_path / "d.csv").observations[0] == ds.observations[0]
+
+
+# ---------------------------------------------------------------------------- multi-sublattice μ, one-sided ZPF, ESPEI
+
+CUMG = ("CU", "MG")
+#: Cu2MG's CU:MG endmember keeps its heat-capacity terms; only a is free
+CU2MG_FORM = "a + 364.73085*T - 69.276417*T*ln(T) - 0.00051925*T**2 - 5.65953e-6*T**3 + 143502/T"
+CUMG_FREE = {"L(LIQUID,CU,MG;0)": "a + 4.75612*T", "G(CU2MG,CU:MG;0)": CU2MG_FORM}
+CUMG_START = {"L(LIQUID,CU,MG;0).a": -30000.0, "G(CU2MG,CU:MG;0).a": -50000.0}
+
+
+@pytest.fixture(scope="module")
+def cumg():
+    return databases.load("cumg_nims")
+
+
+@pytest.fixture(scope="module")
+def cumg_lines(cumg):
+    """Two-phase equilibria of the assessment: LIQUID + CU2MG at 1000 and 900 K, FCC + LIQUID at 1000 K."""
+    from discopt.calphad import equilibrium
+
+    phases = list(cumg.phase_models(CUMG).values())
+    out = []
+    for T, x in [(1000.0, 0.75), (900.0, 0.62), (1000.0, 0.9)]:
+        res = equilibrium(phases, x=x, T=T, certify="none")
+        out.append((T, [(cs.phase.name, float(cs.x[0])) for cs in res.composition_sets]))
+    assert all(len(sets) == 2 for _, sets in out)
+    return out
+
+
+def test_mu_of_a_two_sublattice_phase_is_the_tangent_of_its_internal_equilibrium(cumg):
+    from discopt.calphad.fit import _LinearModel
+
+    lm = _LinearModel(cumg, CUMG, [])
+    ph = lm.phase("CU2MG")
+    assert ph.model.n_y == 2
+    t, x = 900.0, 0.66
+    mu = ph.mu(x, t)[:, 0]
+
+    def gstar(xx):
+        """Minimum of G per atom at fixed x along its 1-D feasible set: x = (2 u0 + u1)/3."""
+        from scipy.optimize import minimize_scalar
+
+        lo, hi = max(0.0, (3 * xx - 1) / 2), min(1.0, 3 * xx / 2)
+        g = lambda u0: float(ph.model.gibbs([u0, 3 * xx - 2 * u0], T=t)) * R_GAS * t / 3  # noqa: E731
+        r = minimize_scalar(g, bounds=(lo, hi), method="bounded", options={"xatol": 1e-12})
+        return min(r.fun, g(lo), g(hi))
+
+    assert mu @ [x, 1 - x] == pytest.approx(gstar(x), abs=1e-3)  # J/mol
+    h = 1e-5  # G* curves sharply near Cu2MG's stoichiometry: a fine 5-point stencil for the reference
+    slope = (gstar(x - 2 * h) - 8 * gstar(x - h) + 8 * gstar(x + h) - gstar(x + 2 * h)) / (12 * h)
+    assert mu[0] - mu[1] == pytest.approx(slope, rel=1e-5)
+
+
+def test_tie_lines_with_a_cef_phase_recover_parameters(cumg, cumg_lines):
+    ds = Dataset()
+    for T, sets in cumg_lines:
+        ds.add_equilibrium(T, sets, sigma=100.0)
+    res = fit(cumg, ds, CUMG, CUMG_FREE, initial=CUMG_START)
+    assert res.converged and res.iterations > 1  # Cu2MG's site fractions depend on the parameters
+    assert res.parameters["L(LIQUID,CU,MG;0).a"] == pytest.approx(-36984.0, abs=0.05)
+    assert res.parameters["G(CU2MG,CU:MG;0).a"] == pytest.approx(-54690.99, abs=0.05)
+
+
+def test_one_sided_boundary_points_recover_parameters(cumg, cumg_lines):
+    """Each tie-line given one side at a time: the other phase must touch the tangent (driving force 0)."""
+    ds = Dataset()
+    for T, sets in cumg_lines:
+        for k in range(2):
+            ds.add_equilibrium(T, [(n, x if i == k else None) for i, (n, x) in enumerate(sets)], sigma=100.0)
+    res = fit(cumg, ds, CUMG, CUMG_FREE, initial=CUMG_START)
+    assert res.converged and res.chi2 < 1e-6
+    assert res.parameters["L(LIQUID,CU,MG;0).a"] == pytest.approx(-36984.0, abs=0.05)
+    assert res.parameters["G(CU2MG,CU:MG;0).a"] == pytest.approx(-54690.99, abs=0.05)
+
+
+def test_linear_data_need_one_solve(db):
+    res = fit(db, _synthetic(db), EL, list(TRUE))
+    assert res.iterations == 1 and res.converged
+
+
+def test_zpf_without_anything_to_fix_mu_raises(cumg):
+    ds = Dataset().add_equilibrium(800.0, [("LIQUID", None), ("CUMG2", None)])
+    with pytest.raises(ValueError, match="μ needs a measured composition"):
+        fit(cumg, ds, CUMG, CUMG_FREE)
+
+
+def test_espei_reader_on_the_cu_mg_data(cumg):
+    from pathlib import Path
+
+    from discopt.calphad.io.espei import read_espei
+
+    root = Path(__file__).parents[1] / "examples" / "data" / "espei-cu-mg"
+    ds, skipped = read_espei(root, cumg, CUMG, phase_map={"LAVES_C15": "CU2MG"})
+    kinds = {k: sum(o.kind == k for o in ds) for k in ("ZPF", "HM_MIX", "HM_FORM", "ACR")}
+    assert kinds == {"ZPF": 238, "HM_MIX": 51, "HM_FORM": 15, "ACR": 9}
+    reasons = " ".join(r for _, r in skipped)
+    assert "BCC_A2" in reasons and "HM_MIX on HCP_A3" in reasons and "2 site fractions" in reasons
+    # Garg (1973): a_Mg in the liquid at 1200 K, x_Cu = 0.9 -> x (first element, Cu) = 0.9, σ(ln a) = 500/RT
+    acr = next(o for o in ds if o.kind == "ACR" and o.x == pytest.approx(0.9))
+    assert acr.element == "MG" and acr.value == pytest.approx(0.0057)
+    assert acr.sigma / acr.value == pytest.approx(500.0 / (R_GAS * 1200.0))
+    assert acr.source == "garg1973thermodynamic"
+    # ZPF compositions are given as x_Mg: converted to x_Cu, and a compound's composition is dropped
+    zpf = next(o for o in ds if o.kind == "ZPF" and o.source == "Jones1931")
+    assert zpf.phases[0] == ("LIQUID", pytest.approx(1 - 0.999988522)) and zpf.phases[1] == ("HCP_A3", None)
+    # Zhou (2007) Laves formation enthalpies: one observation per sublattice configuration
+    zhou = [o for o in ds if o.source == "Zhou2007"]
+    assert [o.site_fractions for o in zhou][0] == ({"CU": 1.0}, {"MG": 1.0})
+    assert [o.value for o in zhou if o.phase == "CU2MG"] == [-15720.0, 34720.0, 7000.0, 15500.0]
