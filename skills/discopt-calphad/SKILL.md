@@ -384,7 +384,11 @@ fitted_alcu = fit(alcu, result.dataset, ("AL", "CU"), {"G(ALCU_THETA,AL:CU;0)": 
   FCC), lets icet fit a cluster expansion, and predicts the random alloy at any
   grid composition; σ_config is the cross-validation RMSE, and the fit is in
   `res.cluster_expansions[phase]`. An exact fit has no σ_config, so pass
-  `model_sigma=`.
+  `model_sigma=`. Add `monte_carlo=mlip.MonteCarloOptions(temperatures=...)`
+  for short-range order: mchammer samples the expansion, giving `HM_MIX` and
+  (thermodynamic integration from the random alloy) `SM_MIX` at each T, and
+  Warren–Cowley α in `res.short_range_order[phase]`. Use temperatures above
+  the expansion's ordering or miscibility temperature (|α| > 0.5 warns).
 
 ## Conventions and pitfalls
 

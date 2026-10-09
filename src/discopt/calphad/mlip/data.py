@@ -66,6 +66,9 @@ __all__ = ["APPROXIMATION", "MLIPResult", "compute", "dataset", "reference_energ
 #: recorded on every observation made here
 APPROXIMATION = "0 K energy used as the enthalpy at 298.15 K"
 #: recorded instead when phonons are computed
+#: recorded on cluster-expansion data
+CE_NOTE = APPROXIMATION + "; random alloy from a cluster expansion"
+MC_NOTE = "canonical Monte Carlo on a cluster expansion of 0 K energies, short-range order included"
 PHONON_NOTE = "static energy plus {kind} vibrational enthalpy (zero point and thermal) at 298.15 K"
 
 
@@ -84,6 +87,8 @@ class MLIPResult:
     flagged: list[tuple[str, Relaxation]] = field(default_factory=list)
     #: phase -> :class:`~discopt.calphad.mlip.cluster_expansion.ClusterExpansionFit` (method="cluster_expansion")
     cluster_expansions: dict = field(default_factory=dict)
+    #: phase -> list of :class:`~discopt.calphad.mlip.monte_carlo.SROResult` (``monte_carlo=``)
+    short_range_order: dict = field(default_factory=dict)
 
     def table(self) -> str:
         lines = [
@@ -378,6 +383,8 @@ def _mixing(
     result,
     random=None,
     cluster_expansion=None,
+    monte_carlo=None,
+    entropy_sigma=None,
 ):
     from discopt.calphad.fit import Observation
     from discopt.calphad.mlip import random_alloy
@@ -385,6 +392,8 @@ def _mixing(
 
     if method not in ("sqs", "random", "cluster_expansion"):
         raise ValueError(f"method={method!r}: use 'sqs', 'random' or 'cluster_expansion'")
+    if monte_carlo is not None and method != "cluster_expansion":
+        raise ValueError("monte_carlo= samples a cluster expansion: use it with method='cluster_expansion'")
     options = sqs or SQSOptions()
     roptions = random or random_alloy.RandomOptions()
     tag = "SQS" if method == "sqs" else "random"
@@ -434,6 +443,8 @@ def _mixing(
                 model_sigma,
                 T,
                 result,
+                monte_carlo,
+                entropy_sigma,
             )
             continue
         points = []
@@ -525,10 +536,28 @@ def _mixing(
             )
 
 
-def _cluster_expansion(model, name, ps, m, elements, fixed, ends, grid, policy, options, sigma, model_sigma, T, result):
+def _cluster_expansion(
+    model,
+    name,
+    ps,
+    m,
+    elements,
+    fixed,
+    ends,
+    grid,
+    policy,
+    options,
+    sigma,
+    model_sigma,
+    T,
+    result,
+    monte_carlo=None,
+    entropy_sigma=None,
+):
     """HM_MIX of the random alloy on ``grid``, from a cluster expansion fitted to enumerated structures."""
     from discopt.calphad.fit import Observation
     from discopt.calphad.mlip import cluster_expansion as cem
+    from discopt.calphad.mlip import monte_carlo as mcm
 
     options = options or cem.ClusterExpansionOptions()
     va, vb = _volume(ends[elements[0]]), _volume(ends[elements[1]])
@@ -564,37 +593,54 @@ def _cluster_expansion(model, name, ps, m, elements, fixed, ends, grid, policy, 
                 f"{model.name}; pass model_sigma= (kJ/mol) to include it",
                 stacklevel=4,
             )
-    for y in np.atleast_1d(np.asarray(grid, float)):
-        y = float(y)
-        sig = given if given is not None else _sigma(name, f"{name} y={y:g}", cfg, unc, single=False)
-        value = ce.random_alloy(y) * EV_TO_J_PER_MOL
+    dof = None if given is not None else len(train) - ce.n_parameters
+
+    def add(kind, t, y, value, sig, config, note, unit=1000.0):
         sf = tuple({elements[0]: y, elements[1]: 1 - y} if s == m else {fixed[s]: 1.0} for s in range(len(fixed) + 1))
         x = y * n_mix / n_prim  # mole fraction: the other sites hold one element each
         result.dataset.add(
-            Observation(
-                "HM_MIX",
-                T,
-                value,
-                sig,
-                phase=name,
-                x=x,
-                site_fractions=sf,
-                source=model.name,
-                note=APPROXIMATION + "; random alloy from a cluster expansion",
-            )
+            Observation(kind, t, value, sig, phase=name, x=x, site_fractions=sf, source=model.name, note=note)
         )
         result.rows.append(
             {
-                "kind": "HM_MIX",
+                "kind": kind,
                 "phase": name,
-                "config": f"y={y:g} CE",
+                "config": config,
                 "x": x,
-                "value": value / 1000,
-                "sigma": sig / 1000,
+                "value": value / unit,
+                "sigma": sig / unit,
                 "structures": len(train),
-                "sigma_dof": None if given is not None else len(train) - ce.n_parameters,
+                "sigma_dof": dof,
             }
         )
+
+    for y in np.atleast_1d(np.asarray(grid, float)):
+        y = float(y)
+        if monte_carlo is None:
+            sig = given if given is not None else _sigma(name, f"{name} y={y:g}", cfg, unc, single=False)
+            add("HM_MIX", T, y, ce.random_alloy(y) * EV_TO_J_PER_MOL, sig, f"y={y:g} CE", CE_NOTE)
+            continue
+        runs = mcm.short_range_order(ce, y, monte_carlo)
+        result.short_range_order.setdefault(name, []).extend(runs)
+        for r in runs:
+            strong = {k: a for k, a in r.alpha.items() if abs(a) > 0.5}
+            if strong:
+                warnings.warn(
+                    f"{name} y={r.y:g} at {r.T:g} K: Warren-Cowley {strong}; so strongly ordered or clustered that "
+                    "the sample may be below the expansion's ordering or miscibility temperature, and not one "
+                    "solution phase",
+                    stacklevel=4,
+                )
+            stat = r.H_error * EV_TO_J_PER_MOL
+            sig = given if given is not None else _sigma(name, f"{name} y={r.y:g}", math.hypot(cfg, stat), unc, False)
+            add("HM_MIX", r.T, r.y, r.H * EV_TO_J_PER_MOL, sig, f"y={r.y:g} MC {r.T:g}K", MC_NOTE)
+            if r.S is not None:
+                # the energy errors (expansion and model) taken over at T: an estimate, not a bound
+                energy = math.hypot(cfg, unc or 0.0)
+                s_sig = math.hypot(r.S_error * EV_TO_J_PER_MOL, energy / r.T)
+                if entropy_sigma is not None:
+                    s_sig = float(entropy_sigma)
+                add("SM_MIX", r.T, r.y, r.S * EV_TO_J_PER_MOL, s_sig, f"y={r.y:g} MC {r.T:g}K", MC_NOTE, 1.0)
 
 
 def _volume(rel: Relaxation) -> float:
@@ -620,6 +666,7 @@ def compute(
     sqs=None,
     random=None,
     cluster_expansion=None,
+    monte_carlo=None,
     phonons=None,
     entropy_sigma: float | None = None,
     heat_capacity_sigma: float | None = None,
@@ -645,6 +692,12 @@ def compute(
     via ``cluster_expansion=``), and predicts the random alloy at each grid
     composition; σ_config is the cross-validation RMSE, and the fit is kept in
     :attr:`MLIPResult.cluster_expansions`. Any grid composition works.
+    With ``monte_carlo=`` (a
+    :class:`~discopt.calphad.mlip.monte_carlo.MonteCarloOptions`), mchammer
+    samples the expansion at each of its temperatures instead, so the data
+    include short-range order: ``HM_MIX`` at each temperature and, by
+    thermodynamic integration, ``SM_MIX`` (σ ``entropy_sigma`` when given).
+    The Warren–Cowley parameters are in :attr:`MLIPResult.short_range_order`.
 
     ``phonons`` (a :class:`~discopt.calphad.mlip.phonons.PhononOptions`)
     computes harmonic or quasi-harmonic phonons for every compound or
@@ -700,6 +753,8 @@ def compute(
             result,
             random,
             cluster_expansion,
+            monte_carlo,
+            entropy_sigma,
         )
     return result
 

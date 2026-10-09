@@ -56,6 +56,8 @@ Generated from the docstrings in `src/`.
 
 ::: discopt.calphad.mlip.cluster_expansion
 
+::: discopt.calphad.mlip.monte_carlo
+
 ::: discopt.calphad.mlip.phonons
 
 ::: discopt.calphad.mlip.data

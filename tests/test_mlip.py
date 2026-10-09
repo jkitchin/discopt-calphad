@@ -666,3 +666,56 @@ def test_cluster_expansion_with_emt_agrees_with_random_decorations():
     )
     for a, b in zip(ce.dataset, rnd.dataset):
         assert a.value > 0 and abs(a.value - b.value) < 2 * math.hypot(a.sigma, b.sigma)
+
+
+def test_short_range_order_of_a_clustering_pair_model(db):
+    """Unlike pairs cost energy, so like neighbours gather (α > 0), and H and S fall below the random alloy's."""
+    from discopt.calphad.mlip.monte_carlo import MonteCarloOptions
+    from discopt.calphad.mlip.phonons import K_B
+
+    model = mlip.from_ase(BondCounting(), name="bonds")
+    mc = MonteCarloOptions(temperatures=(2000.0, 2800.0), min_atoms=125, sweeps=150, n_beta=8)
+    res = mlip.compute(
+        model,
+        db,
+        EL,
+        mixing={"FCC_A1": [0.5]},
+        method="cluster_expansion",
+        monte_carlo=mc,
+        relax=mlip.RelaxPolicy(mode="fixed"),
+        model_sigma=0.5,
+    )
+    assert [(o.kind, o.T) for o in res.dataset] == [
+        ("HM_MIX", 2000.0),
+        ("SM_MIX", 2000.0),
+        ("HM_MIX", 2800.0),
+        ("SM_MIX", 2800.0),
+    ]
+    ce = res.cluster_expansions["FCC_A1"]
+    lo, hi = res.short_range_order["FCC_A1"]
+    assert lo.atoms == 125 and lo.y == hi.y == pytest.approx(62 / 125)
+    y = lo.y
+    h_rand, s_ideal = ce.random_alloy(y), -K_B * (y * math.log(y) + (1 - y) * math.log(1 - y))
+    assert lo.alpha["sro_Al_Cu_1"] > hi.alpha["sro_Al_Cu_1"] > 0
+    assert lo.H < hi.H < h_rand
+    for r in (lo, hi):
+        assert 0 < r.S < s_ideal
+        assert r.G <= h_rand - r.T * s_ideal + 3 * r.S_error * r.T  # Gibbs-Bogoliubov: the random alloy bounds G
+        assert r.G == pytest.approx(r.H - r.T * r.S)
+    # S = -dG/dT, between the two temperatures
+    assert -(hi.G - lo.G) / 800.0 == pytest.approx((lo.S + hi.S) / 2, rel=0.05)
+    rows = {(r["kind"], r["config"]) for r in res.rows}
+    assert ("SM_MIX", "y=0.496 MC 2000K") in rows
+    o = res.dataset.observations[1]
+    assert o.value == pytest.approx(lo.S * F) and o.sigma > 0
+    # the data fit a T-dependent interaction: short-range order lowers S, so L0 = a + b T has b > 0
+    fr = fit(db, res.dataset, EL, {"L(FCC_A1,AL,CU:VA;0)": "a + b*T"})
+    assert fr.rank == 2 and fr.values[1] > 0
+
+
+def test_monte_carlo_needs_a_cluster_expansion(db):
+    from discopt.calphad.mlip.monte_carlo import MonteCarloOptions
+
+    model = mlip.from_ase(BondCounting(), name="bonds")
+    with pytest.raises(ValueError, match="method='cluster_expansion'"):
+        mlip.compute(model, db, EL, mixing={"FCC_A1": [0.5]}, monte_carlo=MonteCarloOptions(), sigma=1.0)

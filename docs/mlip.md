@@ -194,6 +194,42 @@ the predicted ΔH_mix at y = 0.25, 0.5, 0.75 (1.1, 1.3, 1.2 kJ/mol) agree with
 ten random 32-atom decorations (0.6, 1.5, 1.2 kJ/mol) within that σ. For a
 pure nearest-neighbour pair calculator, the expansion is exact.
 
+**Short-range order** (`monte_carlo=mlip.MonteCarloOptions(temperatures=(600,
+900, 1200), min_atoms=256, sweeps=200, equilibration=0.25, sro_radius=1.1,
+integrate=True, n_beta=12, seed=0)`, with `method="cluster_expansion"`). A
+random alloy has no short-range order, but a real one at finite temperature
+prefers like or unlike neighbours, which lowers its enthalpy and its entropy
+of mixing. With `monte_carlo=`, icet's mchammer samples the canonical
+ensemble of the cluster expansion in an n×n×n supercell at each temperature,
+and the data become:
+
+- `HM_MIX` at each temperature: ⟨ΔH_mix⟩, with σ² = CV RMSE² + (statistical
+  error)² + σ_model²; the statistical error is mchammer's, which accounts for
+  the correlation length of the run;
+- `SM_MIX` at each temperature (with `integrate=True`), by thermodynamic
+  integration in β = 1/kT from infinite temperature, where the alloy is random
+  and its entropy ideal: βΔG(β) = s_mix(y ln y + (1 − y) ln(1 − y)) +
+  ∫₀^β ⟨ΔH⟩ dβ′, and ΔS = (⟨ΔH⟩ − ΔG)/T. At β = 0, ⟨ΔH⟩ is the
+  expansion's random-alloy value, exactly. The rest of the integral comes from
+  `n_beta` extra Monte Carlo runs and the trapezoid rule. σ is the statistical
+  error carried through the integral, plus the energy σ divided by T (an
+  estimate); `entropy_sigma=` replaces it.
+
+The Warren–Cowley parameters α of each pair shell within `sro_radius`
+nearest-neighbour distances are in `MLIPResult.short_range_order[phase]`
+(`SROResult`: `y`, `T`, `H`, `H_error`, `alpha`, `G`, `S`, `S_error`).
+α < 0 means more unlike neighbours than at random (ordering), and α > 0 means
+fewer (clustering). The composition is the nearest one the supercell holds,
+and the observations record it. Below the expansion's ordering or miscibility
+temperature the canonical sample is no longer one solution phase. Any |α| >
+0.5 therefore warns, and such temperatures are better left out.
+
+For a clustering nearest-neighbour pair model at y ≈ 0.5, 2000 and 2800 K
+give α₁ = 0.24 and 0.14, ΔS = 4.7 and 5.3 J/(mol K) against 5.76 ideal, ΔG
+below the Gibbs–Bogoliubov bound ΔH_random − TΔS_ideal, and −dΔG/dT equal to
+ΔS within 5%. Fitted with `L0 = a + b*T`, the data give b > 0: the entropy
+that short-range order removes is what a T coefficient in L carries.
+
 **σ_model** is the error of the calculator itself, which no spread over
 structures can see, and it is usually the larger part. In the Al–Cu example,
 the SQS spreads are 0.1 to 1.3 kJ/mol, while UMA differs from the assessment
@@ -261,7 +297,6 @@ out. EMT makes BCC Cu and θ-Al₂Cu unstable in this way. Solution phases
 
 - vibrational entropies of solution phases (phonons of SQS or random
   decorations);
-- short-range order by Monte Carlo, and liquids by MD and thermodynamic
-  integration;
+- liquids by MD and thermodynamic integration;
 - ternary mixing data, and per-source weighting in the fit;
 - choosing which structures to compute (`discopt.doe`), and active learning.
