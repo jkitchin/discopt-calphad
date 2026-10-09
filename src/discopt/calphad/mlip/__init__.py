@@ -47,6 +47,7 @@ from discopt.calphad.mlip.prototypes import (
     atomic_volume,
     phase_structure,
 )
+from discopt.calphad.mlip.random_alloy import RandomOptions
 from discopt.calphad.mlip.sqs import SQSOptions
 
 __all__ = [
@@ -61,6 +62,7 @@ __all__ = [
     "Prototype",
     "RelaxPolicy",
     "Relaxation",
+    "RandomOptions",
     "RelaxationCache",
     "SQSOptions",
     "atomic_volume",

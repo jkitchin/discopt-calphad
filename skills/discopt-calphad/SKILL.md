@@ -368,7 +368,11 @@ fitted_alcu = fit(alcu, result.dataset, ("AL", "CU"), {"G(ALCU_THETA,AL:CU;0)": 
   the source label: change the label when the model changes.
 - A 0 K energy stands in for H at 298.15 K, and every observation's `note`
   says so. Fit only enthalpy coefficients from such data, and keep or fit the
-  T coefficients from other data. Only `method="sqs"` exists yet.
+  T coefficients from other data.
+- **Mixing methods.** `method="sqs"` uses a few icet SQS, with σ_config their
+  spread. `method="random"` averages `RandomOptions(count=...)` independent
+  random decorations, with σ_config the standard error of the mean, s/√n,
+  which more draws shrink.
 
 ## Conventions and pitfalls
 

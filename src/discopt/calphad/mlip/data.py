@@ -7,7 +7,8 @@ Two kinds of data come out:
   the same model so that systematic errors largely cancel;
 - **mixing enthalpies** (``HM_MIX``) of a solution phase on its own lattice,
   relative to the phase's pure endmembers, from special quasirandom
-  structures (``method="sqs"``).
+  structures (``method="sqs"``) or averaged over random decorations
+  (``method="random"``).
 
 Every value is a 0 K energy standing in for an enthalpy at 298.15 K, and each
 observation records that approximation in its ``note``. The pure elements are
@@ -268,16 +269,20 @@ def _formation(model, db, elements, compounds, refs, policy, structures, sigma, 
 # ---------------------------------------------------------------------------- mixing
 
 
-def _mixing(model, db, elements, mixing, method, policy, structures, sigma, model_sigma, pool, T, sqs, result):
+def _mixing(
+    model, db, elements, mixing, method, policy, structures, sigma, model_sigma, pool, T, sqs, result, random=None
+):
     from discopt.calphad.fit import Observation
+    from discopt.calphad.mlip import random_alloy
     from discopt.calphad.mlip.sqs import SQSOptions, generate
 
-    if method != "sqs":
+    if method not in ("sqs", "random"):
         raise NotImplementedError(
-            f"method={method!r}: phase 1 provides 'sqs' only ('random' and "
-            "'cluster_expansion' come later, see issue #5)"
+            f"method={method!r}: use 'sqs' or 'random' ('cluster_expansion' comes later, see issue #5)"
         )
     options = sqs or SQSOptions()
+    roptions = random or random_alloy.RandomOptions()
+    tag = "SQS" if method == "sqs" else "random"
     if len(elements) != 2:
         raise NotImplementedError("mixing enthalpies need a binary system")
     for name, grid in mixing.items():
@@ -313,11 +318,14 @@ def _mixing(model, db, elements, mixing, method, policy, structures, sigma, mode
             y = float(y)
             # Vegard volume at this composition, from the two relaxed endmembers
             v = y * _volume(ends[elements[0]]) + (1 - y) * _volume(ends[elements[1]])
-            cells = generate(ps, m, elements, fixed, y, v, options, getattr(model, "cache", None))
+            if method == "sqs":
+                cells = generate(ps, m, elements, fixed, y, v, options, getattr(model, "cache", None))
+            else:
+                cells = random_alloy.generate(ps, m, elements, fixed, y, v, roptions, offset=int(round(y * 1e6)))
             dh, xs, used = [], [], []
             for k, atoms in enumerate(cells):
                 rel = _relax(model, [atoms], policy)[0]
-                if not _check(f"{name} SQS y={y:g} #{k}", rel, result, False):
+                if not _check(f"{name} {tag} y={y:g} #{k}", rel, result, False):
                     continue
                 dh.append(
                     rel.energy_per_atom
@@ -328,17 +336,23 @@ def _mixing(model, db, elements, mixing, method, policy, structures, sigma, mode
                 used.append(atoms)
             if dh:
                 points.append((y, np.array(dh) * EV_TO_J_PER_MOL, float(np.mean(xs)), used))
-        # configurational σ: pooled over the phase's compositions, or per composition
+        # configurational σ: pooled over the phase's compositions, or per composition. SQS are a
+        # few optimized structures, so σ is their spread. Random decorations are independent
+        # draws of the random-alloy average, so σ is the standard error of their mean, s/√n.
         dofs = [len(dh) - 1 for _, dh, _, _ in points]
         if pool and sum(dofs) > 0:
             pooled = math.sqrt(
                 sum(float(np.var(dh, ddof=1)) * k for (_, dh, _, _), k in zip(points, dofs) if k > 0) / sum(dofs)
             )
-            config = [(pooled, sum(dofs))] * len(points)
+            spreads = [(pooled, sum(dofs))] * len(points)
         else:
-            config = [
+            spreads = [
                 (float(np.std(dh, ddof=1)), k) if k > 0 else (None, None) for (_, dh, _, _), k in zip(points, dofs)
             ]
+        config = [
+            (s_ / math.sqrt(len(dh)) if (method == "random" and s_ is not None) else s_, k)
+            for (s_, k), (_, dh, _, _) in zip(spreads, points)
+        ]
         given = _kj(sigma, name, "sigma")
         user_model = _kj(model_sigma, name, "model_sigma")
         warned = False
@@ -354,7 +368,7 @@ def _mixing(model, db, elements, mixing, method, policy, structures, sigma, mode
                 sig = _sigma(name, label, cfg, unc, single=len(dh) < 2 and dof is None)
                 if unc is None and not warned:
                     warnings.warn(
-                        f"{name}: σ covers only the configurational (SQS) spread, not the error of {model.name}; "
+                        f"{name}: σ covers only the configurational ({tag}) spread, not the error of {model.name}; "
                         "pass model_sigma= (kJ/mol) to include it",
                         stacklevel=3,
                     )
@@ -409,6 +423,7 @@ def compute(
     pool: bool = True,
     structures=None,
     sqs=None,
+    random=None,
     T: float = 298.15,
 ) -> MLIPResult:
     """Formation and mixing enthalpies from ``model``, as a dataset with everything behind it.
@@ -421,7 +436,10 @@ def compute(
     sublattice sites...)``, or to ``(ase.Atoms, atoms of each sublattice)`` for
     a structure no prototype covers (:meth:`PhaseStructure.from_atoms`), for
     phases :data:`PHASES` does not know. ``sqs``
-    is an :class:`~discopt.calphad.mlip.sqs.SQSOptions`.
+    is an :class:`~discopt.calphad.mlip.sqs.SQSOptions`. ``method="random"``
+    averages over random decorations instead
+    (:class:`~discopt.calphad.mlip.random_alloy.RandomOptions` via ``random=``),
+    and then σ_config is the standard error of the mean, s/√n.
 
     ``sigma``, ``model_sigma`` and ``pool`` set the uncertainties; see the
     module docstring.
@@ -436,7 +454,9 @@ def compute(
     if compounds:
         _formation(model, db, elements, compounds, result.references, policy, structures, sigma, model_sigma, T, result)
     if mixing:
-        _mixing(model, db, elements, mixing, method, policy, structures, sigma, model_sigma, pool, T, sqs, result)
+        _mixing(
+            model, db, elements, mixing, method, policy, structures, sigma, model_sigma, pool, T, sqs, result, random
+        )
     return result
 
 

@@ -155,9 +155,17 @@ degrees of freedom, good to about 25%. `pool=False` keeps one σ per
 composition. Raising `SQSOptions(count=)` improves either; about 7 structures
 per composition give 30% on their own, and 13 give 20%. SQS are optimized
 structures, not random draws, so their spread is mostly a finite-size effect
-and tends to understate the configurational variance. Independent random
-decorations (`method="random"`, a later phase) will give a spread with clean
-statistics.
+and tends to understate the configurational variance.
+
+**Random decorations** (`method="random"`, settings in
+`mlip.RandomOptions(count=8, min_atoms=16, max_atoms=64, seed=0)`) average
+the mixing enthalpy over `count` independent random decorations of a
+supercell that holds the composition exactly. No SQS tool is needed. The value
+is their mean, and σ_config is its **standard error**, s/√n: the draws are
+independent samples of the random-alloy average, so more draws shrink it. The
+spread s is pooled over a phase's compositions by default, as for SQS.
+Relaxing random structures moves atoms more than relaxing SQS does, so the
+prototype check flags more of them.
 
 **σ_model** is the error of the calculator itself, which no spread over
 structures can see, and it is usually the larger part. In the Al–Cu example,
@@ -196,8 +204,7 @@ job submission.
 
 ## Not yet (later phases of issue #5)
 
-- `method="random"` (averages over random decorations) and harmonic phonons
-  (S_vib, Cp, H(298) − H(0));
+- harmonic phonons (S_vib, Cp, H(298) − H(0));
 - `method="cluster_expansion"` through icet, short-range order by Monte
   Carlo, and liquids by MD and thermodynamic integration;
 - ternary mixing data, and per-source weighting in the fit;

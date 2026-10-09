@@ -269,10 +269,10 @@ def test_emt_pipeline_end_to_end(db):
     assert eq.composition_sets
 
 
-def test_only_sqs_in_phase_one(db):
+def test_unknown_mixing_method(db):
     model = mlip.from_ase(RegularSolution(), name="mock")
-    with pytest.raises(NotImplementedError, match="'sqs' only"):
-        mlip.compute(model, db, EL, mixing={"FCC_A1": [0.5]}, method="random", sigma=1.0)
+    with pytest.raises(NotImplementedError, match="cluster_expansion"):
+        mlip.compute(model, db, EL, mixing={"FCC_A1": [0.5]}, method="cluster_expansion", sigma=1.0)
 
 
 # ---------------------------------------------------------------------------- fit extensions
@@ -419,3 +419,87 @@ def test_sqs_mixing_on_a_sublattice_that_also_allows_vacancies():
     assert len(mix) == 3 and all("VA" not in o.site_fractions[0] or o.site_fractions[0]["VA"] == 0 for o in mix)
     fr = fit(db, res.dataset, EL, {"L(BX,AL,CU:CU;0)": "a", "L(BX,AL,CU:CU;1)": "a"})
     assert fr.chi2 < 1e-12  # the mock's energy is cubic in y, which L0 and L1 represent exactly
+
+
+# ---------------------------------------------------------------------------- method="random" (#5 phase 2)
+
+
+class BondCounting(Calculator):
+    """E = J x (number of unlike nearest-neighbour pairs); no forces. Its random-alloy average is exact."""
+
+    implemented_properties = ["energy", "forces", "stress"]
+    J = 0.05  # eV per unlike pair
+
+    def calculate(self, atoms=None, properties=("energy",), system_changes=all_changes):
+        from ase.neighborlist import neighbor_list
+
+        super().calculate(atoms, properties, system_changes)
+        d = neighbor_list("d", self.atoms, 4.0)
+        nn = d.min() * 1.05
+        i, j = neighbor_list("ij", self.atoms, nn)
+        s = np.array(self.atoms.get_chemical_symbols())
+        unlike = int(np.sum(s[i] != s[j])) // 2  # each pair is listed twice
+        n = len(self.atoms)
+        self.results = {"energy": self.J * unlike, "forces": np.zeros((n, 3)), "stress": np.zeros(6)}
+
+
+def test_random_decorations_average_to_the_random_alloy(db):
+    from discopt.calphad.mlip.random_alloy import RandomOptions, supercell
+
+    model = mlip.from_ase(BondCounting(), name="bonds")
+    opts = RandomOptions(count=40, min_atoms=32, max_atoms=32, seed=3)
+    res = mlip.compute(
+        model,
+        db,
+        EL,
+        mixing={"FCC_A1": [0.25, 0.5]},
+        method="random",
+        random=opts,
+        relax=mlip.RelaxPolicy(mode="fixed"),
+        pool=False,
+        sigma=None,
+    )
+    for o, row in zip([o for o in res.dataset if o.kind == "HM_MIX"], res.rows):
+        y = o.site_fractions[0]["AL"]
+        rep = supercell(4, 4, y, opts)
+        N = 4 * rep[0] * rep[1] * rep[2]
+        k = round(y * N)
+        theory = BondCounting.J * 6 * 2 * k * (N - k) / (N * (N - 1)) * F  # 6 bonds per fcc atom, J/mol
+        assert row["structures"] == 40 and row["sigma_dof"] == 39
+        assert abs(o.value - theory) < 4 * o.sigma  # the mean agrees with theory within its standard error
+        assert 0 < o.sigma < 0.3 * abs(theory)
+
+
+def test_random_sigma_is_the_standard_error(db):
+    """σ_config = s/√n: quadrupling the draws halves σ (same spread)."""
+    model = mlip.from_ase(BondCounting(), name="bonds")
+    sig = {}
+    for n in (8, 32):
+        with pytest.warns(UserWarning, match="only the configurational"):
+            res = mlip.compute(
+                model,
+                db,
+                EL,
+                mixing={"FCC_A1": [0.5]},
+                method="random",
+                random=mlip.RandomOptions(count=n, min_atoms=32, max_atoms=32),
+                relax=mlip.RelaxPolicy(mode="fixed"),
+            )
+        sig[n] = res.dataset.observations[0].sigma
+    assert sig[32] == pytest.approx(sig[8] / 2, rel=0.5)  # s itself is an estimate, so only roughly
+
+
+def test_random_method_with_emt(db):
+    model = mlip.from_ase(EMT(), name="EMT")
+    res = mlip.compute(
+        model,
+        db,
+        EL,
+        mixing={"FCC_A1": [0.25, 0.5, 0.75]},
+        method="random",
+        random=mlip.RandomOptions(count=3, min_atoms=8, max_atoms=16),
+        model_sigma=2.0,
+    )
+    mix = [o for o in res.dataset if o.kind == "HM_MIX"]
+    assert len(mix) == 3 and not res.flagged and all(o.sigma > 2000.0 for o in mix)
+    assert [r["structures"] for r in res.rows] == [3, 3, 3]
