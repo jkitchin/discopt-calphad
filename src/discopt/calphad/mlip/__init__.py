@@ -28,6 +28,13 @@ when a structure is built (``pip install discopt-calphad[mlip]``; add
 ``[sqs]`` for icet).
 """
 
+from discopt.calphad.mlip.active import (
+    ActiveLearningResult,
+    active_learning,
+    candidates,
+    compute_arguments,
+    suggest,
+)
 from discopt.calphad.mlip.calculator import (
     EV_TO_J_PER_MOL,
     ASEModel,
@@ -58,6 +65,11 @@ from discopt.calphad.mlip.sqs import SQSOptions
 __all__ = [
     "APPROXIMATION",
     "ASEModel",
+    "ActiveLearningResult",
+    "active_learning",
+    "candidates",
+    "compute_arguments",
+    "suggest",
     "ClusterExpansionFit",
     "ClusterExpansionOptions",
     "Committee",

@@ -16,6 +16,9 @@ huge but finite variance, and a candidate that determines it ranks first.
 - :func:`rank_candidates` scores each candidate on its own: the reduction in
   the variance of chosen coefficients (all by default), absolute and
   relative.
+- :func:`initial_design` chooses before any data exist, from zero
+  information: first until every coefficient is determined, then by the
+  criterion.
 - :func:`design_measurements` chooses a batch of ``n``. It greedily adds the
   candidate that most improves the A-criterion (summed variance of the chosen
   coefficients) or the D-criterion (log det of the information), with exact
@@ -32,9 +35,9 @@ from __future__ import annotations
 
 import numpy as np
 
-from discopt.calphad.fit import Dataset, FitResult, Observation, _LinearModel, _rows
+from discopt.calphad.fit import Dataset, FitResult, FreeParameter, Observation, _LinearModel, _rows
 
-__all__ = ["candidate_rows", "rank_candidates", "design_measurements"]
+__all__ = ["candidate_rows", "rank_candidates", "design_measurements", "initial_design"]
 
 
 def _model(result: FitResult) -> _LinearModel:
@@ -97,6 +100,16 @@ def _relative(before: np.ndarray, after: np.ndarray) -> np.ndarray:
     out[finite] = (before[finite] - after[finite]) / before[finite]
     out[~np.isfinite(before) & np.isfinite(after)] = 1.0
     return out
+
+
+def _rank(F: np.ndarray) -> int:
+    """Number of coefficient combinations ``F`` determines (rank after scaling to unit diagonal)."""
+    d = np.sqrt(np.diag(F))
+    seen = d > 0
+    if not seen.any():
+        return 0
+    S = F[np.ix_(seen, seen)] / np.outer(d[seen], d[seen])
+    return int(np.linalg.matrix_rank(S, tol=1e-10))
 
 
 def _score(F: np.ndarray, idx, criterion: str) -> tuple[int, float]:
@@ -210,4 +223,56 @@ def design_measurements(
         "observations": [cands[k] for k in chosen],
         "variance_before": np.diag(_covariance(F0))[idx],
         "variance_after": np.diag(_covariance(F))[idx],
+    }
+
+
+def initial_design(db, elements, free, candidates, n: int | None = None, *, criterion: str = "D", initial=None) -> dict:
+    """Choose candidates for a fit that has no data yet.
+
+    ``free`` is as for :func:`~discopt.calphad.fit.fit`. Rows are taken at
+    ``initial`` (a dict by coefficient name), or at the coefficients that best
+    reproduce each parameter's original function; that only matters for
+    rows that are not linear in θ. Starting from zero information, each step
+    adds the candidate that determines the most undetermined coefficients,
+    then the best by ``criterion``. With ``n=None`` it stops as soon as the chosen
+    candidates determine every combination of coefficients that all of them
+    together determine (the rank of the information matrix). Returns the chosen
+    indices and observations, and the number of combinations left undetermined.
+    """
+    if criterion not in ("A", "D"):
+        raise ValueError(f"criterion must be 'A' or 'D', got {criterion!r}")
+    free = {label: "a + b*T" for label in free} if not isinstance(free, dict) else free
+    fps = [FreeParameter.parse(label, form, functions=db.functions) for label, form in free.items()]
+    lm = _LinearModel(db, elements, fps)
+    lm.theta = lm.initial_theta()
+    for name, v in (initial or {}).items():
+        lm.theta[lm.names.index(name)] = float(v)
+    cands = _list(candidates)
+    rows = []
+    for c in cands:
+        V, _, sig = _rows(lm, c)
+        rows.append(np.array(V, float)[:, 1:] / np.array(sig, float)[:, None])
+    idx = list(range(lm.n))
+    F = np.zeros((lm.n, lm.n))
+    reachable = _rank(sum((J.T @ J for J in rows), F))
+    chosen = []
+    while n is None or len(chosen) < n:
+        if n is None and _rank(F) >= reachable:
+            break
+        best, best_score = None, None
+        for k, J in enumerate(rows):
+            if k in chosen:
+                continue
+            score = _score(F + J.T @ J, idx, criterion)
+            if best_score is None or score < best_score:
+                best, best_score = k, score
+        if best is None:
+            break
+        chosen.append(best)
+        F = F + rows[best].T @ rows[best]
+    return {
+        "chosen": chosen,
+        "observations": [cands[k] for k in chosen],
+        "undetermined": int(lm.n - _rank(F)),
+        "names": list(lm.names),
     }

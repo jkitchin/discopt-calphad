@@ -388,9 +388,55 @@ the fitted L0 spread is exactly 0.02 eV (1.9 kJ/mol), and at 800 K the
 FCC_A1 + LIQUID boundary on the FCC side is at x(Al) = 0.9954, 0.9939 and
 0.9918: 0.994 ± 0.002.
 
-## Not yet (later phases of issue #5)
+## Which structures to compute: design and active learning
+
+A computed value is known in everything but its value before it is computed:
+its phase, its site fractions, and the σ the calculator will give it. That is
+all a fit's information matrix needs, so the most informative structures can
+be computed first (`discopt.calphad.design`, and `discopt.doe` through
+`method="exchange"`).
+
+- `mlip.candidates(db, elements, compounds=..., mixing=..., structures=...,
+  sigma=2.0)` builds the candidate observations by running `compute()` with a
+  stand-in calculator whose energy is zero. They are the observations a real
+  run gives, with value 0 and σ `sigma` (kJ/mol, the expected model error).
+- `mlip.compute_arguments(observations, elements)` turns chosen candidates
+  back into `compute(compounds=..., mixing=...)` arguments.
+- `mlip.suggest(fit_result, candidates, n)` picks the `n` candidates not yet
+  computed that most reduce the coefficients' variance, with their
+  `arguments`.
+- `design.initial_design(db, elements, free, candidates)` chooses before any
+  data exist: from zero information, until the chosen candidates determine as
+  many coefficient combinations as all candidates together.
+- `mlip.active_learning(model, db, elements, free, compounds=..., mixing=...,
+  expected_sigma=2.0, batch=2, budget=20, target=None)` loops: compute a batch,
+  fit, and choose the next. It stops when the largest relative σ of the
+  coefficients is below `target`, at `budget` values, or when no candidates
+  are left. `.table()` lists the rounds. For the Al–Cu mock, the first round
+  is θ plus FCC at x = 0.4 and 0.8, and relative σ 0.22 is reached after 7 of
+  the 10 candidates.
+
+A formation enthalpy says nothing about a solution's interaction parameters.
+The pure endmembers are evaluated at y = 1 − 10⁻¹⁴, though, so its rows held
+L coefficients of about 10⁻¹⁴, and the fit counted that round-off as
+information. The fit's rows now set coefficients below the endpoint's
+resolution (10³ × 10⁻¹⁴ of the row's scale) to zero. A formation-only fit
+therefore reports the solution parameters as undetermined (rank 1, not 3).
+
+**Fine-tuning hooks.** `MLIPResult.structures()` returns every relaxed
+structure as `ase.Atoms` with its energy and provenance in `atoms.info`, and
+`MLIPResult.write_extxyz(path)` writes them in the format MLIP fine-tuning
+codes read. In `active_learning`, `on_batch(model, structures, result)` is
+called after every batch. Whatever model it returns computes the next batches.
+That is where to recompute the chosen structures with a reference method
+(DFT), fine-tune the potential on them, and continue with the tuned model.
+Fine-tuning itself belongs to the model's own package. Every value keeps the
+source label of the model that computed it, so a fit shows which data came
+from which model.
+
+## Not yet
 
 - vibrational entropies of solution phases (phonons of SQS or random
   decorations);
-- ternary mixing data, and per-source weighting in the fit;
-- choosing which structures to compute (`discopt.doe`), and active learning.
+- mixing data on a sublattice that mixes three or more elements (`compute`
+  mixes two; the fit itself handles ternaries).

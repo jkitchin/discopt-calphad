@@ -93,6 +93,37 @@ class MLIPResult:
     #: phase -> list of :class:`~discopt.calphad.mlip.liquid.LiquidResult` (``liquid=``)
     liquids: dict = field(default_factory=dict)
 
+    def structures(self) -> list:
+        """Every relaxed structure as ``ase.Atoms``, with its energy (eV) as a single-point result.
+
+        ``atoms.info`` holds ``source``, ``formula``, ``energy_per_atom``,
+        ``converged`` and ``left_prototype``. These are what a fine-tuning run
+        needs once reference (DFT) energies replace the calculator's.
+        """
+        from ase.calculators.singlepoint import SinglePointCalculator
+
+        out = []
+        for r in self.relaxations:
+            a = r.atoms()
+            a.calc = SinglePointCalculator(a, energy=r.energy)
+            a.info.update(
+                source=r.source,
+                formula=r.formula,
+                energy_per_atom=r.energy_per_atom,
+                converged=bool(r.converged),
+                left_prototype=bool(r.left_prototype),
+            )
+            out.append(a)
+        return out
+
+    def write_extxyz(self, path) -> int:
+        """Write :meth:`structures` to an extended-XYZ file (the usual input of MLIP fine-tuning); returns the count."""
+        from ase.io import write
+
+        atoms = self.structures()
+        write(str(path), atoms, format="extxyz")
+        return len(atoms)
+
     def table(self) -> str:
         lines = [
             f"{'kind':8s} {'phase':14s} {'config':12s} {'x':>6s} {'value':>10s} {'sigma':>8s} {'dof':>4s}  (kJ/mol)"

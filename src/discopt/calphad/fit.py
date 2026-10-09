@@ -891,6 +891,21 @@ class _PhaseBasis:
 # ---------------------------------------------------------------------------- rows
 
 
+def _resolved(vec) -> np.ndarray:
+    """``vec`` with coefficient entries below the endpoint's resolution set to zero.
+
+    Pure endmembers are evaluated at a site fraction of 1 − _ENDPOINT, so an
+    interaction parameter leaves a coefficient of order _ENDPOINT (times the
+    row's scale) in rows that do not depend on it. Left in, that round-off
+    counts as information: a formation enthalpy would seem to determine the
+    solution's interaction parameters, with a huge but finite variance.
+    """
+    vec = np.array(vec, float)
+    coef = vec[1:]
+    coef[np.abs(coef) <= 1e3 * _ENDPOINT * max(1.0, float(np.max(np.abs(coef), initial=0.0)))] = 0.0
+    return vec
+
+
 def _rows(lm: _LinearModel, obs: Observation):
     """(vectors, observed values, sigmas) for one observation."""
     if obs.kind in THERMO_KINDS:
@@ -900,12 +915,12 @@ def _rows(lm: _LinearModel, obs: Observation):
             vec = ph.formation(ph.y_of(obs.x) if y is None else y, obs.T, obs.reference, prop=_FORM[obs.kind])
         else:
             vec = ph.thermo(obs.kind, obs.x, obs.T, y, obs.site_fractions)
-        return [vec], [obs.value], [obs.sigma]
+        return [_resolved(vec)], [obs.value], [obs.sigma]
     if obs.kind == "ACR":
         k = lm.elements.index(obs.element)
         mu = lm.phase(obs.phase).mu(obs.x, obs.T)[k]
         ref = lm.phase(obs.reference or obs.phase).pure_mu(obs.element, obs.T)
-        return [(mu - ref) / (R_GAS * obs.T)], [math.log(obs.value)], [obs.sigma / obs.value]
+        return [_resolved((mu - ref) / (R_GAS * obs.T))], [math.log(obs.value)], [obs.sigma / obs.value]
     return _zpf_rows(lm, obs)
 
 

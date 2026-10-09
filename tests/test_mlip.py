@@ -888,3 +888,90 @@ def test_committee_needs_two_distinct_members(db):
         mlip.committee([mlip.from_ase(Member(-0.1), name="a")], db, EL, COMMITTEE_FREE)
     with pytest.raises(ValueError, match="distinct names"):
         mlip.committee([mlip.from_ase(Member(-0.1), name="a")] * 2, db, EL, COMMITTEE_FREE)
+
+
+# ---------------------------------------------------------------------------- which structures to compute (phase 4)
+
+AL_FREE = {
+    "L(FCC_A1,AL,CU:VA;0)": "a",
+    "L(FCC_A1,AL,CU:VA;1)": "a",
+    "G(ALCU_THETA,AL:CU;0)": "a + 6.75*T + 2*GHSERAL + GHSERCU",
+}
+AL_SPACE = dict(compounds={"ALCU_THETA": ["AL:CU"]}, structures=THETA, mixing={"FCC_A1": np.linspace(0.1, 0.9, 9)})
+ONE_DECORATION = dict(method="random", random=mlip.RandomOptions(count=1, min_atoms=1, max_atoms=256))
+
+
+def test_candidates_round_trip_to_compute_arguments(db):
+    c = mlip.candidates(db, EL, sigma=1.0, **AL_SPACE)
+    assert [o.kind for o in c] == ["HM_FORM"] + ["HM_MIX"] * 9
+    assert {o.value for o in c} == {0.0} and {o.sigma for o in c} == {1000.0} and {o.source for o in c} == {"candidate"}
+    args = mlip.compute_arguments(c.observations, EL)
+    assert args["compounds"] == {"ALCU_THETA": ["AL:CU"]}
+    np.testing.assert_allclose(args["mixing"]["FCC_A1"], np.linspace(0.1, 0.9, 9))
+
+
+def test_a_formation_enthalpy_says_nothing_about_the_solution(db):
+    """Pure endmembers are evaluated at y = 1 − 1e-14; that round-off must not count as information on L."""
+    from discopt.calphad.design import initial_design
+
+    c = mlip.candidates(db, EL, sigma=1.0, **AL_SPACE)
+    only_compound = initial_design(db, EL, AL_FREE, c.observations[:1])
+    assert only_compound["undetermined"] == 2  # L0 and L1 need mixing data
+    d = initial_design(db, EL, AL_FREE, c)
+    assert d["undetermined"] == 0 and len(d["chosen"]) == 3  # the compound and two FCC compositions
+    assert sorted(o.kind for o in d["observations"]) == ["HM_FORM", "HM_MIX", "HM_MIX"]
+    model = mlip.from_ase(RegularSolution(), name="mock")
+    res = mlip.compute(model, db, EL, compounds={"ALCU_THETA": ["AL:CU"]}, structures=THETA, sigma=1.0)
+    assert fit(db, res.dataset, EL, AL_FREE).rank == 1
+
+
+def test_suggest_skips_what_is_computed(db):
+    model = mlip.from_ase(RegularSolution(), name="mock")
+    res = mlip.compute(
+        model, db, EL, model_sigma=1.0, **{**AL_SPACE, "mixing": {"FCC_A1": [0.2, 0.6]}}, **ONE_DECORATION
+    )
+    fr = fit(db, res.dataset, EL, AL_FREE)
+    nxt = mlip.suggest(fr, mlip.candidates(db, EL, sigma=1.0, **AL_SPACE), 2)
+    ys = nxt["arguments"]["mixing"]["FCC_A1"]
+    assert len(ys) == 2 and not {0.2, 0.6} & set(ys) and "compounds" not in nxt["arguments"]
+    assert np.sum(nxt["variance_after"]) < np.sum(nxt["variance_before"])
+
+
+def test_active_learning_stops_at_its_target_and_can_swap_the_model(db, tmp_path):
+    seen = []
+
+    def fine_tune(model, structures, result):
+        seen.append((model.name, len(structures)))
+        result.write_extxyz(tmp_path / f"batch{len(seen)}.xyz")
+        return mlip.from_ase(RegularSolution(), name="tuned")  # stands in for a fine-tuned potential
+
+    model = mlip.from_ase(RegularSolution(), name="mock")
+    al = mlip.active_learning(
+        model,
+        db,
+        EL,
+        AL_FREE,
+        expected_sigma=0.2,
+        batch=2,
+        budget=20,
+        target=0.22,
+        on_batch=fine_tune,
+        model_sigma=0.2,
+        **AL_SPACE,
+        **ONE_DECORATION,
+    )
+    assert al.stopped.startswith("target") and al.rounds[-1]["max_relative_std"] <= 0.22
+    assert len(al.dataset) < 10  # fewer than every candidate (all ten give 0.19)
+    assert al.rounds[0]["max_relative_std"] > al.rounds[-1]["max_relative_std"]
+    assert seen[0][0] == "mock" and all(name == "tuned" for name, _ in seen[1:])
+    assert {o.source for o in al.dataset} == {"mock", "tuned"}
+    from ase.io import read
+
+    assert len(read(tmp_path / "batch1.xyz", index=":")) == seen[0][1]
+    assert "target" in al.table()
+
+
+def test_active_learning_needs_candidates_that_determine_the_fit(db):
+    model = mlip.from_ase(RegularSolution(), name="mock")
+    with pytest.raises(ValueError, match="undetermined"):
+        mlip.active_learning(model, db, EL, AL_FREE, compounds={"ALCU_THETA": ["AL:CU"]}, structures=THETA)
