@@ -805,3 +805,86 @@ def test_liquid_mixing_by_md_and_thermodynamic_integration(db):
     gm = Dataset([o for o in res.dataset if o.kind == "GM_MIX"])
     fr = fit(start, gm, EL, {"G(LIQUID,AL,CU;0)": "a"})
     assert fr.values[0] == pytest.approx(W * F, rel=1e-8)
+
+
+# ---------------------------------------------------------------------------- committee (phase 3)
+
+
+class Member(RegularSolution):
+    """The mock regular solution with its own L0 (eV/atom): a committee member that disagrees with the others."""
+
+    def __init__(self, l0):
+        super().__init__()
+        self.l0 = l0
+
+    def calculate(self, atoms=None, properties=("energy",), system_changes=all_changes):
+        super().calculate(atoms, properties, system_changes)
+        s = self.atoms.get_chemical_symbols()
+        x = s.count("Al") / len(s)
+        self.results["energy"] += len(s) * x * (1 - x) * (self.l0 - L0)
+
+
+COMMITTEE_FREE = {
+    "L(FCC_A1,AL,CU:VA;0)": "a",
+    "L(FCC_A1,AL,CU:VA;1)": "a",
+    "L(FCC_A1,AL,CU:VA;2)": "a",
+    "G(ALCU_THETA,AL:CU;0)": "a + 6.75*T + 2*GHSERAL + GHSERCU",
+}
+
+
+def _committee(db, l0s):
+    return mlip.committee(
+        [mlip.from_ase(Member(l0), name=f"member-{k}") for k, l0 in enumerate(l0s)],
+        db,
+        EL,
+        COMMITTEE_FREE,
+        compounds={"ALCU_THETA": ["AL:CU"]},
+        structures=THETA,
+        mixing={"FCC_A1": [0.25, 0.5, 0.75]},
+        sqs=FAST_SQS,
+        sigma=1.0,
+    )
+
+
+def test_committee_spread_reaches_the_phase_boundaries(db):
+    from discopt.calphad.uncertainty import boundary_spread
+
+    l0s = (-0.10, -0.12, -0.14)
+    com = _committee(db, l0s)
+    k = com.names.index("L(FCC_A1,AL,CU:VA;0).a")
+    np.testing.assert_allclose(com.values[:, k], np.array(l0s) * F, rtol=1e-9)  # each member's fit is exact
+    assert com.std[k] == pytest.approx(0.02 * F, rel=1e-9)
+    assert com.std[com.names.index("L(FCC_A1,AL,CU:VA;1).a")] < 1e-6  # the members agree on L1
+    assert "between" in com.summary()
+    spread = boundary_spread(com.databases(), EL, [800.0], np.linspace(0.9, 0.99, 4))
+    key = (800.0, ("FCC_A1", "LIQUID"))
+    assert spread.present(key) == 3
+    fcc = spread.ends[key][:, 0]
+    assert fcc[0] > fcc[1] > fcc[2]  # a more negative L0 stabilizes FCC, so its boundary moves to less Al
+    assert spread.std(key)[0] > 1e-3
+    assert "FCC_A1 + LIQUID" in spread.table()
+
+
+def test_posterior_databases_and_identical_members(db):
+    from discopt.calphad.uncertainty import database_at, phase_boundaries, posterior_databases
+
+    com = _committee(db, (-0.12, -0.12))
+    assert np.all(com.std < 1e-6)  # identical members: no committee spread
+    fr = com.fits[0]
+    same = database_at(fr, fr.values)
+    pick = lambda d: next(p.function for p in d.parameters if p.label == "G(FCC_A1,AL,CU:VA;0)")  # noqa: E731
+    assert float(pick(same).exprs[0].subs("T", 800)) == pytest.approx(float(pick(fr.database).exprs[0].subs("T", 800)))
+    draws = posterior_databases(fr, n=3, seed=1)
+    values = {float(pick(d).exprs[0].subs("T", 800)) for d in draws}
+    assert len(values) == 3  # θ drawn from the fit's covariance
+    with pytest.raises(ValueError, match="theta needs"):
+        database_at(fr, [1.0])
+    b = phase_boundaries(com.databases()[0], EL, 800.0, [0.95])
+    assert set(b) == {("FCC_A1", "LIQUID")}
+
+
+def test_committee_needs_two_distinct_members(db):
+    with pytest.raises(ValueError, match="at least two"):
+        mlip.committee([mlip.from_ase(Member(-0.1), name="a")], db, EL, COMMITTEE_FREE)
+    with pytest.raises(ValueError, match="distinct names"):
+        mlip.committee([mlip.from_ase(Member(-0.1), name="a")] * 2, db, EL, COMMITTEE_FREE)

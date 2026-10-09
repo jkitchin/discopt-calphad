@@ -331,6 +331,43 @@ quantum nuclear effects. For a species-blind Lennard-Jones liquid with a
 mean-field term N w x(1 − x), `GM_MIX` is exactly w x(1 − x) plus the ideal
 term, a fit recovers L₀ = w, and `HM_MIX` agrees with w x(1 − x) within its σ.
 
+## Committee uncertainty, carried to the diagram
+
+The σ of each data point (σ_model from `model_sigma=` or a committee spread
+through `from_ase(..., uncertainty=)`) assumes the calculator's errors are
+independent from point to point. They are not: a potential that overbinds
+one compound tends to overbind its neighbours. A **committee** keeps that
+correlation. `mlip.committee(models, db, elements, free, **compute_kwargs)`
+computes the data with each member (several networks of an ensemble, or
+different potentials), fits each dataset with the same free parameters
+(`fit_options=` passes keyword arguments to `fit`), and returns a
+`Committee`:
+
+- `.values` (members × coefficients), `.mean`, `.std` and `.covariance` of
+  the fitted coefficients across members; `.summary()` sets the spread between
+  members beside the fits' own σ (within);
+- `.databases()`, one fitted database per member, or with
+  `samples_per_member=n`, n draws from each member's posterior, so the
+  ensemble holds both the within-member and the between-member spread.
+
+`discopt.calphad.uncertainty` takes any list of databases to the diagram.
+`boundary_spread(databases, elements, temperatures, xs)` maps each one at each
+temperature over the composition grid. It finds every two-phase region's
+tie-line ends (the median over the grid points inside it) and returns a
+`BoundarySpread`: `.ends[(T, (phase, phase))]` is an array of the ends per
+database (`nan` where a database lacks the region), with `.present`,
+`.mean`, `.std` and `.table()`. `phase_boundaries(db, elements, T, xs)` does
+it for one database. `posterior_databases(fit_result, n)` draws θ from a
+single fit's covariance instead, and `database_at(fit_result, theta)` builds the
+database for any θ. The equilibria skip the global certificate by default
+(`certify="none"`), since an ensemble needs many; pass `certify="final"` to
+certify each.
+
+For three mock members whose L0(FCC_A1) are −0.10, −0.12 and −0.14 eV/atom,
+the fitted L0 spread is exactly 0.02 eV (1.9 kJ/mol), and at 800 K the
+FCC_A1 + LIQUID boundary on the FCC side is at x(Al) = 0.9954, 0.9939 and
+0.9918: 0.994 ± 0.002.
+
 ## Not yet (later phases of issue #5)
 
 - vibrational entropies of solution phases (phonons of SQS or random

@@ -40,6 +40,8 @@ Generated from the docstrings in `src/`.
 
 ::: discopt.calphad.design
 
+::: discopt.calphad.uncertainty
+
 ## Order–disorder stand-ins
 
 ::: discopt.calphad.ordering
@@ -59,6 +61,8 @@ Generated from the docstrings in `src/`.
 ::: discopt.calphad.mlip.monte_carlo
 
 ::: discopt.calphad.mlip.liquid
+
+::: discopt.calphad.mlip.committee
 
 ::: discopt.calphad.mlip.phonons
 

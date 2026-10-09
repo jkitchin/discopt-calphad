@@ -395,6 +395,14 @@ fitted_alcu = fit(alcu, result.dataset, ("AL", "CU"), {"G(ALCU_THETA,AL:CU;0)": 
   thermodynamic integration (one B → A, Gibbs–Duhem over x) for `GM_MIX` at T.
   Runs are in `res.liquids[phase]`; a run that did not melt warns (msd).
   It is the most expensive data kind: many MD runs per temperature.
+- **Committee uncertainty to the diagram.** `mlip.committee(models, db, els,
+  free, **compute_kwargs)` fits each member's data; `.std` is the
+  between-member spread of the coefficients. Then
+  `from discopt.calphad.uncertainty import boundary_spread` and
+  `boundary_spread(com.databases(), els, temps, xs).table()` gives each
+  two-phase boundary's mean ± std over the members (`samples_per_member=n`
+  adds each fit's posterior; `posterior_databases(fit_result, n)` does that
+  for one fit).
 
 ## Conventions and pitfalls
 

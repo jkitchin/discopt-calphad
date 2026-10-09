@@ -39,6 +39,7 @@ from discopt.calphad.mlip.calculator import (
     structure_hash,
 )
 from discopt.calphad.mlip.cluster_expansion import ClusterExpansionFit, ClusterExpansionOptions
+from discopt.calphad.mlip.committee import Committee, committee
 from discopt.calphad.mlip.data import APPROXIMATION, MLIPResult, compute, dataset, reference_energies
 from discopt.calphad.mlip.liquid import LiquidOptions, LiquidResult
 from discopt.calphad.mlip.monte_carlo import MonteCarloOptions, SROResult
@@ -59,6 +60,7 @@ __all__ = [
     "ASEModel",
     "ClusterExpansionFit",
     "ClusterExpansionOptions",
+    "Committee",
     "EV_TO_J_PER_MOL",
     "EnergyModel",
     "LiquidOptions",
@@ -78,6 +80,7 @@ __all__ = [
     "SROResult",
     "Vibrations",
     "atomic_volume",
+    "committee",
     "compute",
     "dataset",
     "from_ase",
