@@ -249,6 +249,13 @@ Formulation, taking each data type in order of difficulty:
 ESPEI dataset import is a convenience for reusing existing curated data. We do
 not depend on ESPEI; its MCMC approach is a comparison baseline, not a component.
 
+**Per-source weighting.** `fit(..., source_scale=...)` scales the σ of each
+`Observation.source` by a fixed factor, or by one estimated from that
+source's residuals (`"auto"`: a Birge ratio over the source's effective
+degrees of freedom, iterated). `FitResult.residuals_by_source()` reports χ²
+and effective dof per source, so calculated and experimental data can be
+compared before they are combined.
+
 ## 6. Additions to the roadmap
 
 - MVP 1 includes the symbolic node set for the regular solution (`XLogX`, `RedlichKister`),

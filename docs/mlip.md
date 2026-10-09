@@ -254,6 +254,26 @@ qualitative diagram. Mixing calculated data with experimental data in one fit
 is natural: each point carries its own σ and `source`, and the TDB header lists
 the sources.
 
+**Per-source weighting.** The σ of calculated data and of experiments are set
+by different methods and need not be on the same footing.
+`FitResult.residuals_by_source()` compares them: for each source, its rows,
+their χ², and their effective degrees of freedom (rows less their leverage,
+so the sources' dof sum to rows − rank). χ²/dof well above 1 for one source
+says its σ are too small next to the rest. `fit(..., source_scale=...)`
+multiplies each source's σ:
+
+- a dict of fixed factors, `{"EMT": 2.0}`;
+- `"auto"` for one source (`{"EMT": "auto"}`) or for all (`source_scale="auto"`),
+  to estimate the factor from that source's own scatter. This is a Birge
+  ratio √(χ²_s/dof_s), refitted until no factor moves by more than 0.1%.
+
+By default an estimated factor only grows (`source_scale_shrink=True` lets it
+fall below 1), so a source that fits better than its σ say keeps its stated
+σ. The factors are in `FitResult.source_scales`. In a test, 40 experimental and
+40 calculated points both claim σ = 20 J/mol, while the calculated ones
+actually scatter by 80. The plain fit gives the calculated source χ²/dof ≈ 16,
+and `source_scale="auto"` finds its factor to be about 4.
+
 ## Provenance and caching
 
 Every `Observation` carries `source`, the label passed to `from_ase` (for

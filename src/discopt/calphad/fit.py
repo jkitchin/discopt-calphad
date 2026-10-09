@@ -967,6 +967,59 @@ def _zpf_rows(lm: _LinearModel, obs: Observation):
 # ---------------------------------------------------------------------------- fit
 
 
+def _leverage(result) -> np.ndarray:
+    """Diagonal of the hat matrix J C Jᵀ, one per residual row (0 for rows without a θ-dependence)."""
+    from discopt.calphad.design import candidate_rows
+
+    J = np.vstack(candidate_rows(result, result.data.observations))
+    C = np.asarray(result.covariance, float)
+    h = np.einsum("ij,jk,ik->i", J, C, J)
+    if len(h) != len(result.residuals):  # extra rows (errors in variables) carry no θ-leverage here
+        h = np.concatenate([h, np.zeros(len(result.residuals) - len(h))])
+    return h
+
+
+def _scaled(data: Dataset, scales: dict[str, float]) -> Dataset:
+    out = Dataset(
+        dataclasses.replace(o, sigma=o.sigma * scales.get(o.source or "unspecified", 1.0)) for o in data.observations
+    )
+    out.skipped = list(data.skipped)
+    return out
+
+
+def _source_scaled_fit(db, data, elements, free, source_scale, shrink, max_rounds, kwargs) -> FitResult:
+    """A fit with each source's σ scaled: fixed factors, or estimated (``"auto"``) from that source's residuals."""
+    sources = list(data.sources())
+    spec = {k: "auto" for k in sources} if source_scale == "auto" else dict(source_scale)
+    unknown = sorted(set(spec) - set(sources))
+    if unknown:
+        raise KeyError(f"source_scale names sources not in the data: {unknown}; the data have {sources}")
+    for k, v in spec.items():
+        if v != "auto" and not (isinstance(v, (int, float)) and v > 0):
+            raise ValueError(f"source_scale[{k!r}] must be a positive number or 'auto', got {v!r}")
+    scales = {k: (1.0 if v == "auto" else float(v)) for k, v in spec.items()}
+    auto = [k for k, v in spec.items() if v == "auto"]
+    result = fit(db, _scaled(data, scales), elements, free, **kwargs)
+    for _ in range(max_rounds if auto else 0):
+        by = result.residuals_by_source()
+        change = 0.0
+        for k in auto:
+            n, chi2, dof = by.get(k, (0, 0.0, 0.0))
+            if dof < 1.0:  # the data cannot estimate this source's scale
+                continue
+            ratio = math.sqrt(chi2 / dof)
+            new = scales[k] * ratio
+            if not shrink:
+                new = max(new, 1.0)
+            change = max(change, abs(new / scales[k] - 1.0))
+            scales[k] = new
+        if change < 1e-3:
+            break
+        result = fit(db, _scaled(data, scales), elements, free, **kwargs)
+    result.source_scales = scales
+    return result
+
+
 @dataclass
 class FitResult:
     names: list[str]
@@ -994,6 +1047,8 @@ class FitResult:
     #: global consistency (``consistency="global"``): status, rounds, cuts, worst lower bound, and
     #: per condition and phase the certified bounds in J/mol of atoms; None when not requested
     consistency: dict | None = None
+    #: per-source σ scale factors used (``source_scale=``), or None
+    source_scales: dict | None = None
 
     @property
     def parameters(self) -> dict[str, float]:
@@ -1006,6 +1061,22 @@ class FitResult:
         for k in dict.fromkeys(kinds):
             r = self.residuals[kinds == k]
             out[str(k)] = (int(r.size), float(np.sqrt(np.mean(r**2))))
+        return out
+
+    def residuals_by_source(self) -> dict[str, tuple[int, float, float]]:
+        """{source: (rows, χ² of its rows, effective degrees of freedom)}.
+
+        The effective degrees of freedom are the rows less their leverage
+        (the diagonal of the hat matrix), so they sum to rows − rank over all
+        sources. χ²/dof well above 1 for a source says its σ are too small
+        relative to the rest of the data; see ``fit(source_scale=)``.
+        """
+        lev = _leverage(self)
+        src = np.array([self.data.observations[i].source or "unspecified" for i in self.row_observation])
+        out = {}
+        for k in dict.fromkeys(src):
+            m = src == k
+            out[str(k)] = (int(m.sum()), float(np.sum(self.residuals[m] ** 2)), float(m.sum() - lev[m].sum()))
         return out
 
     def summary(self) -> str:
@@ -1164,6 +1235,9 @@ def fit(
     consistency_eps: float = 10.0,
     consistency_time_limit: float = 120.0,
     max_cut_rounds: int = 10,
+    source_scale=None,
+    source_scale_shrink: bool = False,
+    source_scale_rounds: int = 20,
 ) -> FitResult:
     """Fit free parameter coefficients of ``db`` to ``data`` by weighted least squares.
 
@@ -1225,7 +1299,38 @@ def fit(
     each pricing), and ``NOT_CERTIFIED`` when rounds ran out. Phases listed in
     an observation are not checked there: their deviation from the tangent is
     that observation's own residual.
+
+    **Per-source weighting.** Data from different sources (``Observation.source``:
+    experiment, DFT, an MLIP) come with σ set by different people and methods,
+    which may not be on the same footing. :meth:`FitResult.residuals_by_source`
+    compares them: each source's χ² against its effective degrees of freedom.
+    ``source_scale`` multiplies the σ of each source: a dict ``{source:
+    factor}``, where a factor may be ``"auto"``, or ``"auto"`` for every source.
+    An ``"auto"`` factor is estimated from the data (a Birge ratio per source,
+    √(χ²_s/dof_s), iterated with refits until no factor changes by more than
+    0.1%, ``source_scale_rounds`` at most). It only grows σ unless
+    ``source_scale_shrink=True``: a source that fits better than its σ say is
+    kept at its stated σ. A source with less than one effective degree of
+    freedom cannot be estimated and keeps factor 1. The factors used are in
+    :attr:`FitResult.source_scales`, and :attr:`FitResult.data` holds the
+    scaled σ.
     """
+    if source_scale is not None:
+        kwargs = dict(
+            bounds=bounds,
+            initial=initial,
+            max_iter=max_iter,
+            tol=tol,
+            verbose=verbose,
+            errors_in_variables=errors_in_variables,
+            consistency=consistency,
+            consistency_eps=consistency_eps,
+            consistency_time_limit=consistency_time_limit,
+            max_cut_rounds=max_cut_rounds,
+        )
+        return _source_scaled_fit(
+            db, data, elements, free, source_scale, source_scale_shrink, source_scale_rounds, kwargs
+        )
     free = {label: "a + b*T" for label in free} if not isinstance(free, dict) else free
     fps = [FreeParameter.parse(label, form, functions=db.functions) for label, form in free.items()]
     lm = _LinearModel(db, elements, fps)
