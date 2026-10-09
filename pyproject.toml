@@ -23,7 +23,7 @@ plot = ["matplotlib>=3.7"]
 # CALPHAD data from any ASE calculator (issue #5). Model packages (fairchem,
 # mace-torch, LAMMPS, ...) are installed by the user.
 mlip = ["ase>=3.23", "spglib>=2.0"]
-# SQS generation (and later cluster expansions) through icet
+# SQS generation and cluster expansions through icet
 sqs = ["ase>=3.23", "spglib>=2.0", "icet>=3.1,<5"]
 # Fedorov exchange designs (design_measurements(method="exchange"))
 doe = ["discopt-doe>=0.4"]

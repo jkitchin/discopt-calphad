@@ -167,6 +167,33 @@ spread s is pooled over a phase's compositions by default, as for SQS.
 Relaxing random structures moves atoms more than relaxing SQS does, so the
 prototype check flags more of them.
 
+**Cluster expansion** (`method="cluster_expansion"`, settings in
+`mlip.ClusterExpansionOptions(cutoffs=(2.1, 1.5), max_size=4,
+max_structures=40, fit_method="least-squares", n_splits=5, seed=0)`) hands
+the expansion to icet; discopt-calphad only moves data between it and the
+calculator. icet enumerates every decoration of the lattice in supercells of
+up to `max_size` primitive cells (29 for FCC at size 4; a random subset of
+`max_structures`, endmembers always kept), the calculator relaxes each at its
+Vegard volume, and each gives a mixing energy relative to the relaxed
+endmembers. icet's trainstation fits the effective cluster interactions with
+`n_splits`-fold cross validation, and the expansion then predicts the
+**ideal random alloy** at each grid composition from icet's random-alloy
+cluster vector, with no sampling noise. Any composition works, not only those
+a small supercell can hold. σ_config is the cross-validation RMSE, the
+expected error for a structure the fit has not seen; an exact fit (round-off
+below 1 µeV/atom) has none, and then `model_sigma=` is required. The fit is
+kept in `MLIPResult.cluster_expansions[phase]`
+(`ClusterExpansionFit`: `.expansion` is the icet object, `.predict(atoms)`,
+`.random_alloy(y)`, `.summary()`). Training structures that leave the
+lattice on relaxation are flagged and not used. All grid points come from one
+expansion, so their errors are correlated, which a fit treating them as
+independent does not see.
+
+For EMT Cu–Au, 29 structures give a CV RMSE of 14 meV/atom (1.3 kJ/mol), and
+the predicted ΔH_mix at y = 0.25, 0.5, 0.75 (1.1, 1.3, 1.2 kJ/mol) agree with
+ten random 32-atom decorations (0.6, 1.5, 1.2 kJ/mol) within that σ. For a
+pure nearest-neighbour pair calculator, the expansion is exact.
+
 **σ_model** is the error of the calculator itself, which no spread over
 structures can see, and it is usually the larger part. In the Al–Cu example,
 the SQS spreads are 0.1 to 1.3 kJ/mol, while UMA differs from the assessment
@@ -234,7 +261,7 @@ out. EMT makes BCC Cu and θ-Al₂Cu unstable in this way. Solution phases
 
 - vibrational entropies of solution phases (phonons of SQS or random
   decorations);
-- `method="cluster_expansion"` through icet, short-range order by Monte
-  Carlo, and liquids by MD and thermodynamic integration;
+- short-range order by Monte Carlo, and liquids by MD and thermodynamic
+  integration;
 - ternary mixing data, and per-source weighting in the fit;
 - choosing which structures to compute (`discopt.doe`), and active learning.

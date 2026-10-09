@@ -379,7 +379,12 @@ fitted_alcu = fit(alcu, result.dataset, ("AL", "CU"), {"G(ALCU_THETA,AL:CU;0)": 
 - **Mixing methods.** `method="sqs"` uses a few icet SQS, with σ_config their
   spread. `method="random"` averages `RandomOptions(count=...)` independent
   random decorations, with σ_config the standard error of the mean, s/√n,
-  which more draws shrink.
+  which more draws shrink. `method="cluster_expansion"` relaxes icet's
+  enumerated structures (`ClusterExpansionOptions(max_size=4, ...)`, 29 for
+  FCC), lets icet fit a cluster expansion, and predicts the random alloy at any
+  grid composition; σ_config is the cross-validation RMSE, and the fit is in
+  `res.cluster_expansions[phase]`. An exact fit has no σ_config, so pass
+  `model_sigma=`.
 
 ## Conventions and pitfalls
 

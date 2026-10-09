@@ -1,6 +1,7 @@
 """CALPHAD data from ASE calculators (issue #5, phase 1): EMT and mock calculators only."""
 
 import dataclasses
+import math
 
 import numpy as np
 import pytest
@@ -271,8 +272,8 @@ def test_emt_pipeline_end_to_end(db):
 
 def test_unknown_mixing_method(db):
     model = mlip.from_ase(RegularSolution(), name="mock")
-    with pytest.raises(NotImplementedError, match="cluster_expansion"):
-        mlip.compute(model, db, EL, mixing={"FCC_A1": [0.5]}, method="cluster_expansion", sigma=1.0)
+    with pytest.raises(ValueError, match="cluster_expansion"):
+        mlip.compute(model, db, EL, mixing={"FCC_A1": [0.5]}, method="cvm", sigma=1.0)
 
 
 # ---------------------------------------------------------------------------- fit extensions
@@ -590,3 +591,78 @@ def test_a_dynamically_unstable_compound_is_flagged(db):
             entropy_sigma=0.5,
         )
     assert len(res.dataset) == 0 and "imaginary" in res.flagged[0][1].reason
+
+
+# ---------------------------------------------------------------------------- cluster expansion (phase 3)
+
+
+def test_cluster_expansion_of_a_pair_model_is_exact(db):
+    """Bond counting is a nearest-neighbour pair model, so the expansion and its random alloy are exact."""
+    model = mlip.from_ase(BondCounting(), name="bonds")
+    grid = [0.1, 0.25, 0.5, 0.8]  # 0.1 fits no small supercell; the expansion does not care
+    res = mlip.compute(
+        model,
+        db,
+        EL,
+        mixing={"FCC_A1": grid},
+        method="cluster_expansion",
+        relax=mlip.RelaxPolicy(mode="fixed"),
+        model_sigma=0.5,
+    )
+    ce = res.cluster_expansions["FCC_A1"]
+    assert ce.rmse_validation < 1e-8 and len(ce.structures) == 29
+    for y, o, row in zip(grid, res.dataset, res.rows):
+        assert o.kind == "HM_MIX" and o.site_fractions[0]["AL"] == y and o.x == pytest.approx(y)
+        assert o.value == pytest.approx(BondCounting.J * 12 * y * (1 - y) * F, rel=1e-9)  # 6 bonds per atom
+        assert o.sigma == pytest.approx(500.0)  # σ_config = CV RMSE = 0, so σ = model_sigma
+        assert row["structures"] == 29 and row["sigma_dof"] == 29 - ce.n_parameters
+    # an ordered decoration: L1_2 Al3Cu, 12 unlike bonds per 4-atom cell
+    l12 = mlip.PHASES["FCC_A1"].build(("CU", "VA"), mlip.atomic_volume("Cu"))
+    l12.set_chemical_symbols(["Cu", "Al", "Al", "Al"])
+    assert ce.predict(l12) == pytest.approx(BondCounting.J * 12 / 4, rel=1e-9)
+
+
+def test_cluster_expansion_needs_a_model_sigma_when_it_fits_exactly(db):
+    model = mlip.from_ase(BondCounting(), name="bonds")
+    with pytest.raises(ValueError, match="model_sigma"):
+        mlip.compute(
+            model, db, EL, mixing={"FCC_A1": [0.5]}, method="cluster_expansion", relax=mlip.RelaxPolicy(mode="fixed")
+        )
+
+
+def test_cluster_expansion_with_too_few_structures(db):
+    from discopt.calphad.mlip.cluster_expansion import ClusterExpansionOptions
+
+    model = mlip.from_ase(BondCounting(), name="bonds")
+    with pytest.raises(ValueError, match="training structures"):
+        mlip.compute(
+            model,
+            db,
+            EL,
+            mixing={"FCC_A1": [0.5]},
+            method="cluster_expansion",
+            cluster_expansion=ClusterExpansionOptions(max_size=2),
+            relax=mlip.RelaxPolicy(mode="fixed"),
+            sigma=1.0,
+        )
+
+
+@pytest.mark.slow
+def test_cluster_expansion_with_emt_agrees_with_random_decorations():
+    from discopt.calphad import ThermoDatabase
+
+    db = ThermoDatabase.from_string(CUAU_TDB)
+    model = mlip.from_ase(EMT(), name="EMT")
+    with pytest.warns(UserWarning, match="cross-validation"):
+        ce = mlip.compute(model, db, ("AU", "CU"), mixing={"FCC_A1": [0.25, 0.5, 0.75]}, method="cluster_expansion")
+    rnd = mlip.compute(
+        model,
+        db,
+        ("AU", "CU"),
+        mixing={"FCC_A1": [0.25, 0.5, 0.75]},
+        method="random",
+        random=mlip.RandomOptions(count=10, min_atoms=32, max_atoms=32),
+        model_sigma=0.1,
+    )
+    for a, b in zip(ce.dataset, rnd.dataset):
+        assert a.value > 0 and abs(a.value - b.value) < 2 * math.hypot(a.sigma, b.sigma)

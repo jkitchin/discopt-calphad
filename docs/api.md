@@ -54,6 +54,8 @@ Generated from the docstrings in `src/`.
 
 ::: discopt.calphad.mlip.random_alloy
 
+::: discopt.calphad.mlip.cluster_expansion
+
 ::: discopt.calphad.mlip.phonons
 
 ::: discopt.calphad.mlip.data

@@ -38,6 +38,7 @@ from discopt.calphad.mlip.calculator import (
     from_ase,
     structure_hash,
 )
+from discopt.calphad.mlip.cluster_expansion import ClusterExpansionFit, ClusterExpansionOptions
 from discopt.calphad.mlip.data import APPROXIMATION, MLIPResult, compute, dataset, reference_energies
 from discopt.calphad.mlip.phonons import PhononOptions, Vibrations
 from discopt.calphad.mlip.prototypes import (
@@ -54,6 +55,8 @@ from discopt.calphad.mlip.sqs import SQSOptions
 __all__ = [
     "APPROXIMATION",
     "ASEModel",
+    "ClusterExpansionFit",
+    "ClusterExpansionOptions",
     "EV_TO_J_PER_MOL",
     "EnergyModel",
     "MLIPResult",

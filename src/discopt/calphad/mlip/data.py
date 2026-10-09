@@ -7,8 +7,10 @@ Two kinds of data come out:
   the same model so that systematic errors largely cancel;
 - **mixing enthalpies** (``HM_MIX``) of a solution phase on its own lattice,
   relative to the phase's pure endmembers, from special quasirandom
-  structures (``method="sqs"``) or averaged over random decorations
-  (``method="random"``).
+  structures (``method="sqs"``), averaged over random decorations
+  (``method="random"``), or predicted for the random alloy by a cluster
+  expansion that icet fits to enumerated structures
+  (``method="cluster_expansion"``).
 
 Every value is a 0 K energy standing in for an enthalpy at 298.15 K, and each
 observation records that approximation in its ``note``. The pure elements are
@@ -22,7 +24,9 @@ never fitted: their SGTE descriptions stay as they are.
   (``pool=True``) the variances of every composition of a phase are pooled,
   Σ(n_i − 1)s_i² / Σ(n_i − 1), so nine compositions with two SQS each give
   one σ_config with nine degrees of freedom. ``pool=False`` keeps one σ per
-  composition. A formation enthalpy comes from one structure and has no
+  composition. With random decorations it is the standard error of their
+  mean, and with a cluster expansion the cross-validation RMSE of the
+  expansion. A formation enthalpy comes from one structure and has no
   σ_config.
 - **σ_model** is the calculator's own error, which no spread can see. It is
   ``model_sigma=`` (kJ/mol, a number or a dict by phase) when given, and
@@ -78,6 +82,8 @@ class MLIPResult:
     relaxations: list[Relaxation] = field(default_factory=list)
     #: (label, relaxation) for every structure that left its prototype
     flagged: list[tuple[str, Relaxation]] = field(default_factory=list)
+    #: phase -> :class:`~discopt.calphad.mlip.cluster_expansion.ClusterExpansionFit` (method="cluster_expansion")
+    cluster_expansions: dict = field(default_factory=dict)
 
     def table(self) -> str:
         lines = [
@@ -357,16 +363,28 @@ def _formation(
 
 
 def _mixing(
-    model, db, elements, mixing, method, policy, structures, sigma, model_sigma, pool, T, sqs, result, random=None
+    model,
+    db,
+    elements,
+    mixing,
+    method,
+    policy,
+    structures,
+    sigma,
+    model_sigma,
+    pool,
+    T,
+    sqs,
+    result,
+    random=None,
+    cluster_expansion=None,
 ):
     from discopt.calphad.fit import Observation
     from discopt.calphad.mlip import random_alloy
     from discopt.calphad.mlip.sqs import SQSOptions, generate
 
-    if method not in ("sqs", "random"):
-        raise NotImplementedError(
-            f"method={method!r}: use 'sqs' or 'random' ('cluster_expansion' comes later, see issue #5)"
-        )
+    if method not in ("sqs", "random", "cluster_expansion"):
+        raise ValueError(f"method={method!r}: use 'sqs', 'random' or 'cluster_expansion'")
     options = sqs or SQSOptions()
     roptions = random or random_alloy.RandomOptions()
     tag = "SQS" if method == "sqs" else "random"
@@ -400,6 +418,24 @@ def _mixing(
                     "ΔH_mix needs it. Try RelaxPolicy(mode='symmetry')"
                 )
             ends[e] = rel
+        if method == "cluster_expansion":
+            _cluster_expansion(
+                model,
+                name,
+                ps,
+                m,
+                elements,
+                fixed,
+                ends,
+                grid,
+                policy,
+                cluster_expansion,
+                sigma,
+                model_sigma,
+                T,
+                result,
+            )
+            continue
         points = []
         for y in np.atleast_1d(np.asarray(grid, float)):
             y = float(y)
@@ -489,6 +525,78 @@ def _mixing(
             )
 
 
+def _cluster_expansion(model, name, ps, m, elements, fixed, ends, grid, policy, options, sigma, model_sigma, T, result):
+    """HM_MIX of the random alloy on ``grid``, from a cluster expansion fitted to enumerated structures."""
+    from discopt.calphad.fit import Observation
+    from discopt.calphad.mlip import cluster_expansion as cem
+
+    options = options or cem.ClusterExpansionOptions()
+    va, vb = _volume(ends[elements[0]]), _volume(ends[elements[1]])
+    cs, symbol, candidates = cem.training_structures(ps, m, elements, fixed, vb, options)
+    n_mix = sum(len(c) > 1 for c in cs.chemical_symbols)
+    n_prim = len(cs.primitive_structure)
+    train, energies, relaxed = [], [], []
+    for k, ideal in enumerate(candidates):
+        y = cem._site_fraction(ideal, elements, n_mix * len(ideal) // n_prim)
+        atoms = ideal.copy()
+        v = y * va + (1 - y) * vb
+        atoms.set_cell(ideal.cell * (v / (ideal.get_volume() / len(ideal))) ** (1 / 3), scale_atoms=True)
+        rel = _relax(model, [atoms], policy)[0]
+        if not _check(f"{name} CE training #{k} {ideal.get_chemical_formula()}", rel, result, False):
+            continue
+        train.append(ideal)
+        relaxed.append(atoms)
+        energies.append(
+            rel.energy_per_atom - y * ends[elements[0]].energy_per_atom - (1 - y) * ends[elements[1]].energy_per_atom
+        )
+    ce = cem.fit(cs, symbol, elements, train, energies, options)
+    result.cluster_expansions[name] = ce
+    # an exact fit leaves only round-off (~1e-17 eV/atom); below 1 µeV/atom the expansion has no error to report
+    cfg = ce.rmse_validation * EV_TO_J_PER_MOL if ce.rmse_validation > 1e-6 else 0.0
+    given = _kj(sigma, name, "sigma")
+    unc = _kj(model_sigma, name, "model_sigma")
+    if given is None and unc is None:
+        u = _model_sigma(model, relaxed)
+        unc = None if u is None else u * EV_TO_J_PER_MOL
+        if unc is None:
+            warnings.warn(
+                f"{name}: σ covers only the cluster expansion's cross-validation error, not the error of "
+                f"{model.name}; pass model_sigma= (kJ/mol) to include it",
+                stacklevel=4,
+            )
+    for y in np.atleast_1d(np.asarray(grid, float)):
+        y = float(y)
+        sig = given if given is not None else _sigma(name, f"{name} y={y:g}", cfg, unc, single=False)
+        value = ce.random_alloy(y) * EV_TO_J_PER_MOL
+        sf = tuple({elements[0]: y, elements[1]: 1 - y} if s == m else {fixed[s]: 1.0} for s in range(len(fixed) + 1))
+        x = y * n_mix / n_prim  # mole fraction: the other sites hold one element each
+        result.dataset.add(
+            Observation(
+                "HM_MIX",
+                T,
+                value,
+                sig,
+                phase=name,
+                x=x,
+                site_fractions=sf,
+                source=model.name,
+                note=APPROXIMATION + "; random alloy from a cluster expansion",
+            )
+        )
+        result.rows.append(
+            {
+                "kind": "HM_MIX",
+                "phase": name,
+                "config": f"y={y:g} CE",
+                "x": x,
+                "value": value / 1000,
+                "sigma": sig / 1000,
+                "structures": len(train),
+                "sigma_dof": None if given is not None else len(train) - ce.n_parameters,
+            }
+        )
+
+
 def _volume(rel: Relaxation) -> float:
     return abs(float(np.linalg.det(np.asarray(rel.cell)))) / rel.natoms
 
@@ -511,6 +619,7 @@ def compute(
     structures=None,
     sqs=None,
     random=None,
+    cluster_expansion=None,
     phonons=None,
     entropy_sigma: float | None = None,
     heat_capacity_sigma: float | None = None,
@@ -530,6 +639,12 @@ def compute(
     averages over random decorations instead
     (:class:`~discopt.calphad.mlip.random_alloy.RandomOptions` via ``random=``),
     and then σ_config is the standard error of the mean, s/√n.
+    ``method="cluster_expansion"`` relaxes the derivative superstructures of
+    the lattice, has icet fit a cluster expansion to them
+    (:class:`~discopt.calphad.mlip.cluster_expansion.ClusterExpansionOptions`
+    via ``cluster_expansion=``), and predicts the random alloy at each grid
+    composition; σ_config is the cross-validation RMSE, and the fit is kept in
+    :attr:`MLIPResult.cluster_expansions`. Any grid composition works.
 
     ``phonons`` (a :class:`~discopt.calphad.mlip.phonons.PhononOptions`)
     computes harmonic or quasi-harmonic phonons for every compound or
@@ -570,7 +685,21 @@ def compute(
         )
     if mixing:
         _mixing(
-            model, db, elements, mixing, method, policy, structures, sigma, model_sigma, pool, T, sqs, result, random
+            model,
+            db,
+            elements,
+            mixing,
+            method,
+            policy,
+            structures,
+            sigma,
+            model_sigma,
+            pool,
+            T,
+            sqs,
+            result,
+            random,
+            cluster_expansion,
         )
     return result
 
