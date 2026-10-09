@@ -70,6 +70,8 @@ the tangent-plane distance Ψ(y) = G(y) − μ·A(y):
   random alloy at any composition, with σ its cross-validation error, and
   Monte Carlo on it (icet's mchammer) adds short-range order: mixing
   enthalpies and entropies at temperature, and Warren–Cowley parameters.
+  Liquids come from MD: mixing enthalpies at temperature, and mixing free
+  energies by alchemical thermodynamic integration.
 - **Pricing modes:** `equilibrium(certify="final")` (the default) uses cheap
   local pricing to generate composition sets and global pricing once, at the
   converged μ. `certify="none"` skips the global step (`STABILITY_SEARCHED`), and

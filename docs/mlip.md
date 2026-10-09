@@ -293,10 +293,47 @@ mechanically unstable. It has no vibrational entropy, so it is flagged and left
 out. EMT makes BCC Cu and θ-Al₂Cu unstable in this way. Solution phases
 (phonons of SQS or random decorations) are not computed yet.
 
+## Liquids: MD and thermodynamic integration
+
+A liquid has no lattice, so SQS and cluster expansions do not apply.
+`compute(..., liquid={"LIQUID": [0.25, 0.5, 0.75]}, md=mlip.LiquidOptions(...))`
+runs molecular dynamics with the calculator instead, at each of
+`LiquidOptions.temperatures` (default 1500 K) and at `pressure` (GPa, default
+0; `None` keeps the volume fixed), with ASE's Langevin BAOAB integrator and a
+hydrostatic barostat. Each run starts from a random decoration of an FCC
+supercell of at least `atoms` atoms (default 108) at the Vegard volume, melts
+at `melt_factor` × T, equilibrates at T, and samples. Two kinds of data come
+out, per mole of atoms:
+
+- `HM_MIX` at T: ⟨H⟩(x) − x⟨H⟩(A) − (1 − x)⟨H⟩(B), with H the potential
+  energy plus PV (the kinetic energy cancels), and σ from block averages;
+- `GM_MIX` at T, by alchemical thermodynamic integration. One atom is turned
+  from B into A along U(λ) = (1 − λ)U_B + λU_A, and ΔF = ∫⟨U_A − U_B⟩_λ dλ
+  (Gauss–Legendre, `n_lambda` points) is the excess part of μ_A − μ_B at
+  x = (N_A + ½)/N. A polynomial (`degree`) fitted to ΔF at `n_mu` compositions
+  from x ≈ 0 to x ≈ 1 integrates, by Gibbs–Duhem, to
+  G_xs(x) = ∫₀ˣ p − x∫₀¹ p. The ideal term is added analytically. No absolute
+  free energy of either pure liquid is needed, and the atoms' masses only add a
+  constant, which cancels. σ comes from the λ-runs' block errors, carried
+  through the fit.
+
+With `GM_MIX` and `HM_MIX` at one or more temperatures, a fit determines both
+the a and the b of a liquid `L = a + b*T`. The runs are in
+`MLIPResult.liquids[phase]` (`LiquidResult`: `x`, `T`, `H`, `H_error`, `G`,
+`G_error`, `volume`, `msd`). A run whose mean-square displacement while
+sampling stays below `min_msd` (1 Å²) did not melt, and it warns.
+
+This is the expensive part of the pipeline: (2 + grid + `n_mu` × `n_lambda`)
+runs per temperature, each `melt_steps + equilibration_steps + steps` MD steps
+(the transmutation runs at the same composition share one melt, and each costs
+two calculator calls per step). The dynamics are classical, so there are no
+quantum nuclear effects. For a species-blind Lennard-Jones liquid with a
+mean-field term N w x(1 − x), `GM_MIX` is exactly w x(1 − x) plus the ideal
+term, a fit recovers L₀ = w, and `HM_MIX` agrees with w x(1 − x) within its σ.
+
 ## Not yet (later phases of issue #5)
 
 - vibrational entropies of solution phases (phonons of SQS or random
   decorations);
-- liquids by MD and thermodynamic integration;
 - ternary mixing data, and per-source weighting in the fit;
 - choosing which structures to compute (`discopt.doe`), and active learning.

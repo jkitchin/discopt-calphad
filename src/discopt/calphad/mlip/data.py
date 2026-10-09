@@ -68,6 +68,7 @@ APPROXIMATION = "0 K energy used as the enthalpy at 298.15 K"
 #: recorded instead when phonons are computed
 #: recorded on cluster-expansion data
 CE_NOTE = APPROXIMATION + "; random alloy from a cluster expansion"
+MD_NOTE = "classical MD at temperature (enthalpy), alchemical thermodynamic integration (free energy)"
 MC_NOTE = "canonical Monte Carlo on a cluster expansion of 0 K energies, short-range order included"
 PHONON_NOTE = "static energy plus {kind} vibrational enthalpy (zero point and thermal) at 298.15 K"
 
@@ -89,6 +90,8 @@ class MLIPResult:
     cluster_expansions: dict = field(default_factory=dict)
     #: phase -> list of :class:`~discopt.calphad.mlip.monte_carlo.SROResult` (``monte_carlo=``)
     short_range_order: dict = field(default_factory=dict)
+    #: phase -> list of :class:`~discopt.calphad.mlip.liquid.LiquidResult` (``liquid=``)
+    liquids: dict = field(default_factory=dict)
 
     def table(self) -> str:
         lines = [
@@ -643,6 +646,56 @@ def _cluster_expansion(
                 add("SM_MIX", r.T, r.y, r.S * EV_TO_J_PER_MOL, s_sig, f"y={r.y:g} MC {r.T:g}K", MC_NOTE, 1.0)
 
 
+def _liquid(model, db, elements, liquid, options, sigma, model_sigma, result):
+    """HM_MIX and GM_MIX of liquids from MD and thermodynamic integration."""
+    from discopt.calphad.fit import Observation
+    from discopt.calphad.mlip.liquid import liquid_mixing
+
+    if len(elements) != 2:
+        raise NotImplementedError("liquid mixing data need a binary system")
+    for name, grid in liquid.items():
+        name = name.upper()
+        cons = _constituents(db, name, elements)
+        if len(cons) != 1 or not set(elements) <= set(cons[0]):
+            raise NotImplementedError(f"{name}: liquid data need one sublattice that mixes {elements}; it has {cons}")
+        runs = liquid_mixing(model, elements, grid, options)
+        result.liquids[name] = runs
+        given = _kj(sigma, name, "sigma")
+        unc = _kj(model_sigma, name, "model_sigma")
+        if given is None and unc is None:
+            warnings.warn(
+                f"{name}: σ covers only the MD statistics, not the error of {model.name}; "
+                "pass model_sigma= (kJ/mol) to include it",
+                stacklevel=3,
+            )
+        for r in runs:
+            sf = ({elements[0]: r.x, elements[1]: 1 - r.x},)
+            values = [("HM_MIX", r.H, r.H_error)]
+            if r.G is not None:
+                values.append(("GM_MIX", r.G, r.G_error))
+            for kind, v, e in values:
+                label = f"{name} {kind} x={r.x:g} {r.T:g} K"
+                sig = given if given is not None else _sigma(name, label, e * EV_TO_J_PER_MOL, unc, single=False)
+                value = v * EV_TO_J_PER_MOL
+                result.dataset.add(
+                    Observation(
+                        kind, r.T, value, sig, phase=name, x=r.x, site_fractions=sf, source=model.name, note=MD_NOTE
+                    )
+                )
+                result.rows.append(
+                    {
+                        "kind": kind,
+                        "phase": name,
+                        "config": f"x={r.x:g} MD {r.T:g}K",
+                        "x": r.x,
+                        "value": value / 1000,
+                        "sigma": sig / 1000,
+                        "structures": 1,
+                        "sigma_dof": None,
+                    }
+                )
+
+
 def _volume(rel: Relaxation) -> float:
     return abs(float(np.linalg.det(np.asarray(rel.cell)))) / rel.natoms
 
@@ -667,6 +720,8 @@ def compute(
     random=None,
     cluster_expansion=None,
     monte_carlo=None,
+    liquid=None,
+    md=None,
     phonons=None,
     entropy_sigma: float | None = None,
     heat_capacity_sigma: float | None = None,
@@ -698,6 +753,12 @@ def compute(
     include short-range order: ``HM_MIX`` at each temperature and, by
     thermodynamic integration, ``SM_MIX`` (σ ``entropy_sigma`` when given).
     The Warren–Cowley parameters are in :attr:`MLIPResult.short_range_order`.
+
+    ``liquid`` maps a liquid phase to a grid of mole fractions of the first
+    element. Molecular dynamics with ``md=`` (a
+    :class:`~discopt.calphad.mlip.liquid.LiquidOptions`) gives ``HM_MIX`` at
+    each of its temperatures, and alchemical thermodynamic integration gives
+    ``GM_MIX``; the runs are in :attr:`MLIPResult.liquids`.
 
     ``phonons`` (a :class:`~discopt.calphad.mlip.phonons.PhononOptions`)
     computes harmonic or quasi-harmonic phonons for every compound or
@@ -756,6 +817,8 @@ def compute(
             monte_carlo,
             entropy_sigma,
         )
+    if liquid:
+        _liquid(model, db, elements, liquid, md, sigma, model_sigma, result)
     return result
 
 

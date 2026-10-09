@@ -389,6 +389,12 @@ fitted_alcu = fit(alcu, result.dataset, ("AL", "CU"), {"G(ALCU_THETA,AL:CU;0)": 
   (thermodynamic integration from the random alloy) `SM_MIX` at each T, and
   Warren–Cowley α in `res.short_range_order[phase]`. Use temperatures above
   the expansion's ordering or miscibility temperature (|α| > 0.5 warns).
+- **Liquids.** `liquid={"LIQUID": [x, ...]}` with
+  `md=mlip.LiquidOptions(temperatures=..., atoms=108, pressure=0.0)` runs MD
+  (ASE Langevin BAOAB, barostat) for `HM_MIX` at T, and alchemical
+  thermodynamic integration (one B → A, Gibbs–Duhem over x) for `GM_MIX` at T.
+  Runs are in `res.liquids[phase]`; a run that did not melt warns (msd).
+  It is the most expensive data kind: many MD runs per temperature.
 
 ## Conventions and pitfalls
 

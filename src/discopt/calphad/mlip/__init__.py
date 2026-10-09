@@ -40,6 +40,7 @@ from discopt.calphad.mlip.calculator import (
 )
 from discopt.calphad.mlip.cluster_expansion import ClusterExpansionFit, ClusterExpansionOptions
 from discopt.calphad.mlip.data import APPROXIMATION, MLIPResult, compute, dataset, reference_energies
+from discopt.calphad.mlip.liquid import LiquidOptions, LiquidResult
 from discopt.calphad.mlip.monte_carlo import MonteCarloOptions, SROResult
 from discopt.calphad.mlip.phonons import PhononOptions, Vibrations
 from discopt.calphad.mlip.prototypes import (
@@ -60,6 +61,8 @@ __all__ = [
     "ClusterExpansionOptions",
     "EV_TO_J_PER_MOL",
     "EnergyModel",
+    "LiquidOptions",
+    "LiquidResult",
     "MLIPResult",
     "MonteCarloOptions",
     "PHASES",

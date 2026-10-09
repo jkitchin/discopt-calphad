@@ -2,6 +2,7 @@
 
 import dataclasses
 import math
+from itertools import product
 
 import numpy as np
 import pytest
@@ -719,3 +720,88 @@ def test_monte_carlo_needs_a_cluster_expansion(db):
     model = mlip.from_ase(BondCounting(), name="bonds")
     with pytest.raises(ValueError, match="method='cluster_expansion'"):
         mlip.compute(model, db, EL, mixing={"FCC_A1": [0.5]}, monte_carlo=MonteCarloOptions(), sigma=1.0)
+
+
+# ---------------------------------------------------------------------------- liquids (phase 3)
+
+
+class MeanFieldLiquid(Calculator):
+    """A species-blind Lennard-Jones fluid plus N w x(1 − x) (x the Al fraction): an exact regular solution."""
+
+    implemented_properties = ["energy", "forces", "stress"]
+    W = 0.08  # eV per atom
+
+    def __init__(self, epsilon=0.16, sigma=2.3, rc=5.75):
+        super().__init__()
+        self.eps, self.sig, self.rc = epsilon, sigma, rc
+
+    def _u(self, r2):
+        sr6 = (self.sig**2 / r2) ** 3
+        return 4 * self.eps * (sr6 * sr6 - sr6)
+
+    def calculate(self, atoms=None, properties=("energy",), system_changes=all_changes):
+        super().calculate(atoms, properties, system_changes)
+        a = self.atoms
+        pos, cell = a.positions, a.cell.array
+        shifts = np.array(list(product((-1, 0, 1), repeat=3))) @ cell
+        d = pos[None, :, None, :] + shifts[None, None, :, :] - pos[:, None, None, :]  # r_j + L - r_i
+        r2 = np.sum(d * d, axis=-1)
+        i, _, _ = np.nonzero((r2 < self.rc**2) & (r2 > 1e-12))
+        mask = (r2 < self.rc**2) & (r2 > 1e-12)
+        dm, r2m = d[mask], r2[mask]
+        sr6 = (self.sig**2 / r2m) ** 3
+        u = 4 * self.eps * (sr6 * sr6 - sr6) - self._u(self.rc**2)
+        g = -24 * self.eps * (2 * sr6 * sr6 - sr6) / r2m  # U'(r)/r
+        forces = np.zeros_like(pos)
+        np.add.at(forces, i, g[:, None] * dm)
+        virial = 0.5 * (dm * g[:, None]).T @ dm
+        s = a.get_chemical_symbols()
+        n, na = len(s), s.count("Al")
+        e = 0.5 * float(u.sum()) + self.W * na * (n - na) / n - 0.3 * na - 0.1 * (n - na)
+        st = virial / a.get_volume()
+        self.results = {
+            "energy": e,
+            "free_energy": e,
+            "forces": forces,
+            "stress": st.flat[[0, 4, 8, 5, 2, 1]],
+        }
+
+
+def test_liquid_mixing_by_md_and_thermodynamic_integration(db):
+    """For a species-blind fluid plus N w x(1 − x), ΔG_mix is exactly regular, and ΔH_mix agrees within its σ."""
+    from discopt.calphad.mlip.liquid import LiquidOptions
+    from discopt.calphad.mlip.phonons import K_B
+
+    T = 1500.0
+    model = mlip.from_ase(MeanFieldLiquid(epsilon=K_B * T / 0.8), name="fluid")
+    md = LiquidOptions(
+        temperatures=(T,),
+        atoms=32,
+        pressure=1.0,  # P* ≈ 0.5: the Lennard-Jones liquid boils at P = 0
+        melt_steps=150,
+        equilibration_steps=100,
+        steps=400,
+        min_msd=0.5,
+        n_mu=3,
+        n_lambda=1,  # dU/dλ is a constant here
+        degree=2,
+    )
+    res = mlip.compute(model, db, EL, liquid={"LIQUID": [0.25, 0.5]}, md=md, model_sigma=0.5)
+    W = MeanFieldLiquid.W
+    runs = res.liquids["LIQUID"]
+    assert [(o.kind, o.x) for o in res.dataset] == [
+        ("HM_MIX", 0.25),
+        ("GM_MIX", 0.25),
+        ("HM_MIX", 0.5),
+        ("GM_MIX", 0.5),
+    ]
+    for r in runs:
+        ideal = K_B * T * (r.x * math.log(r.x) + (1 - r.x) * math.log(1 - r.x))
+        assert r.G == pytest.approx(W * r.x * (1 - r.x) + ideal, abs=1e-12) and r.G_error == 0.0
+        assert abs(r.H - W * r.x * (1 - r.x)) < 4 * r.H_error
+        assert r.msd > md.min_msd  # it melted
+    # the free energies fit the liquid's interaction exactly
+    start = dataclasses.replace(db, parameters=[p for p in db.parameters if not p.label.startswith("G(LIQUID,AL,CU;")])
+    gm = Dataset([o for o in res.dataset if o.kind == "GM_MIX"])
+    fr = fit(start, gm, EL, {"G(LIQUID,AL,CU;0)": "a"})
+    assert fr.values[0] == pytest.approx(W * F, rel=1e-8)
