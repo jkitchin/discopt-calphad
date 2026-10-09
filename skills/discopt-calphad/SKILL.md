@@ -369,6 +369,13 @@ fitted_alcu = fit(alcu, result.dataset, ("AL", "CU"), {"G(ALCU_THETA,AL:CU;0)": 
 - A 0 K energy stands in for H at 298.15 K, and every observation's `note`
   says so. Fit only enthalpy coefficients from such data, and keep or fit the
   T coefficients from other data.
+- **Phonons.** `compute(..., phonons=mlip.PhononOptions(), entropy_sigma=0.3)`
+  adds harmonic (or `quasi_harmonic=True`) phonons for compounds and the
+  element references. The formation enthalpy includes the vibrational
+  enthalpy at 298.15 K, and `SM_FORM` entropies of formation at
+  `PhononOptions.temperatures` fix the `b` of `a + b*T` (the entropy of
+  formation is −b). A structure with imaginary modes is flagged as
+  mechanically unstable and left out. Solution phases get no phonons yet.
 - **Mixing methods.** `method="sqs"` uses a few icet SQS, with σ_config their
   spread. `method="random"` averages `RandomOptions(count=...)` independent
   random decorations, with σ_config the standard error of the mean, s/√n,

@@ -503,3 +503,90 @@ def test_random_method_with_emt(db):
     mix = [o for o in res.dataset if o.kind == "HM_MIX"]
     assert len(mix) == 3 and not res.flagged and all(o.sigma > 2000.0 for o in mix)
     assert [r["structures"] for r in res.rows] == [3, 3, 3]
+
+
+# ---------------------------------------------------------------------------- phonons (#5 phase 2)
+
+CUAU_TDB = """
+ELEMENT VA VACUUM 0 0 0 !
+ELEMENT AU FCC_A1 196.97 6017 47.488 !
+ELEMENT CU FCC_A1 63.546 5004.1 33.15 !
+FUNCTION GHSERAU 298.15 -6938.856+106.830098*T-22.75455*T*LN(T); 6000 N !
+FUNCTION GHSERCU 298.15 -7770.458+130.485235*T-24.112392*T*LN(T); 6000 N !
+PHASE FCC_A1 % 2 1 1 ! CONSTITUENT FCC_A1 :AU,CU:VA: !
+PARAMETER G(FCC_A1,AU:VA;0) 298.15 GHSERAU#; 6000 N !
+PARAMETER G(FCC_A1,CU:VA;0) 298.15 GHSERCU#; 6000 N !
+PHASE CU3AU % 2 0.75 0.25 ! CONSTITUENT CU3AU :CU:AU: !
+PARAMETER G(CU3AU,CU:AU;0) 298.15 -2000+0.75*GHSERCU#+0.25*GHSERAU#; 6000 N !
+"""
+R = 8.314462618
+
+
+def test_harmonic_thermodynamics_of_einstein_modes():
+    from discopt.calphad.mlip.phonons import K_B, thermo_from_modes
+
+    e, T = 0.02, 300.0
+    th = thermo_from_modes(np.full(300, e), T)
+    x = e / (K_B * T)
+    assert th["S"] * F == pytest.approx(3 * R * (x / np.expm1(x) - np.log1p(-np.exp(-x))), rel=1e-10)
+    assert th["Cv"] * F == pytest.approx(3 * R * x * x * np.exp(x) / np.expm1(x) ** 2, rel=1e-10)
+    assert thermo_from_modes(np.full(300, e), 0.0)["U"] == pytest.approx(1.5 * e)  # zero-point energy
+
+
+def test_phonons_of_emt_copper():
+    from discopt.calphad.mlip.phonons import PhononOptions, harmonic, quasi_harmonic
+
+    model = mlip.from_ase(EMT(), name="EMT")
+    cu = model.relax([mlip.PHASES["FCC_A1"].build(("CU", "VA"), mlip.atomic_volume("Cu"))])[0].atoms()
+    vib = harmonic(model, cu)
+    assert vib.imaginary_fraction == 0.0
+    assert 25.0 < vib.S(298.15) * F < 40.0  # experiment: 33.15 J/(mol K)
+    assert vib.Cp(1500.0) * F == pytest.approx(3 * R, rel=0.01)  # the classical limit
+    assert (vib.H(298.15) - vib.H(0.0)) * F == pytest.approx(5004.1, rel=0.15)  # the database's H298 - H0
+    qha = quasi_harmonic(model, cu, PhononOptions(quasi_harmonic=True))
+    assert qha.volume(800.0) > qha.volume(100.0)  # thermal expansion
+    assert qha.S(800.0) > vib.S(800.0)
+    # BCC Cu is mechanically unstable in EMT
+    bcc = model.relax([mlip.PHASES["BCC_A2"].build(("CU", "VA"), mlip.atomic_volume("Cu"))])[0].atoms()
+    assert harmonic(model, bcc).imaginary_fraction > 1e-3
+
+
+def test_phonon_entropies_fix_the_temperature_coefficient():
+    from discopt.calphad import ThermoDatabase
+    from discopt.calphad.fit import predict
+
+    db = ThermoDatabase.from_string(CUAU_TDB)
+    els = ("AU", "CU")
+    model = mlip.from_ase(EMT(), name="EMT")
+    kw = dict(compounds={"CU3AU": ["CU:AU"]}, structures={"CU3AU": ("L1_2", ["3c"], ["1a"])}, model_sigma=1.0)
+    opts = mlip.PhononOptions(temperatures=(300.0, 600.0, 900.0))
+    with pytest.raises(ValueError, match="entropy_sigma"):
+        mlip.compute(model, db, els, phonons=opts, **kw)
+    res = mlip.compute(model, db, els, phonons=opts, entropy_sigma=0.2, **kw)
+    s = [o for o in res.dataset if o.kind == "SM_FORM"]
+    h = next(o for o in res.dataset if o.kind == "HM_FORM")
+    assert [o.T for o in s] == [300.0, 600.0, 900.0] and "harmonic vibrational" in h.note
+    static = mlip.compute(model, db, els, **kw).dataset.observations[0]
+    assert h.value != pytest.approx(static.value, abs=1.0)  # the vibrational enthalpy at 298 K changes it
+    free = {"G(CU3AU,CU:AU;0)": "a + b*T + 0.75*GHSERCU + 0.25*GHSERAU"}
+    fr = fit(db, res.dataset, els, free)
+    # S of formation of the model is -b, so b is minus the mean of the (equally weighted) entropies
+    assert fr.parameters["G(CU3AU,CU:AU;0).b"] == pytest.approx(-np.mean([o.value for o in s]), rel=1e-6)
+    assert predict(fr.database, [h], els)[0] == pytest.approx(h.value, abs=1e-3)
+
+
+def test_a_dynamically_unstable_compound_is_flagged(db):
+    """EMT makes θ-Al2Cu (C16) dynamically unstable: imaginary modes persist when fully relaxed."""
+    model = mlip.from_ase(EMT(), name="EMT")
+    with pytest.warns(UserWarning, match="imaginary phonon modes"):
+        res = mlip.compute(
+            model,
+            db,
+            EL,
+            compounds={"ALCU_THETA": ["AL:CU"]},
+            structures=THETA,
+            model_sigma=2.0,
+            phonons=mlip.PhononOptions(),
+            entropy_sigma=0.5,
+        )
+    assert len(res.dataset) == 0 and "imaginary" in res.flagged[0][1].reason

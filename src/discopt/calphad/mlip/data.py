@@ -61,6 +61,8 @@ __all__ = ["APPROXIMATION", "MLIPResult", "compute", "dataset", "reference_energ
 
 #: recorded on every observation made here
 APPROXIMATION = "0 K energy used as the enthalpy at 298.15 K"
+#: recorded instead when phonons are computed
+PHONON_NOTE = "static energy plus {kind} vibrational enthalpy (zero point and thermal) at 298.15 K"
 
 
 @dataclass
@@ -223,8 +225,48 @@ def _endmembers(db, name, elements, given):
     return out
 
 
-def _formation(model, db, elements, compounds, refs, policy, structures, sigma, model_sigma, T, result):
+def _vibrations(model, atoms, phonons, policy):
+    from discopt.calphad.mlip import phonons as ph
+
+    if phonons.quasi_harmonic:
+        return ph.quasi_harmonic(model, atoms, phonons, policy)
+    return ph.harmonic(model, atoms, phonons)
+
+
+def _formation(
+    model,
+    db,
+    elements,
+    compounds,
+    refs,
+    policy,
+    structures,
+    sigma,
+    model_sigma,
+    T,
+    result,
+    phonons=None,
+    entropy_sigma=None,
+    heat_capacity_sigma=None,
+):
     items = compounds.items() if isinstance(compounds, dict) else ((c, None) for c in compounds)
+    ref_vib = {}
+    if phonons is not None:
+        if entropy_sigma is None:
+            raise ValueError(
+                "phonon entropies of formation need entropy_sigma= (J/(mol K)); one structure has no spread"
+            )
+        if phonons.heat_capacity and heat_capacity_sigma is None:
+            raise ValueError("phonon heat capacities need heat_capacity_sigma= (J/(mol K))")
+        for e in elements:
+            vib = _vibrations(model, refs[e].atoms(), phonons, policy)
+            if vib.imaginary_fraction > phonons.imaginary_tolerance:
+                raise ValueError(
+                    f"the reference structure of {e} has imaginary phonon modes "
+                    f"({vib.imaginary_fraction:.1%}): it is mechanically unstable"
+                )
+            ref_vib[e] = vib
+        note = PHONON_NOTE.format(kind="quasi-harmonic" if phonons.quasi_harmonic else "harmonic")
     for name, given in items:
         name = name.upper()
         ps = _structure_for(name, structures)
@@ -239,6 +281,16 @@ def _formation(model, db, elements, compounds, refs, policy, structures, sigma, 
             symbols = atoms.get_chemical_symbols()
             x = {e: symbols.count(e.capitalize()) / len(symbols) for e in elements}
             dh = rel.energy_per_atom - sum(x[e] * refs[e].energy_per_atom for e in elements)
+            vib = None
+            if phonons is not None:
+                vib = _vibrations(model, rel.atoms(), phonons, policy)
+                if vib.imaginary_fraction > phonons.imaginary_tolerance:
+                    rel.left_prototype = True
+                    rel.reason = f"imaginary phonon modes ({vib.imaginary_fraction:.1%}): mechanically unstable"
+                    result.flagged.append((label, rel))
+                    warnings.warn(f"{label}: {rel.reason}; not used", stacklevel=3)
+                    continue
+                dh += vib.H(298.15) - sum(x[e] * ref_vib[e].H(298.15) for e in elements)
             sig = _kj(sigma, name, "sigma")
             if sig is None:
                 unc = _kj(model_sigma, name, "model_sigma")
@@ -250,7 +302,13 @@ def _formation(model, db, elements, compounds, refs, policy, structures, sigma, 
                         unc *= EV_TO_J_PER_MOL
                 sig = _sigma(name, label, None, unc, single=True)
             result.dataset.add_formation(
-                name, dh * EV_TO_J_PER_MOL, sig, endmember=":".join(em), T=T, source=model.name, note=APPROXIMATION
+                name,
+                dh * EV_TO_J_PER_MOL,
+                sig,
+                endmember=":".join(em),
+                T=T,
+                source=model.name,
+                note=APPROXIMATION if vib is None else note,
             )
             result.rows.append(
                 {
@@ -264,6 +322,35 @@ def _formation(model, db, elements, compounds, refs, policy, structures, sigma, 
                     "sigma_dof": None,
                 }
             )
+            if vib is not None:
+                kinds = [("SM_FORM", "S", entropy_sigma)]
+                if phonons.heat_capacity:
+                    kinds.append(("CPM_FORM", "Cp", heat_capacity_sigma))
+                for kind, prop, sig_k in kinds:
+                    for t in phonons.temperatures:
+                        val = getattr(vib, prop)(t) - sum(x[e] * getattr(ref_vib[e], prop)(t) for e in elements)
+                        result.dataset.add_formation(
+                            name,
+                            val * EV_TO_J_PER_MOL,
+                            float(sig_k),
+                            endmember=":".join(em),
+                            T=float(t),
+                            source=model.name,
+                            note=note,
+                            kind=kind,
+                        )
+                        result.rows.append(
+                            {
+                                "kind": kind,
+                                "phase": name,
+                                "config": f"{':'.join(em)} {t:g} K",
+                                "x": x[elements[0]],
+                                "value": val * EV_TO_J_PER_MOL,
+                                "sigma": float(sig_k),
+                                "structures": 1,
+                                "sigma_dof": None,
+                            }
+                        )
 
 
 # ---------------------------------------------------------------------------- mixing
@@ -424,6 +511,9 @@ def compute(
     structures=None,
     sqs=None,
     random=None,
+    phonons=None,
+    entropy_sigma: float | None = None,
+    heat_capacity_sigma: float | None = None,
     T: float = 298.15,
 ) -> MLIPResult:
     """Formation and mixing enthalpies from ``model``, as a dataset with everything behind it.
@@ -441,6 +531,16 @@ def compute(
     (:class:`~discopt.calphad.mlip.random_alloy.RandomOptions` via ``random=``),
     and then σ_config is the standard error of the mean, s/√n.
 
+    ``phonons`` (a :class:`~discopt.calphad.mlip.phonons.PhononOptions`)
+    computes harmonic or quasi-harmonic phonons for every compound or
+    endmember and for the elements' reference structures. The formation
+    enthalpy then includes the vibrational enthalpy at 298.15 K, and entropies
+    of formation (``SM_FORM``) are added at ``phonons.temperatures``, with σ
+    ``entropy_sigma`` in J/(mol K); with ``phonons.heat_capacity``, heat
+    capacities of formation (``CPM_FORM``) too, with ``heat_capacity_sigma``.
+    A structure with imaginary modes is flagged and left out. In the table,
+    entropy and heat-capacity rows are in J/(mol K), not kJ/mol.
+
     ``sigma``, ``model_sigma`` and ``pool`` set the uncertainties; see the
     module docstring.
 
@@ -452,7 +552,22 @@ def compute(
     result = MLIPResult(Dataset())
     result.references = reference_energies(model, db, elements, relax=policy, structures=structures, result=result)
     if compounds:
-        _formation(model, db, elements, compounds, result.references, policy, structures, sigma, model_sigma, T, result)
+        _formation(
+            model,
+            db,
+            elements,
+            compounds,
+            result.references,
+            policy,
+            structures,
+            sigma,
+            model_sigma,
+            T,
+            result,
+            phonons,
+            entropy_sigma,
+            heat_capacity_sigma,
+        )
     if mixing:
         _mixing(
             model, db, elements, mixing, method, policy, structures, sigma, model_sigma, pool, T, sqs, result, random

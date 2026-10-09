@@ -202,9 +202,38 @@ cannot tell that a model's weights changed: give a changed model a new label.
 Everything runs in the calling process, one structure at a time. There is no
 job submission.
 
+## Phonons: entropies, heat capacities, H(298) − H(0)
+
+`compute(..., phonons=mlip.PhononOptions(), entropy_sigma=0.3)` computes
+phonons by finite displacements (`ase.phonons`, no extra dependency) for every
+compound or endmember and for the elements' reference structures. The
+thermodynamics are exact sums over a Monkhorst–Pack mesh (Γ excluded), 3 modes
+per atom. Then:
+
+- the formation enthalpy is reported at 298.15 K: static energy plus the
+  vibrational enthalpy, zero-point energy included;
+- `SM_FORM` observations give the entropy of formation at
+  `PhononOptions.temperatures` (default 298.15, 600, 900 K), with σ
+  `entropy_sigma` in J/(mol K);
+- with `heat_capacity=True`, `CPM_FORM` observations do the same for heat
+  capacity, with σ `heat_capacity_sigma`.
+
+These are what fix a parameter's T coefficient, which 0 K energies cannot. In
+`a + b*T + ...`, the entropy of formation is −b per formula unit's atoms.
+`quasi_harmonic=True` repeats the phonons at isotropic `strains` and
+minimizes F(V, T) for G(T), which adds thermal expansion. For EMT copper, S(298)
+is 30.9 J/(mol K) (experiment 33.15), H(298) − H(0) is 4731 J/mol (the database
+uses 5004), and Cv reaches 3R.
+
+A structure with imaginary modes (more than `imaginary_tolerance` of them) is
+mechanically unstable. It has no vibrational entropy, so it is flagged and left
+out. EMT makes BCC Cu and θ-Al₂Cu unstable in this way. Solution phases
+(phonons of SQS or random decorations) are not computed yet.
+
 ## Not yet (later phases of issue #5)
 
-- harmonic phonons (S_vib, Cp, H(298) − H(0));
+- vibrational entropies of solution phases (phonons of SQS or random
+  decorations);
 - `method="cluster_expansion"` through icet, short-range order by Monte
   Carlo, and liquids by MD and thermodynamic integration;
 - ternary mixing data, and per-source weighting in the fit;

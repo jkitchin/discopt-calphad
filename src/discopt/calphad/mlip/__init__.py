@@ -39,6 +39,7 @@ from discopt.calphad.mlip.calculator import (
     structure_hash,
 )
 from discopt.calphad.mlip.data import APPROXIMATION, MLIPResult, compute, dataset, reference_energies
+from discopt.calphad.mlip.phonons import PhononOptions, Vibrations
 from discopt.calphad.mlip.prototypes import (
     PHASES,
     PROTOTYPES,
@@ -59,12 +60,14 @@ __all__ = [
     "PHASES",
     "PROTOTYPES",
     "PhaseStructure",
+    "PhononOptions",
     "Prototype",
     "RelaxPolicy",
     "Relaxation",
     "RandomOptions",
     "RelaxationCache",
     "SQSOptions",
+    "Vibrations",
     "atomic_volume",
     "compute",
     "dataset",

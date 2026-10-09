@@ -52,6 +52,10 @@ Generated from the docstrings in `src/`.
 
 ::: discopt.calphad.mlip.sqs
 
+::: discopt.calphad.mlip.random_alloy
+
+::: discopt.calphad.mlip.phonons
+
 ::: discopt.calphad.mlip.data
 
 ## Plotting

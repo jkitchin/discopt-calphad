@@ -62,7 +62,10 @@ the tangent-plane distance Ψ(y) = G(y) − μ·A(y):
   endmembers, and SQS mixing enthalpies (icet), with σ from their spread,
   a source label on every observation, and a check that flags structures
   that leave their prototype. The certificate covers the fitted model, not the
-  calculator (`docs/mlip.md`).
+  calculator (`docs/mlip.md`). Phase 2: mixing enthalpies averaged over random
+  decorations (`method="random"`, σ the standard error), and harmonic or
+  quasi-harmonic phonons that give entropies of formation and H(298) − H(0), so
+  calculator data fix T coefficients too.
 - **Pricing modes:** `equilibrium(certify="final")` (the default) uses cheap
   local pricing to generate composition sets and global pricing once, at the
   converged μ. `certify="none"` skips the global step (`STABILITY_SEARCHED`), and
