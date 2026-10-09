@@ -72,12 +72,12 @@ import numpy as np
 import sympy as sp
 from scipy.optimize import lsq_linear
 
-from discopt.calphad.database import Parameter, ThermoDatabase
+from discopt.calphad.database import MAGNETIC_KINDS, Parameter, ThermoDatabase
 from discopt.calphad.equilibrium.common import R_GAS
 from discopt.calphad.ops import NUM
-from discopt.calphad.symbolic import P, PiecewiseT, T, function_ref, function_refs
+from discopt.calphad.symbolic import P, PiecewiseT, T, function_ref, function_refs, tdb_str
 
-__all__ = ["Observation", "Dataset", "FreeParameter", "FitResult", "fit", "THERMO_KINDS"]
+__all__ = ["Observation", "Dataset", "FreeParameter", "FitResult", "fit", "predict", "enthalpy_form", "THERMO_KINDS"]
 
 #: thermochemical data kinds, in J (or J/K) per mole of atoms
 THERMO_KINDS = ("GM", "HM", "SM", "CPM", "GM_MIX", "HM_MIX", "SM_MIX", "CPM_MIX", "HM_FORM")
@@ -504,18 +504,24 @@ class _PhaseBasis:
         db, el = lm.db, lm.elements
         self.lm, self.name = lm, name
         self.model = db.phase_model(name, el)
-        if getattr(self.model, "magnetic", None) is not None:
-            # The probe below reads each parameter's coefficient in G. That works
-            # only because G is linear in every parameter, and TC and BMAGN enter
-            # through ln(β + 1) f(T/T_c).
-            raise NotImplementedError(f"{name}: fitting data on a magnetic phase is not supported yet")
+        mine = [i for i, p in enumerate(db.parameters) if p.phase == name]
+        magnetic = [i for i in mine if db.parameters[i].kind in MAGNETIC_KINDS]
+        if any(i in lm.free_index for i in magnetic):
+            # The probe below reads each parameter's coefficient in G, which works because G
+            # is linear in G and L parameters. TC and BMAGN enter through ln(β + 1) f(T/T_c).
+            raise NotImplementedError(f"{name}: TC and BMAGN cannot be fitted (G is not linear in them)")
         allowed = set(el) | {"VA"}
         #: constituents per sublattice within the fitted elements, as the phase model sees them
         self.sublattices = [tuple(sorted(c for c in s if c in allowed)) for s in db.phases[name].constituents]
-        self.params = [i for i, p in enumerate(db.parameters) if p.phase == name]
-        zero = {i: _CONST0 for i in self.params}
+        self.params = [i for i in mine if i not in magnetic]
+        # With TC and BMAGN at 0 the magnetic term vanishes (ln(0 + 1) = 0), so the probes see
+        # only the linear part. The magnetic term itself is fixed and is added in F().
+        zero = {i: _CONST0 for i in mine}
         self.model0 = _replace(db, zero).phase_model(name, el)
         self.probes = [_replace(db, {**zero, i: _CONST1}).phase_model(name, el) for i in self.params]
+        self._magnetic = None
+        if getattr(self.model, "magnetic", None) is not None:
+            self._magnetic = (self.model, _replace(db, {i: _CONST0 for i in magnetic}).phase_model(name, el))
 
     def F(self, prop: str, y, t: float) -> np.ndarray:
         """``prop`` (G, H, S or CP) per formula unit at site fractions ``y``, in J (J/K for S and CP)."""
@@ -526,7 +532,29 @@ class _PhaseBasis:
             if phi != 0.0:
                 out += phi * self.lm.prop(i, prop, t)
         out[0] += {"G": R_GAS * t * g0, "S": -R_GAS * g0}.get(prop, 0.0)
+        if self._magnetic is not None:
+            out[0] += self._magnetic_part(prop, y, t)
         return out
+
+    def _magnetic_part(self, prop: str, y, t: float) -> float:
+        """The fixed magnetic contribution to ``prop`` per formula unit, with T-derivatives by differences."""
+        full, plain = self._magnetic
+
+        def gm(tt):
+            return (float(full.gibbs(y, NUM, tt)) - float(plain.gibbs(y, NUM, tt))) * R_GAS * tt
+
+        g = gm(t)
+        if prop == "G":
+            return g
+        h = 0.05  # K: the IHJ term is C¹ at T_c, so Cp is only piecewise smooth there
+        try:
+            lo, hi = gm(t - h), gm(t + h)
+            d1, d2 = (hi - lo) / (2 * h), (hi - 2 * g + lo) / (h * h)
+        except ValueError:  # at the lower end of a temperature range (298.15 K): one-sided, second order
+            g1, g2, g3 = gm(t + h), gm(t + 2 * h), gm(t + 3 * h)
+            d1 = (-3 * g + 4 * g1 - g2) / (2 * h)
+            d2 = (2 * g - 5 * g1 + 4 * g2 - g3) / (h * h)
+        return {"S": -d1, "H": g - t * d1, "CP": -t * d2}[prop]
 
     def y_of(self, x: float) -> np.ndarray:
         if self.model.n_y == 0:
@@ -874,6 +902,54 @@ class FitResult:
                 }
             )
         return out
+
+
+def predict(db: ThermoDatabase, data, elements) -> np.ndarray:
+    """What ``db`` predicts for each observation, in the observation's own units.
+
+    Thermochemical kinds give the property (J/mol of atoms, or J/(mol K)), and
+    ``ACR`` gives the activity. A ``ZPF`` observation gives the largest
+    absolute residual of its rows in J/mol (0 when the database reproduces the
+    equilibrium). Use it to compare calculated or measured data with an
+    assessment before fitting anything.
+    """
+    observations = list(data)
+    lm = _LinearModel(db, elements, [])
+    lm.theta = np.zeros(0)
+    out = []
+    for o in observations:
+        vecs, _, _ = _rows(lm, o)
+        values = [float(v[0]) for v in vecs]
+        if o.kind == "ACR":
+            out.append(math.exp(values[0]))
+        elif o.kind == "ZPF":
+            out.append(max(abs(v) for v in values))
+        else:
+            out.append(values[0])
+    return np.array(out)
+
+
+def enthalpy_form(db: ThermoDatabase, label: str) -> str:
+    """A free form for ``label`` whose constant ``a`` is free and whose T-dependence is the database's.
+
+    For the database's ``G(ALCU_THETA,AL:CU;0) = -47406 + 6.75*T + 2*GHSERAL + GHSERCU``
+    this is ``"a + 6.75*T + 2*GHSERAL# + GHSERCU#"``. That is the form to fit to
+    enthalpies alone (0 K energies, formation enthalpies), which carry no
+    information about entropy. The parameter must have one temperature range.
+    """
+    kind, phase, subl, order = _parse_label(label)
+    hits = [p for p in db.parameters if (p.kind, p.phase, p.constituents, p.order) == (kind, phase, subl, order)]
+    if not hits:
+        raise KeyError(f"{label} is not in the database")
+    fn = hits[0].function
+    if len(fn.exprs) != 1:
+        raise ValueError(f"{label} has {len(fn.exprs)} temperature ranges; write its form by hand")
+    expr = sp.expand(fn.exprs[0])
+    const, rest = expr.as_coeff_Add()
+    if rest == 0:
+        return "a"
+    text = tdb_str(rest)
+    return f"a - {text[1:]}" if text.startswith("-") else f"a + {text.removeprefix('+')}"
 
 
 def _design(lm: _LinearModel, data: Dataset):

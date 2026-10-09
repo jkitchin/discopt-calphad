@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 SKILL = Path(__file__).parents[1] / "skills" / "discopt-calphad"
-FILES = [SKILL / "SKILL.md", SKILL / "reference" / "phase-protocol.md"]
+FILES = [SKILL / "SKILL.md", SKILL / "reference" / "phase-protocol.md", SKILL / "reference" / "mlip-phase-diagram.md"]
 
 
 def blocks(path):

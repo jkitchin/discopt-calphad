@@ -104,3 +104,45 @@ def test_three_phase_system_matches_convex_hull(x):
     assert res.certificate.level == CertificateLevel.CERTIFIED_TO_TOLERANCE, res.summary()
     assert res.G == pytest.approx(g_ref, abs=1e-7)
     assert set(res.phase_names) == present
+
+
+# ---------------------------------------------------------------------------- a compound at its own composition
+
+
+def test_compounds_only_solve_as_a_linear_program():
+    """One compound at its composition leaves μ free along one direction; two compounds fix it."""
+    from discopt.calphad import CompositionSet, StoichiometricPhase, solve_restricted
+
+    ab = StoichiometricPhase("AB", ("A", "B"), (1.0, 1.0), g=-4000.0)
+    ab2 = StoichiometricPhase("AB2", ("A", "B"), (1.0, 2.0), g=-5000.0)
+    r = solve_restricted([CompositionSet(ab, [])], [0.5, 0.5], T=1000.0)
+    assert r.converged and r.mu_directions is not None and r.mu_directions.shape == (2, 1)
+    assert r.sets[0].amount == pytest.approx(0.5)
+    assert r.mu @ [1.0, 1.0] == pytest.approx(float(ab.gibbs([], T=1000.0)))  # on the compound's tangent
+    r2 = solve_restricted([CompositionSet(ab, []), CompositionSet(ab2, [])], [0.45, 0.55], T=1000.0)
+    assert r2.converged and r2.mu_directions is None and r2.residual < 1e-10
+
+
+@pytest.mark.parametrize("x", [0.375, 0.75])
+def test_equilibrium_at_exactly_a_compound_composition(x):
+    """Al3Ni5 (x_Al = 0.375) and Al3Ni (0.75) at 1000 K. The solve used to fail: restricted solve status: error."""
+    from discopt.calphad import databases
+
+    db = databases.load("alni_dupin")
+    phases = list(db.phase_models(("AL", "NI")).values())
+    res = equilibrium(phases, x=x, T=1000.0, certify="none")
+    assert res.certificate.level.name == "STABILITY_SEARCHED"
+    assert res.phase_names == ["AL3NI5" if x == 0.375 else "AL3NI1"]
+
+
+def test_lone_compound_is_certified_with_a_centred_mu():
+    """CuMg2 at its own composition: μ is chosen in the middle of its stability range, and certifies."""
+    from discopt.calphad import databases
+
+    db = databases.load("cumg_nims")
+    res = equilibrium(list(db.phase_models(("CU", "MG")).values()), x=1 / 3, T=700.0, eps=1e-5)
+    assert res.phase_names == ["CUMG2"]
+    assert res.certificate.level.name in ("CERTIFIED_TO_TOLERANCE", "GLOBALLY_CERTIFIED")
+    # every other phase sits clearly above the tangent, not just touching it
+    others = [p for p in res.history[-1].pricing if p.phase.name != "CUMG2"]
+    assert min(p.ub for p in others) > 1e-3

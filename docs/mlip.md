@@ -83,8 +83,18 @@ Wyckoff sites: A1, A2, A3, A4, B2, L1₂, D0₁₉, C14, C15, C36, C16 and D8_b 
 B2_BCC, L12_FCC, D019_HCP, LAVES_C14/C15/C36 and their C15_LAVES spellings,
 SIGMA in the 10:4:16 model) to a prototype and a sublattice-to-site map.
 Database names are not standardized, so any other phase takes a map from the
-user, as `ALCU_THETA` does above. The map is checked against the phase's site
-ratios before anything is computed.
+user, as `ALCU_THETA` does above. A structure that no prototype covers is given
+as `(ase.Atoms, atom indices per sublattice)`, or as
+`PhaseStructure.from_atoms(atoms, sublattices)`. The map is checked against
+the phase's site ratios before anything is computed.
+
+Before fitting, compare the calculator with the starting database:
+`discopt.calphad.fit.predict(db, result.dataset, elements)` gives the
+database's value for every observation. A calculator that gets signs or tens
+of kJ/mol wrong cannot describe the system. ASE's EMT, for example, gives
+positive formation enthalpies for Al–Cu and Ni–Al. `enthalpy_form(db, label)`
+writes the form to fit to such data: a free constant, with the database's
+T-dependence kept.
 
 ## Relaxation, and leaving the prototype
 

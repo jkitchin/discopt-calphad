@@ -155,6 +155,42 @@ def initial_set(phases, b, T=None) -> CompositionSet:
     return best[1]
 
 
+def _is_active_compound(phase, active) -> bool:
+    return phase.n_y == 0 and any(s.phase is phase for s in active)
+
+
+def _center_mu(R, others, T, local_kw) -> np.ndarray:
+    """μ = μ₀ + D t that maximizes the smallest per-atom tangent distance of ``others``.
+
+    That smallest distance is concave in μ (a minimum of minima of linear
+    functions), so the search has one maximum. It uses local pricing, which is
+    enough to place μ; the certificate is then decided at that μ as usual.
+    """
+    from scipy.optimize import minimize, minimize_scalar
+
+    mu0, D = np.asarray(R.mu, float), np.asarray(R.mu_directions, float)
+    if not others:
+        return mu0
+    kw = {**local_kw, "n_points": min(400, local_kw.get("n_points", 400))}
+    kw.pop("method", None)
+
+    def worst(t):
+        mu = mu0 + D @ np.atleast_1d(t)
+        vals = []
+        for p in price_phases(others, mu, method="local", **kw):
+            atoms = float(sum(float(a) for a in p.phase.amounts(p.y))) if p.y is not None else 1.0
+            vals.append(p.ub / max(atoms, 1e-12))
+        return -min(vals)
+
+    if D.shape[1] == 1:
+        # bracket the maximum: the tangent distances fall without bound far from the compound
+        scale = max(1.0, float(np.max(np.abs(mu0))))
+        t = minimize_scalar(worst, bracket=(-scale, scale), tol=1e-6).x
+    else:
+        t = minimize(worst, np.zeros(D.shape[1]), method="Nelder-Mead", options={"xatol": 1e-6, "fatol": 1e-9}).x
+    return mu0 + D @ np.atleast_1d(t)
+
+
 def _generate(record: IterationRecord, active, eps: float, dedup_tol: float) -> None:
     """Add a set for each destabilizing pricing point that is not a duplicate."""
     for p in record.pricing:
@@ -262,6 +298,13 @@ def equilibrium(
         if record.removed:
             sets, new = active, []
             continue
+        if R.mu_directions is not None:
+            # Lone compounds that do not span every element leave μ free along mu_directions. Take
+            # the μ there that keeps every other phase farthest above its tangent: the middle of the
+            # compound's stability range. Any such μ gives a valid certificate; this one avoids
+            # destabilizing a phase that a better μ would show to be stable.
+            R.mu = _center_mu(R, [p for p in phases if not _is_active_compound(p, active)], T, local_kw)
+            R.residual = abs(R.G - float(R.mu @ b))
         record.pricing = price_phases(phases, R.mu, **(global_kw if certify == "every" else local_kw))
         _generate(record, active, eps, dedup_tol)
         if not record.added and certify == "final":

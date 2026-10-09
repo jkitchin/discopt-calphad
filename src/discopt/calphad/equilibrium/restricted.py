@@ -8,6 +8,14 @@ The problem, in intensive form:
 
 It is solved locally with POUNCE. The chemical potentials are μ = −λ, where λ are
 the multipliers of the balance constraints.
+
+When every set is a stoichiometric compound, R is a linear program in the
+amounts, and it is solved as one. If the active compounds' compositions do not
+span every element (one compound at exactly its own composition, for example),
+the balance rows are dependent and μ is not unique: any μ with μ·A_k = G_k for
+the active compounds is a valid multiplier. The result then carries the
+directions in which μ may move (``mu_directions``), and the loop chooses μ
+among them (see :func:`~discopt.calphad.equilibrium.loop.equilibrium`).
 """
 
 from __future__ import annotations
@@ -19,7 +27,8 @@ from typing import Any
 
 import discopt.modeling as dm
 import numpy as np
-from scipy.optimize import nnls
+from scipy.linalg import null_space
+from scipy.optimize import linprog, nnls
 
 from discopt.calphad.equilibrium.common import DOMAIN_FLOOR, amount_matrix, inner_bounds, tangent_distance
 from discopt.calphad.ops import EXPR, NUM
@@ -72,6 +81,9 @@ class RestrictedResult:
     tangency_residual: float
     iterations: int
     wall_time: float
+    #: E × d basis of the directions in which μ may move while every active set stays on the
+    #: tangent plane (None when μ is unique); see the module docstring
+    mu_directions: np.ndarray | None = None
 
     @property
     def converged(self) -> bool:
@@ -107,6 +119,9 @@ def solve_restricted(
     els = _elements(sets)
     if b.shape != (len(els),):
         raise ValueError(f"b must have one entry per element {els}")
+
+    if all(s.phase.n_y == 0 for s in sets):
+        return _solve_compounds(sets, b, T, amount_tol)
 
     atoms_min = min(s.phase.atoms_min for s in sets)
     n_max = 2.0 * b.sum() / atoms_min
@@ -179,6 +194,38 @@ def solve_restricted(
         tangency_residual=tangency,
         iterations=int(getattr(r, "iterations", -1) or -1),
         wall_time=wall,
+    )
+
+
+def _solve_compounds(sets, b, T, amount_tol) -> RestrictedResult:
+    """R(S) when every set is a compound: a linear program in the amounts."""
+    t0 = time.perf_counter()
+    A = amount_matrix(sets)
+    g = np.array([float(s.phase.gibbs(s.y, NUM, T)) for s in sets])
+    lp = linprog(g, A_eq=A, b_eq=b, bounds=[(0.0, None)] * len(sets), method="highs")
+    if lp.status != 0:
+        nan = np.full(len(b), np.nan)
+        return RestrictedResult(
+            "infeasible", list(sets), nan, np.nan, np.nan, np.inf, np.nan, 0, time.perf_counter() - t0
+        )
+    amounts = np.asarray(lp.x, float)
+    new = [CompositionSet(s.phase, s.y, float(n)) for s, n in zip(sets, amounts)]
+    on = amounts > amount_tol
+    # μ·A_k = G_k for every active compound; the minimum-norm solution plus the free directions
+    mu = np.linalg.lstsq(A[:, on].T, g[on], rcond=None)[0]
+    free = null_space(A[:, on].T)
+    G = float(g @ amounts)
+    return RestrictedResult(
+        status="optimal",
+        sets=new,
+        mu=mu,
+        G=G,
+        residual=abs(G - float(mu @ b)),
+        primal_infeasibility=float(np.max(np.abs(A @ amounts - b))),
+        tangency_residual=float(np.max(np.abs(A[:, on].T @ mu - g[on]))),
+        iterations=int(getattr(lp, "nit", 0) or 0),
+        wall_time=time.perf_counter() - t0,
+        mu_directions=free if free.shape[1] else None,
     )
 
 

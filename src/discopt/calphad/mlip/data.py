@@ -101,6 +101,8 @@ def _structure_for(name: str, structures) -> PhaseStructure:
         return phase_structure(name)
     if isinstance(spec, PhaseStructure):
         return spec
+    if hasattr(spec[0], "get_positions"):  # (ase.Atoms, atoms of each sublattice)
+        return PhaseStructure.from_atoms(spec[0], spec[1], name=name)
     return phase_structure(*spec)
 
 
@@ -414,7 +416,9 @@ def compute(
     ["AL:CU"]}``). ``mixing`` maps a solution phase to a grid of site
     fractions of the first element on its mixing sublattice. ``structures``
     maps a phase name to a :class:`PhaseStructure`, or to ``(prototype,
-    sublattice sites...)``, for phases :data:`PHASES` does not know. ``sqs``
+    sublattice sites...)``, or to ``(ase.Atoms, atoms of each sublattice)`` for
+    a structure no prototype covers (:meth:`PhaseStructure.from_atoms`), for
+    phases :data:`PHASES` does not know. ``sqs``
     is an :class:`~discopt.calphad.mlip.sqs.SQSOptions`.
 
     ``sigma``, ``model_sigma`` and ``pool`` set the uncertainties; see the
