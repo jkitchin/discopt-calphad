@@ -23,6 +23,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from functools import reduce
+from pathlib import Path
 
 import numpy as np
 
@@ -156,6 +157,85 @@ PROTOTYPES: dict[str, Prototype] = {
             (1.0, 0.518, 90.0, 90.0, 90.0),
             "sigma (CrFe)",
         ),
+        # From the AFLOW Encyclopedia of Crystallographic Prototypes
+        # (https://aflow.org/prototype-encyclopedia/<label>), with their published
+        # coordinates; each prototype is cited by its AFLOW label.
+        Prototype(  # A3B_oP16_62_cd_c-001
+            "D0_20",
+            62,
+            {"4c1": (0.511, 0.25, 0.415), "4c2": (0.869, 0.25, 0.555), "8d": (0.674, 0.053, 0.856)},
+            (1.114, 0.7278, 90.0, 90.0, 90.0),
+            "Al3Ni: Al 4c1 + 8d, Ni 4c2",
+        ),
+        Prototype(  # AB3_oP16_62_c_cd-001
+            "D0_11",
+            62,
+            {"4c1": (0.39, 0.25, 0.05), "4c2": (0.036, 0.25, 0.852), "8d": (0.186, 0.063, 0.328)},
+            (1.326, 0.8886, 90.0, 90.0, 90.0),
+            "Fe3C cementite: C 4c1, Fe 4c2 + 8d",
+        ),
+        Prototype(  # A3B2_hP5_164_ad_d-001
+            "D5_13",
+            164,
+            {"1a": (0, 0, 0), "2d1": (1 / 3, 2 / 3, 0.648), "2d2": (1 / 3, 2 / 3, 0.149)},
+            _hex(1.214),
+            "Al3Ni2: Al 1a + 2d1, Ni 2d2 (the CALPHAD vacancy site is 1b, not built)",
+        ),
+        Prototype(  # A3B_tI8_139_ad_b-001
+            "D0_22",
+            139,
+            {"2a": (0, 0, 0), "2b": (0, 0, 0.5), "4d": (0, 0.5, 0.25)},
+            (1.0, 2.227, 90.0, 90.0, 90.0),
+            "Al3Ti: Al 2a + 4d, Ti 2b",
+        ),
+        Prototype(  # A3B_tI16_139_cde_e-001
+            "D0_23",
+            139,
+            {"4c": (0, 0.5, 0), "4d": (0, 0.5, 0.25), "4e1": (0, 0, 0.375), "4e2": (0, 0, 0.1189)},
+            (1.0, 4.322, 90.0, 90.0, 90.0),
+            "Al3Zr: Al 4c + 4d + 4e1, Zr 4e2",
+        ),
+        Prototype(  # AB3_cF16_225_a_bc-001
+            "D0_3",
+            225,
+            {"4a": (0, 0, 0), "4b": (0.5, 0.5, 0.5), "8c": (0.25, 0.25, 0.25)},
+            description="BiF3 (Fe3Al): Bi 4a, F 4b + 8c",
+        ),
+        Prototype(  # AB_tP2_123_a_d-001
+            "L1_0",
+            123,
+            {"1a": (0, 0, 0), "1d": (0.5, 0.5, 0.5)},
+            (1.0, 1.31, 90.0, 90.0, 90.0),
+            "CuAu: Au 1a, Cu 1d (primitive cell)",
+        ),
+        Prototype(  # AB_oP4_51_e_f-001
+            "B19",
+            51,
+            {"2e": (0.25, 0, 0.8125), "2f": (0.25, 0.5, 0.3125)},
+            (0.662, 1.021, 90.0, 90.0, 90.0),
+            "AuCd: Au 2e, Cd 2f",
+        ),
+        Prototype(  # AB2_tI6_139_a_e-001
+            "C11_b",
+            139,
+            {"2a": (0, 0, 0), "4e": (0, 0, 0.3353)},
+            (1.0, 2.448, 90.0, 90.0, 90.0),
+            "MoSi2: Mo 2a, Si 4e",
+        ),
+        Prototype(  # AB_hP4_194_c_a-001
+            "B8_1",
+            194,
+            {"2a": (0, 0, 0), "2c": (1 / 3, 2 / 3, 0.25)},
+            _hex(1.394),
+            "NiAs: Ni 2a, As 2c",
+        ),
+        Prototype(  # A3B5_oC16_65_ah_bej-001
+            "Ga3Pt5",
+            65,
+            {"2a": (0, 0, 0), "2b": (0.5, 0, 0), "4e": (0.25, 0.25, 0), "4h": (0.25, 0, 0.5), "4j": (0, 0.225, 0.5)},
+            (0.9264, 0.4916, 90.0, 90.0, 90.0),
+            "Ga3Pt5 (Al3Ni5): Ga 2a + 4h, Pt 2b + 4e + 4j",
+        ),
     ]
 }
 
@@ -205,6 +285,44 @@ class PhaseStructure:
         template.set_array("wyckoff", labels.astype(str))
         sites = {lab[0]: (0.0, 0.0, 0.0) for lab in subl if lab}
         return cls(Prototype(name, 0, sites, template=template, description="user structure"), tuple(subl), note)
+
+    @classmethod
+    def from_cif(cls, path, sublattices, name: str | None = None, note: str = "") -> PhaseStructure:
+        """A structure from a CIF file (ICSD, Materials Project, the AFLOW prototype library, ...).
+
+        ``sublattices`` has one entry per sublattice of the database phase, in
+        its order: a list of selectors, or None for a vacancy-only sublattice. A
+        selector is a CIF site label (``_atom_site_label``, for example ``"Al2"``)
+        or an element symbol (``"Al"``, every site of that element). Every atom
+        of the cell must be selected exactly once. Partially occupied sites are
+        refused: decide the occupancy first.
+        """
+        from ase.io import read
+
+        atoms = read(str(path), store_tags=True)
+        labels = [str(v) for v in atoms.info.get("_atom_site_label", [])]
+        occupancy = atoms.info.get("_atom_site_occupancy")
+        if occupancy is not None and any(abs(float(o) - 1.0) > 1e-6 for o in occupancy):
+            raise ValueError(f"{path}: partially occupied sites; choose an ordered structure first")
+        if "spacegroup_kinds" not in atoms.arrays or not labels:
+            raise ValueError(f"{path}: the CIF has no site labels to map onto sublattices")
+        kinds = atoms.get_array("spacegroup_kinds")
+        site_of = np.array([labels[k] for k in kinds], dtype=object)
+        symbols = np.array(atoms.get_chemical_symbols(), dtype=object)
+        indices = []
+        for selectors in sublattices:
+            if selectors is None:
+                indices.append(None)
+                continue
+            selectors = [selectors] if isinstance(selectors, str) else list(selectors)
+            mask = np.zeros(len(atoms), bool)
+            for sel in selectors:
+                hit = (site_of == sel) | (symbols == sel)
+                if not hit.any():
+                    raise ValueError(f"{path}: no site or element {sel!r}; sites are {labels}")
+                mask |= hit
+            indices.append(list(np.flatnonzero(mask)))
+        return cls.from_atoms(atoms, indices, name=name or Path(str(path)).stem, note=note)
 
     def site_counts(self) -> list[int]:
         """Atoms per sublattice in the conventional cell (0 for a vacancy-only sublattice)."""

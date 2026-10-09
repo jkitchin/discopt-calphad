@@ -96,3 +96,20 @@ The fitted diagram (red) is drawn over the NIMS assessment (gray) and the data.
     ```python
     --8<-- "examples/cumg_espei_fit.py"
     ```
+
+## Ni–Al with stand-ins for its order–disorder phases
+
+Dupin's Al–Ni assessment describes γ′ (L1₂) and β (B2) as partitioned phases,
+which the solver cannot model yet. `ordering.stand_in` rewrites each as a plain
+phase; both are exact (pycalphad agrees to 1e-10 J/mol), with magnetism and B2
+vacancies dropped. The diagram matches pycalphad's full model to within 0.001
+in x except on the Al-rich side of β (up to 0.046), where the dropped vacancies
+matter.
+
+![Ni-Al with stand-ins](assets/examples/alni_stand_in.png)
+
+??? example "examples/alni_stand_in.py"
+    ```python
+    --8<-- "examples/alni_stand_in.py"
+    ```
+

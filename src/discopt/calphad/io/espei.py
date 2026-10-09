@@ -12,7 +12,7 @@ one JSON file per dataset. Three layouts are read:
 
 Anything else is skipped and reported, never approximated: other outputs, data
 on phases the database cannot model in the given elements, mixing data on a
-phase with more than one site fraction, model contributions excluded in the
+phase whose configuration does not mix exactly one sublattice, model contributions excluded in the
 file (other than for enthalpies), and ZPF points whose chemical potentials no
 measured composition fixes.
 
@@ -111,8 +111,6 @@ class _Reader:
         name, model = self.model(d["phases"][0])
         if isinstance(model, str):
             return self.skip(path, f"{name}: {model}")
-        if kind.endswith("_MIX") and model.n_y != 1:
-            return self.skip(path, f"{kind} on {name}, which has {model.n_y} site fractions")
         allowed = set(self.elements) | {"VA"}
         subl = [tuple(sorted(c for c in s if c in allowed)) for s in self.db.phases[name].constituents]
         solver = d["solver"]
@@ -137,6 +135,8 @@ class _Reader:
             sf += [{"VA": 1.0} for cons in subl[len(sf) :] if cons == ("VA",)]
             if len(sf) != len(subl) or any(set(f) - set(cons) for f, cons in zip(sf, subl)):
                 return self.skip(path, f"configuration {config} does not fit {name} {subl}")
+            if kind.endswith("_MIX") and model.n_y > 1 and sum(sum(v > 0 for v in f.values()) > 1 for f in sf) != 1:
+                return self.skip(path, f"{kind} on {name} needs exactly one mixed sublattice; {config} has not")
             for j, t in enumerate(Ts):
                 obs = Observation(
                     kind,

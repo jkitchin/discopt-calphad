@@ -348,3 +348,74 @@ def test_a_structure_from_plain_atoms_matches_the_registered_prototype(db):
         mlip.PhaseStructure.from_atoms(atoms, [sublattices[0], []])
     with pytest.raises(ValueError, match="already on another"):
         mlip.PhaseStructure.from_atoms(atoms, [sublattices[0], sublattices[0] + sublattices[1]])
+
+
+def test_new_prototypes_match_their_aflow_cifs():
+    """Each prototype from the AFLOW library rebuilds its CIF's atom count and has no overlapping atoms."""
+    from ase.neighborlist import neighbor_list
+
+    counts = {
+        "D0_20": 16,
+        "D0_11": 16,
+        "D5_13": 5,
+        "D0_22": 8,
+        "D0_23": 16,
+        "D0_3": 16,
+        "L1_0": 2,
+        "B19": 4,
+        "C11_b": 6,
+        "B8_1": 4,
+        "Ga3Pt5": 16,
+    }
+    for name, n in counts.items():
+        p = mlip.PROTOTYPES[name]
+        atoms = p.build({k: "Cu" for k in p.sites}, volume_per_atom=12.0)
+        assert len(atoms) == n, name
+        assert neighbor_list("d", atoms, 4.0).min() > 1.9, name
+
+
+def test_structure_from_a_cif_file():
+    from pathlib import Path
+
+    cif = Path(__file__).parent / "data" / "al3ni_D020_aflow.cif"
+    by_element = mlip.PhaseStructure.from_cif(cif, [["Al"], ["Ni"]])
+    by_label = mlip.PhaseStructure.from_cif(cif, [["Al1", "Al2"], ["Ni3"]])
+    registered = mlip.phase_structure("D0_20", ["4c1", "8d"], ["4c2"])
+    assert by_element.site_counts() == by_label.site_counts() == registered.site_counts() == [12, 4]
+    assert by_element.build(("AL", "NI")).get_chemical_formula() == "Al12Ni4"
+    with pytest.raises(ValueError, match="no site or element"):
+        mlip.PhaseStructure.from_cif(cif, [["Al"], ["Cu"]])
+    with pytest.raises(ValueError, match="every atom"):
+        mlip.PhaseStructure.from_cif(cif, [["Al1"], ["Ni"]])
+
+
+def test_sqs_mixing_on_a_sublattice_that_also_allows_vacancies():
+    """(AL,CU,VA)(CU): SQS mix Al and Cu at zero vacancy fraction, and the fit uses the data exactly."""
+    from discopt.calphad import ThermoDatabase
+
+    db = ThermoDatabase.from_string(
+        """ELEMENT AL FCC_A1 26.98 4577.3 28.322 !
+        ELEMENT CU FCC_A1 63.546 5004.1 33.15 !
+        ELEMENT VA VACUUM 0 0 0 !
+        PHASE FCC_A1 % 2 1 1 ! CONSTITUENT FCC_A1 :AL,CU:VA: !
+        PARAMETER G(FCC_A1,AL:VA;0) 298.15 0; 6000 N !
+        PARAMETER G(FCC_A1,CU:VA;0) 298.15 0; 6000 N !
+        PHASE BX % 2 1 1 ! CONSTITUENT BX :AL,CU,VA:CU: !
+        PARAMETER G(BX,AL:CU;0) 298.15 -1000; 6000 N !
+        PARAMETER G(BX,CU:CU;0) 298.15 0; 6000 N !
+        PARAMETER G(BX,VA:CU;0) 298.15 30000; 6000 N !"""
+    )
+    model = mlip.from_ase(RegularSolution(), name="mock")
+    res = mlip.compute(
+        model,
+        db,
+        EL,
+        mixing={"BX": [0.25, 0.5, 0.75]},
+        structures={"BX": ("B2", ["1a"], ["1b"])},
+        sigma=1.0,
+        sqs=FAST_SQS,
+    )
+    mix = [o for o in res.dataset if o.kind == "HM_MIX"]
+    assert len(mix) == 3 and all("VA" not in o.site_fractions[0] or o.site_fractions[0]["VA"] == 0 for o in mix)
+    fr = fit(db, res.dataset, EL, {"L(BX,AL,CU:CU;0)": "a", "L(BX,AL,CU:CU;1)": "a"})
+    assert fr.chi2 < 1e-12  # the mock's energy is cubic in y, which L0 and L1 represent exactly

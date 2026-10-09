@@ -27,7 +27,8 @@ Know the limits before you promise a result:
 - **Systems:** binary systems are best supported. Ternaries work for
   equilibria and thermochemical fits, but not for μ-based fit data.
 - **Unsupported phases:** order–disorder phases (B2, L1₂ in Ni–Al and Fe–Al)
-  and ionic liquids cannot be modelled; see section 1.
+  cannot be modelled directly, but `ordering.stand_in` turns each into a plain
+  phase (see section 1). Ionic liquids cannot be modelled.
 - **Magnetism:** any equilibrium containing a magnetic phase (FCC Ni, BCC Fe,
   Co) certifies at most to `GLOBAL_SEARCH_INCOMPLETE`.
 - **Calculators:** a calculator (MLIP, EAM, EMT) gives data for a fit, never a
@@ -68,11 +69,15 @@ without loading the file, and `databases.fetch(name)` gives the local TDB path
 (for pycalphad, say). A large multicomponent file such as `cost507` can form a
 binary while lacking that binary's intermetallics: its other phases still show
 up as "ok", through their pure-element endmembers. Prefer a file assessed for
-the system, and list which phases it actually has before using it. If a phase the user cares about is unsupported,
-for example an order–disorder (`DISORDERED_PART`) phase, say so before
-computing anything. Your options are listed in
-[reference/mlip-phase-diagram.md](reference/mlip-phase-diagram.md), "When a key
-phase is unsupported".
+the system, and list which phases it actually has before using it.
+
+If a phase the user cares about is unsupported, say so before computing
+anything. An order–disorder (`DISORDERED_PART`) phase can be rewritten as a
+plain stand-in with `discopt.calphad.ordering.stand_in(db, "FCC_L12",
+elements)`. For Ni–Al the stand-in is exact, but it drops magnetism and
+vacancies on substitutional sublattices, so report its `dropped` list. The
+details are in [reference/mlip-phase-diagram.md](reference/mlip-phase-diagram.md),
+"When a key phase is unsupported".
 
 The order of the element tuple matters: `x` below is the mole fraction of the
 **first** element.
@@ -259,7 +264,7 @@ import discopt.calphad
 cumg = databases.load("cumg_nims")
 espei_dir = Path(discopt.calphad.__file__).parents[3] / "examples" / "data" / "espei-cu-mg"  # in a checkout
 espei = Dataset.from_espei(espei_dir, cumg, ("CU", "MG"), phase_map={"LAVES_C15": "CU2MG"})
-print(len(espei), espei.skipped[0])          # 313 observations; (file, reason) for what was not used
+print(len(espei), espei.skipped[0])          # 317 observations; (file, reason) for what was not used
 liquid = Dataset([o for o in espei if o.phase == "LIQUID" and o.kind in ("HM_MIX", "ACR")])
 res_liq = fit(cumg, liquid, ("CU", "MG"), {"L(LIQUID,CU,MG;0)": "a + b*T", "L(LIQUID,CU,MG;1)": "a"})
 print(res_liq.summary())
@@ -356,8 +361,9 @@ fitted_alcu = fit(alcu, result.dataset, ("AL", "CU"), {"G(ALCU_THETA,AL:CU;0)": 
   - A T outside the ranges raises `ValueError`. Set
     `ThermoDatabase.extrapolate = True` to use the nearest range instead.
 - **Unsupported models raise with the reason.** `UnsupportedModelError` covers:
-  - order–disorder (`DISORDERED_PART`);
+  - order–disorder (`DISORDERED_PART`), unless replaced by `ordering.stand_in`;
   - ionic liquids;
+  - phases whose every sublattice can be empty (an all-vacancy configuration);
   - the Xiong magnetic model;
   - some high-order CEF interactions.
 

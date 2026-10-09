@@ -145,26 +145,61 @@ def solve_restricted(
     # set has reached the edge of its branch: switch to the neighbouring branch
     # and solve again from there. The IHJ function is C¹ at τ = 1, so a solution
     # that sits exactly on that edge is valid on both sides.
-    branches = {k: s.phase.magnetic_branch(y0[k], T) for k, s in enumerate(sets) if getattr(s.phase, "magnetic", None)}
+    branches0 = {k: s.phase.magnetic_branch(y0[k], T) for k, s in enumerate(sets) if getattr(s.phase, "magnetic", None)}
     # a fixed set cannot leave its branch, so it needs no constraints
-    held = [k for k in branches if sets[k].phase.n_y and not (fixed is not None and fixed[k])]
+    held = [k for k in branches0 if sets[k].phase.n_y and not (fixed is not None and fixed[k])]
     t0 = time.perf_counter()
-    seen, best = set(), None
-    for _ in range(1 + 3 * len(held)):
-        seen.add(tuple(sorted(branches.items())))
-        r, active = _solve_once(sets, b, T, boxes, branches, held, n_max, x0, els, options)
-        ok = str(getattr(r.status, "value", r.status)) == "optimal"
-        if best is None or (ok and (not best[1] or r.objective < best[0].objective)):
-            best = (r, ok)
-        if not ok or not active:
-            break
-        nxt = dict(branches)
-        for k, i in active:
-            nxt[k] = nxt[k]._replace(**{nxt[k]._fields[i]: not nxt[k][i]})
-        if tuple(sorted(nxt.items())) in seen:
-            break  # the solution sits on an edge between branches already tried
-        branches = nxt
-        x0 = np.asarray(r.x, dtype=float)
+
+    def run(bxs, start):
+        """The branch loop for site-fraction boxes ``bxs``, from ``start``: (result, optimal?)."""
+        branches, xs = dict(branches0), start
+        seen, best = set(), None
+        for _ in range(1 + 3 * len(held)):
+            seen.add(tuple(sorted(branches.items())))
+            r, active = _solve_once(sets, b, T, bxs, branches, held, n_max, xs, els, options)
+            ok = _ok(r)
+            if best is None or (ok and (not best[1] or r.objective < best[0].objective)):
+                best = (r, ok)
+            if not ok or not active:
+                break
+            nxt = dict(branches)
+            for k, i in active:
+                nxt[k] = nxt[k]._replace(**{nxt[k]._fields[i]: not nxt[k][i]})
+            if tuple(sorted(nxt.items())) in seen:
+                break  # the solution sits on an edge between branches already tried
+            branches = nxt
+            xs = np.asarray(r.x, dtype=float)
+        return best
+
+    # Site fractions on (or next to) a bound are where the interior-point solve struggles (issue
+    # #13): a terminal phase whose equilibrium solubility is below the domain floor has its optimum
+    # on the bound, and a warm start exactly on a bound is not interior. Such variables are treated
+    # as active constraints: solve with them pinned first, then free everything from that solution
+    # and keep the free solve only if it succeeds and is no worse. Pricing still checks whether
+    # moving off a bound would lower G, so the certificate is unaffected.
+    pinned, any_pin = _pin(boxes, y0, domain_floor)
+    if any_pin:
+        best = run(pinned, x0)
+        if best[1]:
+            free = run(boxes, np.asarray(best[0].x, dtype=float))
+            if free[1] and free[0].objective <= best[0].objective + 1e-12 * max(1.0, abs(best[0].objective)):
+                best = free
+        else:
+            best = run(boxes, x0)
+    else:
+        best = run(boxes, x0)
+    if not best[1] and best[0].x is not None:
+        # the solve failed and ended with variables on a bound: pin them and solve once more
+        x = np.asarray(best[0].x, dtype=float)
+        ys = np.split(x[len(sets) :], np.cumsum([s.phase.n_y for s in sets])[:-1])
+        pinned, any_pin = _pin(boxes, ys, domain_floor)
+        if any_pin:
+            xp = np.concatenate(
+                [x[: len(sets)], *[np.clip(yk, [a for a, _ in nb], [c for _, c in nb]) for yk, nb in zip(ys, pinned)]]
+            )
+            retry = run(pinned, xp)
+            if retry[1]:
+                best = retry
     r = best[0]
     wall = time.perf_counter() - t0
 
@@ -227,6 +262,28 @@ def _solve_compounds(sets, b, T, amount_tol) -> RestrictedResult:
         wall_time=time.perf_counter() - t0,
         mu_directions=free if free.shape[1] else None,
     )
+
+
+def _ok(r) -> bool:
+    return str(getattr(r.status, "value", r.status)) == "optimal"
+
+
+def _pin(boxes, ys, floor):
+    """Boxes with every free site fraction within 10 floors of a bound pinned to it, and whether any was."""
+    out, any_pin = [], False
+    for box, yk in zip(boxes, ys):
+        nb = []
+        for (lo, hi), v in zip(box, yk):
+            if lo < hi and v <= lo + 10 * floor:
+                nb.append((lo, lo))
+                any_pin = True
+            elif lo < hi and v >= hi - 10 * floor:
+                nb.append((hi, hi))
+                any_pin = True
+            else:
+                nb.append((lo, hi))
+        out.append(nb)
+    return out, any_pin
 
 
 #: a branch constraint within this of zero, at the solution, is active

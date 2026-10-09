@@ -192,10 +192,17 @@ def _center_mu(R, others, T, local_kw) -> np.ndarray:
 
 
 def _generate(record: IterationRecord, active, eps: float, dedup_tol: float) -> None:
-    """Add a set for each destabilizing pricing point that is not a duplicate."""
-    for p in record.pricing:
-        if not p.destabilizing(eps):
-            continue
+    """Add a set for each destabilizing pricing point that is not a duplicate, most destabilizing first.
+
+    The order (Ψ per atom, most negative first) is what the back-off in
+    :func:`equilibrium` relies on when the restricted solve fails.
+    """
+
+    def per_atom(p):
+        atoms = float(sum(float(a) for a in p.phase.amounts(p.y))) if p.y is not None else 1.0
+        return p.ub / max(atoms, 1e-12)
+
+    for p in sorted((p for p in record.pricing if p.destabilizing(eps)), key=per_atom):
         if is_duplicate(active + record.added, p.phase, p.y, dedup_tol):
             record.rejected.append(p)
         else:
@@ -259,6 +266,7 @@ def equilibrium(
     local_kw = dict(method="local", T=T, n_points=local_points, n_starts=local_starts, domain_floor=domain_floor)
 
     sets = list(initial_sets) if initial_sets else [initial_set(phases, b, T)]
+    previous: list[CompositionSet] = []
     history: list[IterationRecord] = []
     small = trace_amount * float(np.sum(b))
     new: list[CompositionSet] = []
@@ -276,6 +284,13 @@ def equilibrium(
                 R2 = solve_restricted(R1.sets, b, T=T, domain_floor=domain_floor, amount_tol=amount_tol)
                 if R2.converged and (not R.converged or R2.G < R.G - 1e-12):
                     R = R2
+            if not R.converged and len(new) > 1:
+                # Far from equilibrium many phases destabilize at once, and a restricted problem with
+                # many more sets than elements, mostly at near-zero amounts, can defeat the solve
+                # (issue #13). Back off to the single most destabilizing new set; the rest are priced
+                # again at the next μ. The certificate does not depend on how sets are added.
+                sets, new = previous + new[:1], new[:1]
+                R = solve_restricted(sets, b, T=T, domain_floor=domain_floor, amount_tol=amount_tol)
         record = IterationRecord(it, R, [])
         history.append(record)
         if not R.converged:
@@ -313,6 +328,7 @@ def equilibrium(
             _generate(record, active, eps, dedup_tol)
         if not record.added:
             break
+        previous = active
         sets, new = active + record.added, record.added
     else:
         exhausted = True
