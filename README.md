@@ -74,6 +74,9 @@ the tangent-plane distance Ψ(y) = G(y) − μ·A(y):
   energies by alchemical thermodynamic integration. A committee of
   calculators gives one fit per member, and `discopt.calphad.uncertainty`
   carries their spread (or a fit's posterior) to the phase boundaries.
+  Phase 4: candidates are ranked by how much they would tell the fit, active
+  learning computes the most informative structures first, with a hook for
+  fine-tuning, and the fit scales each data source's σ to its own scatter.
 - **Pricing modes:** `equilibrium(certify="final")` (the default) uses cheap
   local pricing to generate composition sets and global pricing once, at the
   converged μ. `certify="none"` skips the global step (`STABILITY_SEARCHED`), and

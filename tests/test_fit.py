@@ -560,3 +560,51 @@ def test_ternary_espei_datasets(alcuy, alcuy_lines, tmp_path):
     res = fit(alcuy, ds, ALCUY, TERNARY_FREE, initial=TERNARY_START)
     for k, v in TERNARY_TRUE.items():
         assert res.parameters[k] == pytest.approx(v, abs=5.0)
+
+
+# ---------------------------------------------------------------------------- per-source weighting (#5)
+
+
+def _two_sources(db, rng, s_exp=20.0, s_calc=20.0, true_calc=80.0):
+    """FCC mixing enthalpies from two sources that both claim σ = 20 J/mol; the "calc" ones scatter by 80."""
+    lm = _lm(db)
+    ds = Dataset()
+    for source, claimed, true in (("experiment", s_exp, 20.0), ("calc", s_calc, true_calc)):
+        for x in np.linspace(0.05, 0.95, 40):
+            v = lm.phase("FCC_A1").thermo("HM_MIX", x, 650.0)[0]
+            ds.add(Observation("HM_MIX", 650.0, v + rng.normal(0, true), claimed, phase="FCC_A1", x=x, source=source))
+    return ds
+
+
+def test_residuals_by_source_and_estimated_scales(db):
+    free = ["L(FCC_A1,AL,ZN;0)", "L(FCC_A1,AL,ZN;1)", "L(FCC_A1,AL,ZN;2)"]
+    free = {k: "a" for k in free}
+    ds = _two_sources(db, np.random.default_rng(3))
+    plain = fit(db, ds, EL, free)
+    by = plain.residuals_by_source()
+    assert set(by) == {"experiment", "calc"}
+    assert sum(n for n, _, _ in by.values()) == 80
+    assert sum(d for _, _, d in by.values()) == pytest.approx(80 - plain.rank)  # leverage sums to the rank
+    assert by["calc"][1] / by["calc"][2] > 5  # the calculated data scatter far more than their σ
+    auto = fit(db, ds, EL, free, source_scale="auto")
+    assert auto.source_scales["calc"] == pytest.approx(4.0, rel=0.25)  # √(80²/20²)
+    assert auto.source_scales["experiment"] >= 1.0  # never shrunk by default
+    by = auto.residuals_by_source()
+    # the scaled source is at the fixed point χ²/dof = 1; the other kept its σ, so its χ²/dof is only
+    # within the sampling spread of χ²/dof for ~38 degrees of freedom (std ≈ 0.23)
+    assert by["calc"][1] / by["calc"][2] == pytest.approx(1.0, abs=2e-3)
+    assert 0.3 < by["experiment"][1] / by["experiment"][2] < 1.7
+    # the noisy source no longer pulls the fit: the coefficients' σ grow to match the scatter
+    assert np.all(auto.std >= plain.std * 0.999)
+    # a fixed factor is applied as given
+    fixed = fit(db, ds, EL, free, source_scale={"calc": 4.0})
+    assert fixed.source_scales == {"calc": 4.0}
+    assert {o.sigma for o in fixed.data if o.source == "calc"} == {80.0}
+
+
+def test_source_scale_rejects_unknown_sources_and_bad_factors(db):
+    ds = _two_sources(db, np.random.default_rng(0))
+    with pytest.raises(KeyError, match="not in the data"):
+        fit(db, ds, EL, ["L(FCC_A1,AL,ZN;0)"], source_scale={"dft": 2.0})
+    with pytest.raises(ValueError, match="positive number or 'auto'"):
+        fit(db, ds, EL, ["L(FCC_A1,AL,ZN;0)"], source_scale={"calc": -1.0})

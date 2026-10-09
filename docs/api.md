@@ -64,6 +64,8 @@ Generated from the docstrings in `src/`.
 
 ::: discopt.calphad.mlip.committee
 
+::: discopt.calphad.mlip.active
+
 ::: discopt.calphad.mlip.phonons
 
 ::: discopt.calphad.mlip.data

@@ -403,6 +403,16 @@ fitted_alcu = fit(alcu, result.dataset, ("AL", "CU"), {"G(ALCU_THETA,AL:CU;0)": 
   two-phase boundary's mean ± std over the members (`samples_per_member=n`
   adds each fit's posterior; `posterior_databases(fit_result, n)` does that
   for one fit).
+- **Which structures to compute.** `mlip.candidates(db, els, compounds=...,
+  mixing=..., sigma=2.0)` gives uncomputed candidates; `mlip.suggest(fit, cands,
+  n)["arguments"]` is the next `compute()` call. `mlip.active_learning(model,
+  db, els, free, compounds=..., mixing=..., batch=2, budget=20, target=0.1)`
+  runs compute, fit and choose to a target; `on_batch(model, structures,
+  result)` may return a fine-tuned model. `res.write_extxyz(path)` exports the
+  relaxed structures for fine-tuning.
+- **Per-source weighting.** `fit(..., source_scale="auto")` scales each
+  `Observation.source`'s σ by its Birge ratio; `fit_result.residuals_by_source()`
+  compares the sources first.
 
 ## Conventions and pitfalls
 
