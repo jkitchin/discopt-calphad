@@ -38,6 +38,8 @@ Generated from the docstrings in `src/`.
 
 ::: discopt.calphad.io.espei
 
+::: discopt.calphad.design
+
 ## Order–disorder stand-ins
 
 ::: discopt.calphad.ordering

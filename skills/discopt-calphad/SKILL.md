@@ -223,6 +223,15 @@ default 10) below the tangent becomes a cut, and the fit is solved again.
 phases have no bound yet), or `NOT_CERTIFIED`. Each round costs one global
 pricing per phase per observation, from seconds upward.
 
+**Which measurement next?** `discopt.calphad.design.rank_candidates(res,
+candidates, parameters=None)` ranks candidate observations by the expected
+variance reduction of the fitted coefficients. Candidates are `Observation`s
+whose `value` is ignored and whose `sigma` is the expected uncertainty.
+`design_measurements(res, candidates, n, criterion="A"|"D")` picks a batch.
+The prediction is exact for linear rows: refitting with the chosen data gives
+exactly the predicted variances. A coefficient the data leave undetermined
+has variance ∞, and determining it ranks first.
+
 **Uncertain compositions.** Give `add_equilibrium(..., sigma_x=0.005)` and
 `fit(..., errors_in_variables=True)`. The measured compositions are then
 fitted too, and the parameter σ are calibrated: χ²/dof ≈ 1, and 97% coverage

@@ -183,7 +183,10 @@ The diagram object is plain data, so other backends are possible.
 >   adds cuts until all certified lower bounds are ≥ −ε. Phases listed in an
 >   observation are not checked there, because their deviation is that
 >   observation's own residual;
-> - FIM-based design (step 4): #10;
+> - ~~FIM-based design (step 4): #10~~ done: `discopt.calphad.design` ranks
+>   candidate measurements by their exact expected variance reduction, and
+>   chooses batches greedily, or by `discopt.doe`'s Fedorov exchange when
+>   discopt-doe is installed;
 > - μ-based data in ternaries: #11.
 
 ```python
