@@ -166,17 +166,34 @@ The diagram object is plain data, so other backends are possible.
 > Free parameters are TDB labels with a symbolic T-form that is linear in its
 > coefficients. The site-fraction factors φ_p are found by probing the phase
 > models, so no separate `linear_in` is needed. H, S and Cp come from symbolic
-> T-derivatives. μ-based data (activities, ZPF) need a binary system. Boundary
+> T-derivatives. μ-based data (activities, ZPF) work in any number of elements,
+> with compositions given as a dict by element (#11). Boundary
 > points without a measured partner composition use the driving-force
 > residual (the unmeasured phase touches the measured phase's tangent), and
 > μ of a multi-sublattice phase uses its internal equilibrium. Both are
 > nonlinear in θ through a minimizer, and the fit iterates linear solves
 > (Gauss–Newton with the exact, envelope-theorem Jacobian). Not yet done,
 > each now its own issue:
-> - errors in variables (step 2's nonlinear part, `discopt.estimate`): #8;
-> - global consistency (step 3): #9;
-> - FIM-based design (step 4): #10;
-> - μ-based data in ternaries: #11.
+> - ~~errors in variables (step 2's nonlinear part): #8~~ done:
+>   `fit(..., errors_in_variables=True)`, solved with scipy's trust-region
+>   least squares on the existing rows, since `discopt.estimate` needs an
+>   algebraic model and the tangent rows are numeric. Calibration is checked in
+>   `benchmarks/eiv_coverage.py`;
+> - ~~global consistency (step 3): #9~~ done: `fit(..., consistency="global")`
+>   prices every unlisted phase at every phase-equilibrium observation, and
+>   adds cuts until all certified lower bounds are ≥ −ε. Phases listed in an
+>   observation are not checked there, because their deviation is that
+>   observation's own residual;
+> - ~~FIM-based design (step 4): #10~~ done: `discopt.calphad.design` ranks
+>   candidate measurements by their exact expected variance reduction, and
+>   chooses batches greedily, or by `discopt.doe`'s Fedorov exchange when
+>   discopt-doe is installed;
+> - ~~μ-based data in ternaries: #11~~ done. The measured phases keep the
+>   first full phase's tangent as the reference, with μ-equality rows for the
+>   others (ESPEI averages them instead; both vanish exactly at equilibrium,
+>   and keeping the reference leaves every binary result unchanged). A line or
+>   point phase in a ternary is put on that tangent and made stationary along
+>   its own variables.
 
 ```python
 from discopt.calphad.fit import Dataset, fit

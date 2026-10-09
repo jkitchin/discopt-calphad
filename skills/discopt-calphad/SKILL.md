@@ -25,7 +25,9 @@ phases this package cannot model.
 Know the limits before you promise a result:
 
 - **Systems:** binary systems are best supported. Ternaries work for
-  equilibria and thermochemical fits, but not for μ-based fit data.
+  equilibria and for fits, including activities and phase equilibria; give a
+  ternary composition as a dict, `{"AL": 0.7, "CU": 0.2, "Y": 0.1}`. Errors in
+  variables, SQS mixing data and `x=` in `equilibrium` are binary only.
 - **Unsupported phases:** order–disorder phases (B2, L1₂ in Ni–Al and Fe–Al)
   cannot be modelled directly, but `ordering.stand_in` turns each into a plain
   phase (see section 1). Ionic liquids cannot be modelled.
@@ -213,7 +215,32 @@ least squares and needs no initial guess. Data kinds:
 
 A phase whose composition is `None` must touch the tangent of the measured
 one (its driving force is zero), and μ of a multi-sublattice phase comes from
-its internal equilibrium. Both depend on the parameters, so the fit then
+its internal equilibrium.
+
+**No spurious phases.** `fit(..., consistency="global")` checks every phase
+that a phase-equilibrium observation does not list, with certified global
+pricing at that observation's μ. A phase more than `consistency_eps` (J/mol,
+default 10) below the tangent becomes a cut, and the fit is solved again.
+`res.consistency["status"]` is then `CERTIFIED`, `INCOMPLETE` (magnetic
+phases have no bound yet), or `NOT_CERTIFIED`. Each round costs one global
+pricing per phase per observation, from seconds upward.
+
+**Which measurement next?** `discopt.calphad.design.rank_candidates(res,
+candidates, parameters=None)` ranks candidate observations by the expected
+variance reduction of the fitted coefficients. Candidates are `Observation`s
+whose `value` is ignored and whose `sigma` is the expected uncertainty.
+`design_measurements(res, candidates, n, criterion="A"|"D")` picks a batch.
+The prediction is exact for linear rows: refitting with the chosen data gives
+exactly the predicted variances. A coefficient the data leave undetermined
+has variance ∞, and determining it ranks first.
+
+**Uncertain compositions.** Give `add_equilibrium(..., sigma_x=0.005)` and
+`fit(..., errors_in_variables=True)`. The measured compositions are then
+fitted too, and the parameter σ are calibrated: χ²/dof ≈ 1, and 97% coverage
+in a 40-seed test. Set the row `sigma` small (model error only). Without
+this, σ_x must be converted to J/mol by hand, and the resulting σ are not
+reliable. With the dilute-slope conversion they came out about 3.5× too
+large. Both depend on the parameters, so the fit then
 iterates linear solves (`res.iterations`, `res.converged`), starting from the
 database's own values or from `initial={coefficient: value}`.
 

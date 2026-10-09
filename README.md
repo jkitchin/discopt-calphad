@@ -40,8 +40,12 @@ the tangent-plane distance Ψ(y) = G(y) − μ·A(y):
   `GLOBAL_SEARCH_INCOMPLETE`.
 - **Fitting (issue #2):** weighted least squares of TDB parameters (symbolic
   T-forms) to thermochemical, activity and phase-equilibrium data, including
-  one-sided phase-boundary points (driving-force residuals) and multi-sublattice
-  phases. ESPEI JSON datasets are read directly. Results include the
+  one-sided phase-boundary points (driving-force residuals), multi-sublattice
+  phases, and uncertain measured compositions (`errors_in_variables=True`,
+  which gives calibrated parameter uncertainties). `consistency="global"`
+  certifies that the fit makes no phase stable that the phase-equilibrium data
+  rule out. `discopt.calphad.design` ranks candidate measurements by how much
+  they would reduce the parameter uncertainties. ESPEI JSON datasets are read directly. Results include the
   covariance, a fitted TDB, and certified equilibrium checks. Fitted to the real
   Cu–Mg data curated for ESPEI (238 one-sided boundary points plus
   thermochemistry), the liquid and compound parameters come out close to the
