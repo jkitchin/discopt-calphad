@@ -38,7 +38,11 @@ from discopt.calphad.mlip.calculator import (
     from_ase,
     structure_hash,
 )
+from discopt.calphad.mlip.cluster_expansion import ClusterExpansionFit, ClusterExpansionOptions
+from discopt.calphad.mlip.committee import Committee, committee
 from discopt.calphad.mlip.data import APPROXIMATION, MLIPResult, compute, dataset, reference_energies
+from discopt.calphad.mlip.liquid import LiquidOptions, LiquidResult
+from discopt.calphad.mlip.monte_carlo import MonteCarloOptions, SROResult
 from discopt.calphad.mlip.phonons import PhononOptions, Vibrations
 from discopt.calphad.mlip.prototypes import (
     PHASES,
@@ -54,9 +58,15 @@ from discopt.calphad.mlip.sqs import SQSOptions
 __all__ = [
     "APPROXIMATION",
     "ASEModel",
+    "ClusterExpansionFit",
+    "ClusterExpansionOptions",
+    "Committee",
     "EV_TO_J_PER_MOL",
     "EnergyModel",
+    "LiquidOptions",
+    "LiquidResult",
     "MLIPResult",
+    "MonteCarloOptions",
     "PHASES",
     "PROTOTYPES",
     "PhaseStructure",
@@ -67,8 +77,10 @@ __all__ = [
     "RandomOptions",
     "RelaxationCache",
     "SQSOptions",
+    "SROResult",
     "Vibrations",
     "atomic_volume",
+    "committee",
     "compute",
     "dataset",
     "from_ase",

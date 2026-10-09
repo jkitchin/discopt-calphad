@@ -1,6 +1,8 @@
 """CALPHAD data from ASE calculators (issue #5, phase 1): EMT and mock calculators only."""
 
 import dataclasses
+import math
+from itertools import product
 
 import numpy as np
 import pytest
@@ -271,8 +273,8 @@ def test_emt_pipeline_end_to_end(db):
 
 def test_unknown_mixing_method(db):
     model = mlip.from_ase(RegularSolution(), name="mock")
-    with pytest.raises(NotImplementedError, match="cluster_expansion"):
-        mlip.compute(model, db, EL, mixing={"FCC_A1": [0.5]}, method="cluster_expansion", sigma=1.0)
+    with pytest.raises(ValueError, match="cluster_expansion"):
+        mlip.compute(model, db, EL, mixing={"FCC_A1": [0.5]}, method="cvm", sigma=1.0)
 
 
 # ---------------------------------------------------------------------------- fit extensions
@@ -590,3 +592,299 @@ def test_a_dynamically_unstable_compound_is_flagged(db):
             entropy_sigma=0.5,
         )
     assert len(res.dataset) == 0 and "imaginary" in res.flagged[0][1].reason
+
+
+# ---------------------------------------------------------------------------- cluster expansion (phase 3)
+
+
+def test_cluster_expansion_of_a_pair_model_is_exact(db):
+    """Bond counting is a nearest-neighbour pair model, so the expansion and its random alloy are exact."""
+    model = mlip.from_ase(BondCounting(), name="bonds")
+    grid = [0.1, 0.25, 0.5, 0.8]  # 0.1 fits no small supercell; the expansion does not care
+    res = mlip.compute(
+        model,
+        db,
+        EL,
+        mixing={"FCC_A1": grid},
+        method="cluster_expansion",
+        relax=mlip.RelaxPolicy(mode="fixed"),
+        model_sigma=0.5,
+    )
+    ce = res.cluster_expansions["FCC_A1"]
+    assert ce.rmse_validation < 1e-8 and len(ce.structures) == 29
+    for y, o, row in zip(grid, res.dataset, res.rows):
+        assert o.kind == "HM_MIX" and o.site_fractions[0]["AL"] == y and o.x == pytest.approx(y)
+        assert o.value == pytest.approx(BondCounting.J * 12 * y * (1 - y) * F, rel=1e-9)  # 6 bonds per atom
+        assert o.sigma == pytest.approx(500.0)  # σ_config = CV RMSE = 0, so σ = model_sigma
+        assert row["structures"] == 29 and row["sigma_dof"] == 29 - ce.n_parameters
+    # an ordered decoration: L1_2 Al3Cu, 12 unlike bonds per 4-atom cell
+    l12 = mlip.PHASES["FCC_A1"].build(("CU", "VA"), mlip.atomic_volume("Cu"))
+    l12.set_chemical_symbols(["Cu", "Al", "Al", "Al"])
+    assert ce.predict(l12) == pytest.approx(BondCounting.J * 12 / 4, rel=1e-9)
+
+
+def test_cluster_expansion_needs_a_model_sigma_when_it_fits_exactly(db):
+    model = mlip.from_ase(BondCounting(), name="bonds")
+    with pytest.raises(ValueError, match="model_sigma"):
+        mlip.compute(
+            model, db, EL, mixing={"FCC_A1": [0.5]}, method="cluster_expansion", relax=mlip.RelaxPolicy(mode="fixed")
+        )
+
+
+def test_cluster_expansion_with_too_few_structures(db):
+    from discopt.calphad.mlip.cluster_expansion import ClusterExpansionOptions
+
+    model = mlip.from_ase(BondCounting(), name="bonds")
+    with pytest.raises(ValueError, match="training structures"):
+        mlip.compute(
+            model,
+            db,
+            EL,
+            mixing={"FCC_A1": [0.5]},
+            method="cluster_expansion",
+            cluster_expansion=ClusterExpansionOptions(max_size=2),
+            relax=mlip.RelaxPolicy(mode="fixed"),
+            sigma=1.0,
+        )
+
+
+@pytest.mark.slow
+def test_cluster_expansion_with_emt_agrees_with_random_decorations():
+    from discopt.calphad import ThermoDatabase
+
+    db = ThermoDatabase.from_string(CUAU_TDB)
+    model = mlip.from_ase(EMT(), name="EMT")
+    with pytest.warns(UserWarning, match="cross-validation"):
+        ce = mlip.compute(model, db, ("AU", "CU"), mixing={"FCC_A1": [0.25, 0.5, 0.75]}, method="cluster_expansion")
+    rnd = mlip.compute(
+        model,
+        db,
+        ("AU", "CU"),
+        mixing={"FCC_A1": [0.25, 0.5, 0.75]},
+        method="random",
+        random=mlip.RandomOptions(count=10, min_atoms=32, max_atoms=32),
+        model_sigma=0.1,
+    )
+    for a, b in zip(ce.dataset, rnd.dataset):
+        assert a.value > 0 and abs(a.value - b.value) < 2 * math.hypot(a.sigma, b.sigma)
+
+
+def test_short_range_order_of_a_clustering_pair_model(db):
+    """Unlike pairs cost energy, so like neighbours gather (α > 0), and H and S fall below the random alloy's."""
+    from discopt.calphad.mlip.monte_carlo import MonteCarloOptions
+    from discopt.calphad.mlip.phonons import K_B
+
+    model = mlip.from_ase(BondCounting(), name="bonds")
+    mc = MonteCarloOptions(temperatures=(2000.0, 2800.0), min_atoms=125, sweeps=150, n_beta=8)
+    res = mlip.compute(
+        model,
+        db,
+        EL,
+        mixing={"FCC_A1": [0.5]},
+        method="cluster_expansion",
+        monte_carlo=mc,
+        relax=mlip.RelaxPolicy(mode="fixed"),
+        model_sigma=0.5,
+    )
+    assert [(o.kind, o.T) for o in res.dataset] == [
+        ("HM_MIX", 2000.0),
+        ("SM_MIX", 2000.0),
+        ("HM_MIX", 2800.0),
+        ("SM_MIX", 2800.0),
+    ]
+    ce = res.cluster_expansions["FCC_A1"]
+    lo, hi = res.short_range_order["FCC_A1"]
+    assert lo.atoms == 125 and lo.y == hi.y == pytest.approx(62 / 125)
+    y = lo.y
+    h_rand, s_ideal = ce.random_alloy(y), -K_B * (y * math.log(y) + (1 - y) * math.log(1 - y))
+    assert lo.alpha["sro_Al_Cu_1"] > hi.alpha["sro_Al_Cu_1"] > 0
+    assert lo.H < hi.H < h_rand
+    for r in (lo, hi):
+        assert 0 < r.S < s_ideal
+        assert r.G <= h_rand - r.T * s_ideal + 3 * r.S_error * r.T  # Gibbs-Bogoliubov: the random alloy bounds G
+        assert r.G == pytest.approx(r.H - r.T * r.S)
+    # S = -dG/dT, between the two temperatures
+    assert -(hi.G - lo.G) / 800.0 == pytest.approx((lo.S + hi.S) / 2, rel=0.05)
+    rows = {(r["kind"], r["config"]) for r in res.rows}
+    assert ("SM_MIX", "y=0.496 MC 2000K") in rows
+    o = res.dataset.observations[1]
+    assert o.value == pytest.approx(lo.S * F) and o.sigma > 0
+    # the data fit a T-dependent interaction: short-range order lowers S, so L0 = a + b T has b > 0
+    fr = fit(db, res.dataset, EL, {"L(FCC_A1,AL,CU:VA;0)": "a + b*T"})
+    assert fr.rank == 2 and fr.values[1] > 0
+
+
+def test_monte_carlo_needs_a_cluster_expansion(db):
+    from discopt.calphad.mlip.monte_carlo import MonteCarloOptions
+
+    model = mlip.from_ase(BondCounting(), name="bonds")
+    with pytest.raises(ValueError, match="method='cluster_expansion'"):
+        mlip.compute(model, db, EL, mixing={"FCC_A1": [0.5]}, monte_carlo=MonteCarloOptions(), sigma=1.0)
+
+
+# ---------------------------------------------------------------------------- liquids (phase 3)
+
+
+class MeanFieldLiquid(Calculator):
+    """A species-blind Lennard-Jones fluid plus N w x(1 − x) (x the Al fraction): an exact regular solution."""
+
+    implemented_properties = ["energy", "forces", "stress"]
+    W = 0.08  # eV per atom
+
+    def __init__(self, epsilon=0.16, sigma=2.3, rc=5.75):
+        super().__init__()
+        self.eps, self.sig, self.rc = epsilon, sigma, rc
+
+    def _u(self, r2):
+        sr6 = (self.sig**2 / r2) ** 3
+        return 4 * self.eps * (sr6 * sr6 - sr6)
+
+    def calculate(self, atoms=None, properties=("energy",), system_changes=all_changes):
+        super().calculate(atoms, properties, system_changes)
+        a = self.atoms
+        pos, cell = a.positions, a.cell.array
+        shifts = np.array(list(product((-1, 0, 1), repeat=3))) @ cell
+        d = pos[None, :, None, :] + shifts[None, None, :, :] - pos[:, None, None, :]  # r_j + L - r_i
+        r2 = np.sum(d * d, axis=-1)
+        i, _, _ = np.nonzero((r2 < self.rc**2) & (r2 > 1e-12))
+        mask = (r2 < self.rc**2) & (r2 > 1e-12)
+        dm, r2m = d[mask], r2[mask]
+        sr6 = (self.sig**2 / r2m) ** 3
+        u = 4 * self.eps * (sr6 * sr6 - sr6) - self._u(self.rc**2)
+        g = -24 * self.eps * (2 * sr6 * sr6 - sr6) / r2m  # U'(r)/r
+        forces = np.zeros_like(pos)
+        np.add.at(forces, i, g[:, None] * dm)
+        virial = 0.5 * (dm * g[:, None]).T @ dm
+        s = a.get_chemical_symbols()
+        n, na = len(s), s.count("Al")
+        e = 0.5 * float(u.sum()) + self.W * na * (n - na) / n - 0.3 * na - 0.1 * (n - na)
+        st = virial / a.get_volume()
+        self.results = {
+            "energy": e,
+            "free_energy": e,
+            "forces": forces,
+            "stress": st.flat[[0, 4, 8, 5, 2, 1]],
+        }
+
+
+def test_liquid_mixing_by_md_and_thermodynamic_integration(db):
+    """For a species-blind fluid plus N w x(1 − x), ΔG_mix is exactly regular, and ΔH_mix agrees within its σ."""
+    from discopt.calphad.mlip.liquid import LiquidOptions
+    from discopt.calphad.mlip.phonons import K_B
+
+    T = 1500.0
+    model = mlip.from_ase(MeanFieldLiquid(epsilon=K_B * T / 0.8), name="fluid")
+    md = LiquidOptions(
+        temperatures=(T,),
+        atoms=32,
+        pressure=1.0,  # P* ≈ 0.5: the Lennard-Jones liquid boils at P = 0
+        melt_steps=150,
+        equilibration_steps=100,
+        steps=400,
+        min_msd=0.5,
+        n_mu=3,
+        n_lambda=1,  # dU/dλ is a constant here
+        degree=2,
+    )
+    res = mlip.compute(model, db, EL, liquid={"LIQUID": [0.25, 0.5]}, md=md, model_sigma=0.5)
+    W = MeanFieldLiquid.W
+    runs = res.liquids["LIQUID"]
+    assert [(o.kind, o.x) for o in res.dataset] == [
+        ("HM_MIX", 0.25),
+        ("GM_MIX", 0.25),
+        ("HM_MIX", 0.5),
+        ("GM_MIX", 0.5),
+    ]
+    for r in runs:
+        ideal = K_B * T * (r.x * math.log(r.x) + (1 - r.x) * math.log(1 - r.x))
+        assert r.G == pytest.approx(W * r.x * (1 - r.x) + ideal, abs=1e-12) and r.G_error == 0.0
+        assert abs(r.H - W * r.x * (1 - r.x)) < 4 * r.H_error
+        assert r.msd > md.min_msd  # it melted
+    # the free energies fit the liquid's interaction exactly
+    start = dataclasses.replace(db, parameters=[p for p in db.parameters if not p.label.startswith("G(LIQUID,AL,CU;")])
+    gm = Dataset([o for o in res.dataset if o.kind == "GM_MIX"])
+    fr = fit(start, gm, EL, {"G(LIQUID,AL,CU;0)": "a"})
+    assert fr.values[0] == pytest.approx(W * F, rel=1e-8)
+
+
+# ---------------------------------------------------------------------------- committee (phase 3)
+
+
+class Member(RegularSolution):
+    """The mock regular solution with its own L0 (eV/atom): a committee member that disagrees with the others."""
+
+    def __init__(self, l0):
+        super().__init__()
+        self.l0 = l0
+
+    def calculate(self, atoms=None, properties=("energy",), system_changes=all_changes):
+        super().calculate(atoms, properties, system_changes)
+        s = self.atoms.get_chemical_symbols()
+        x = s.count("Al") / len(s)
+        self.results["energy"] += len(s) * x * (1 - x) * (self.l0 - L0)
+
+
+COMMITTEE_FREE = {
+    "L(FCC_A1,AL,CU:VA;0)": "a",
+    "L(FCC_A1,AL,CU:VA;1)": "a",
+    "L(FCC_A1,AL,CU:VA;2)": "a",
+    "G(ALCU_THETA,AL:CU;0)": "a + 6.75*T + 2*GHSERAL + GHSERCU",
+}
+
+
+def _committee(db, l0s):
+    return mlip.committee(
+        [mlip.from_ase(Member(l0), name=f"member-{k}") for k, l0 in enumerate(l0s)],
+        db,
+        EL,
+        COMMITTEE_FREE,
+        compounds={"ALCU_THETA": ["AL:CU"]},
+        structures=THETA,
+        mixing={"FCC_A1": [0.25, 0.5, 0.75]},
+        sqs=FAST_SQS,
+        sigma=1.0,
+    )
+
+
+def test_committee_spread_reaches_the_phase_boundaries(db):
+    from discopt.calphad.uncertainty import boundary_spread
+
+    l0s = (-0.10, -0.12, -0.14)
+    com = _committee(db, l0s)
+    k = com.names.index("L(FCC_A1,AL,CU:VA;0).a")
+    np.testing.assert_allclose(com.values[:, k], np.array(l0s) * F, rtol=1e-9)  # each member's fit is exact
+    assert com.std[k] == pytest.approx(0.02 * F, rel=1e-9)
+    assert com.std[com.names.index("L(FCC_A1,AL,CU:VA;1).a")] < 1e-6  # the members agree on L1
+    assert "between" in com.summary()
+    spread = boundary_spread(com.databases(), EL, [800.0], np.linspace(0.9, 0.99, 4))
+    key = (800.0, ("FCC_A1", "LIQUID"))
+    assert spread.present(key) == 3
+    fcc = spread.ends[key][:, 0]
+    assert fcc[0] > fcc[1] > fcc[2]  # a more negative L0 stabilizes FCC, so its boundary moves to less Al
+    assert spread.std(key)[0] > 1e-3
+    assert "FCC_A1 + LIQUID" in spread.table()
+
+
+def test_posterior_databases_and_identical_members(db):
+    from discopt.calphad.uncertainty import database_at, phase_boundaries, posterior_databases
+
+    com = _committee(db, (-0.12, -0.12))
+    assert np.all(com.std < 1e-6)  # identical members: no committee spread
+    fr = com.fits[0]
+    same = database_at(fr, fr.values)
+    pick = lambda d: next(p.function for p in d.parameters if p.label == "G(FCC_A1,AL,CU:VA;0)")  # noqa: E731
+    assert float(pick(same).exprs[0].subs("T", 800)) == pytest.approx(float(pick(fr.database).exprs[0].subs("T", 800)))
+    draws = posterior_databases(fr, n=3, seed=1)
+    values = {float(pick(d).exprs[0].subs("T", 800)) for d in draws}
+    assert len(values) == 3  # θ drawn from the fit's covariance
+    with pytest.raises(ValueError, match="theta needs"):
+        database_at(fr, [1.0])
+    b = phase_boundaries(com.databases()[0], EL, 800.0, [0.95])
+    assert set(b) == {("FCC_A1", "LIQUID")}
+
+
+def test_committee_needs_two_distinct_members(db):
+    with pytest.raises(ValueError, match="at least two"):
+        mlip.committee([mlip.from_ase(Member(-0.1), name="a")], db, EL, COMMITTEE_FREE)
+    with pytest.raises(ValueError, match="distinct names"):
+        mlip.committee([mlip.from_ase(Member(-0.1), name="a")] * 2, db, EL, COMMITTEE_FREE)

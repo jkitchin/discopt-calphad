@@ -167,6 +167,69 @@ spread s is pooled over a phase's compositions by default, as for SQS.
 Relaxing random structures moves atoms more than relaxing SQS does, so the
 prototype check flags more of them.
 
+**Cluster expansion** (`method="cluster_expansion"`, settings in
+`mlip.ClusterExpansionOptions(cutoffs=(2.1, 1.5), max_size=4,
+max_structures=40, fit_method="least-squares", n_splits=5, seed=0)`) hands
+the expansion to icet; discopt-calphad only moves data between it and the
+calculator. icet enumerates every decoration of the lattice in supercells of
+up to `max_size` primitive cells (29 for FCC at size 4; a random subset of
+`max_structures`, endmembers always kept), the calculator relaxes each at its
+Vegard volume, and each gives a mixing energy relative to the relaxed
+endmembers. icet's trainstation fits the effective cluster interactions with
+`n_splits`-fold cross validation, and the expansion then predicts the
+**ideal random alloy** at each grid composition from icet's random-alloy
+cluster vector, with no sampling noise. Any composition works, not only those
+a small supercell can hold. σ_config is the cross-validation RMSE, the
+expected error for a structure the fit has not seen; an exact fit (round-off
+below 1 µeV/atom) has none, and then `model_sigma=` is required. The fit is
+kept in `MLIPResult.cluster_expansions[phase]`
+(`ClusterExpansionFit`: `.expansion` is the icet object, `.predict(atoms)`,
+`.random_alloy(y)`, `.summary()`). Training structures that leave the
+lattice on relaxation are flagged and not used. All grid points come from one
+expansion, so their errors are correlated, which a fit treating them as
+independent does not see.
+
+For EMT Cu–Au, 29 structures give a CV RMSE of 14 meV/atom (1.3 kJ/mol), and
+the predicted ΔH_mix at y = 0.25, 0.5, 0.75 (1.1, 1.3, 1.2 kJ/mol) agree with
+ten random 32-atom decorations (0.6, 1.5, 1.2 kJ/mol) within that σ. For a
+pure nearest-neighbour pair calculator, the expansion is exact.
+
+**Short-range order** (`monte_carlo=mlip.MonteCarloOptions(temperatures=(600,
+900, 1200), min_atoms=256, sweeps=200, equilibration=0.25, sro_radius=1.1,
+integrate=True, n_beta=12, seed=0)`, with `method="cluster_expansion"`). A
+random alloy has no short-range order, but a real one at finite temperature
+prefers like or unlike neighbours, which lowers its enthalpy and its entropy
+of mixing. With `monte_carlo=`, icet's mchammer samples the canonical
+ensemble of the cluster expansion in an n×n×n supercell at each temperature,
+and the data become:
+
+- `HM_MIX` at each temperature: ⟨ΔH_mix⟩, with σ² = CV RMSE² + (statistical
+  error)² + σ_model²; the statistical error is mchammer's, which accounts for
+  the correlation length of the run;
+- `SM_MIX` at each temperature (with `integrate=True`), by thermodynamic
+  integration in β = 1/kT from infinite temperature, where the alloy is random
+  and its entropy ideal: βΔG(β) = s_mix(y ln y + (1 − y) ln(1 − y)) +
+  ∫₀^β ⟨ΔH⟩ dβ′, and ΔS = (⟨ΔH⟩ − ΔG)/T. At β = 0, ⟨ΔH⟩ is the
+  expansion's random-alloy value, exactly. The rest of the integral comes from
+  `n_beta` extra Monte Carlo runs and the trapezoid rule. σ is the statistical
+  error carried through the integral, plus the energy σ divided by T (an
+  estimate); `entropy_sigma=` replaces it.
+
+The Warren–Cowley parameters α of each pair shell within `sro_radius`
+nearest-neighbour distances are in `MLIPResult.short_range_order[phase]`
+(`SROResult`: `y`, `T`, `H`, `H_error`, `alpha`, `G`, `S`, `S_error`).
+α < 0 means more unlike neighbours than at random (ordering), and α > 0 means
+fewer (clustering). The composition is the nearest one the supercell holds,
+and the observations record it. Below the expansion's ordering or miscibility
+temperature the canonical sample is no longer one solution phase. Any |α| >
+0.5 therefore warns, and such temperatures are better left out.
+
+For a clustering nearest-neighbour pair model at y ≈ 0.5, 2000 and 2800 K
+give α₁ = 0.24 and 0.14, ΔS = 4.7 and 5.3 J/(mol K) against 5.76 ideal, ΔG
+below the Gibbs–Bogoliubov bound ΔH_random − TΔS_ideal, and −dΔG/dT equal to
+ΔS within 5%. Fitted with `L0 = a + b*T`, the data give b > 0: the entropy
+that short-range order removes is what a T coefficient in L carries.
+
 **σ_model** is the error of the calculator itself, which no spread over
 structures can see, and it is usually the larger part. In the Al–Cu example,
 the SQS spreads are 0.1 to 1.3 kJ/mol, while UMA differs from the assessment
@@ -230,11 +293,84 @@ mechanically unstable. It has no vibrational entropy, so it is flagged and left
 out. EMT makes BCC Cu and θ-Al₂Cu unstable in this way. Solution phases
 (phonons of SQS or random decorations) are not computed yet.
 
+## Liquids: MD and thermodynamic integration
+
+A liquid has no lattice, so SQS and cluster expansions do not apply.
+`compute(..., liquid={"LIQUID": [0.25, 0.5, 0.75]}, md=mlip.LiquidOptions(...))`
+runs molecular dynamics with the calculator instead, at each of
+`LiquidOptions.temperatures` (default 1500 K) and at `pressure` (GPa, default
+0; `None` keeps the volume fixed), with ASE's Langevin BAOAB integrator and a
+hydrostatic barostat. Each run starts from a random decoration of an FCC
+supercell of at least `atoms` atoms (default 108) at the Vegard volume, melts
+at `melt_factor` × T, equilibrates at T, and samples. Two kinds of data come
+out, per mole of atoms:
+
+- `HM_MIX` at T: ⟨H⟩(x) − x⟨H⟩(A) − (1 − x)⟨H⟩(B), with H the potential
+  energy plus PV (the kinetic energy cancels), and σ from block averages;
+- `GM_MIX` at T, by alchemical thermodynamic integration. One atom is turned
+  from B into A along U(λ) = (1 − λ)U_B + λU_A, and ΔF = ∫⟨U_A − U_B⟩_λ dλ
+  (Gauss–Legendre, `n_lambda` points) is the excess part of μ_A − μ_B at
+  x = (N_A + ½)/N. A polynomial (`degree`) fitted to ΔF at `n_mu` compositions
+  from x ≈ 0 to x ≈ 1 integrates, by Gibbs–Duhem, to
+  G_xs(x) = ∫₀ˣ p − x∫₀¹ p. The ideal term is added analytically. No absolute
+  free energy of either pure liquid is needed, and the atoms' masses only add a
+  constant, which cancels. σ comes from the λ-runs' block errors, carried
+  through the fit.
+
+With `GM_MIX` and `HM_MIX` at one or more temperatures, a fit determines both
+the a and the b of a liquid `L = a + b*T`. The runs are in
+`MLIPResult.liquids[phase]` (`LiquidResult`: `x`, `T`, `H`, `H_error`, `G`,
+`G_error`, `volume`, `msd`). A run whose mean-square displacement while
+sampling stays below `min_msd` (1 Å²) did not melt, and it warns.
+
+This is the expensive part of the pipeline: (2 + grid + `n_mu` × `n_lambda`)
+runs per temperature, each `melt_steps + equilibration_steps + steps` MD steps
+(the transmutation runs at the same composition share one melt, and each costs
+two calculator calls per step). The dynamics are classical, so there are no
+quantum nuclear effects. For a species-blind Lennard-Jones liquid with a
+mean-field term N w x(1 − x), `GM_MIX` is exactly w x(1 − x) plus the ideal
+term, a fit recovers L₀ = w, and `HM_MIX` agrees with w x(1 − x) within its σ.
+
+## Committee uncertainty, carried to the diagram
+
+The σ of each data point (σ_model from `model_sigma=` or a committee spread
+through `from_ase(..., uncertainty=)`) assumes the calculator's errors are
+independent from point to point. They are not: a potential that overbinds
+one compound tends to overbind its neighbours. A **committee** keeps that
+correlation. `mlip.committee(models, db, elements, free, **compute_kwargs)`
+computes the data with each member (several networks of an ensemble, or
+different potentials), fits each dataset with the same free parameters
+(`fit_options=` passes keyword arguments to `fit`), and returns a
+`Committee`:
+
+- `.values` (members × coefficients), `.mean`, `.std` and `.covariance` of
+  the fitted coefficients across members; `.summary()` sets the spread between
+  members beside the fits' own σ (within);
+- `.databases()`, one fitted database per member, or with
+  `samples_per_member=n`, n draws from each member's posterior, so the
+  ensemble holds both the within-member and the between-member spread.
+
+`discopt.calphad.uncertainty` takes any list of databases to the diagram.
+`boundary_spread(databases, elements, temperatures, xs)` maps each one at each
+temperature over the composition grid. It finds every two-phase region's
+tie-line ends (the median over the grid points inside it) and returns a
+`BoundarySpread`: `.ends[(T, (phase, phase))]` is an array of the ends per
+database (`nan` where a database lacks the region), with `.present`,
+`.mean`, `.std` and `.table()`. `phase_boundaries(db, elements, T, xs)` does
+it for one database. `posterior_databases(fit_result, n)` draws θ from a
+single fit's covariance instead, and `database_at(fit_result, theta)` builds the
+database for any θ. The equilibria skip the global certificate by default
+(`certify="none"`), since an ensemble needs many; pass `certify="final"` to
+certify each.
+
+For three mock members whose L0(FCC_A1) are −0.10, −0.12 and −0.14 eV/atom,
+the fitted L0 spread is exactly 0.02 eV (1.9 kJ/mol), and at 800 K the
+FCC_A1 + LIQUID boundary on the FCC side is at x(Al) = 0.9954, 0.9939 and
+0.9918: 0.994 ± 0.002.
+
 ## Not yet (later phases of issue #5)
 
 - vibrational entropies of solution phases (phonons of SQS or random
   decorations);
-- `method="cluster_expansion"` through icet, short-range order by Monte
-  Carlo, and liquids by MD and thermodynamic integration;
 - ternary mixing data, and per-source weighting in the fit;
 - choosing which structures to compute (`discopt.doe`), and active learning.

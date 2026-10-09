@@ -38,7 +38,7 @@ def test_lens_tie_line(lens_result):
     res = lens_result
     xl, xs = lens(1250.0)
     assert xs < 0.5 < xl
-    assert res.certificate.level == CertificateLevel.CERTIFIED_TO_TOLERANCE
+    assert res.certificate.level >= CertificateLevel.CERTIFIED_TO_TOLERANCE  # GLOBALLY_CERTIFIED with discopt 0.9
     assert res.phase_names == ["FCC_A1", "LIQUID"]
     by = {cs.phase.name: cs for cs in res.composition_sets}
     assert by["LIQUID"].x[0] == pytest.approx(xl, abs=1e-6)
@@ -55,7 +55,7 @@ def test_lens_tie_line(lens_result):
 )
 def test_phase_appearance_and_disappearance(T, start, stable):
     res = equilibrium([LIQ, FCC], x=0.5, T=T, eps=EPS, initial_sets=[CompositionSet(start, [0.5], 1.0)])
-    assert res.certificate.level == CertificateLevel.CERTIFIED_TO_TOLERANCE
+    assert res.certificate.level >= CertificateLevel.CERTIFIED_TO_TOLERANCE  # GLOBALLY_CERTIFIED with discopt 0.9
     assert res.phase_names == [stable]
     assert any(start.name in [s.phase.name for s in rec.removed] for rec in res.history)
     (cs,) = res.composition_sets
@@ -101,7 +101,7 @@ def hull_reference(phases, T, x):
 def test_three_phase_system_matches_convex_hull(x):
     res = equilibrium(PHASES3, x=x, T=T3, eps=EPS)
     g_ref, present = hull_reference(PHASES3, T3, x)
-    assert res.certificate.level == CertificateLevel.CERTIFIED_TO_TOLERANCE, res.summary()
+    assert res.certificate.level >= CertificateLevel.CERTIFIED_TO_TOLERANCE, res.summary()
     assert res.G == pytest.approx(g_ref, abs=1e-7)
     assert set(res.phase_names) == present
 

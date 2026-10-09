@@ -7,8 +7,10 @@ Two kinds of data come out:
   the same model so that systematic errors largely cancel;
 - **mixing enthalpies** (``HM_MIX``) of a solution phase on its own lattice,
   relative to the phase's pure endmembers, from special quasirandom
-  structures (``method="sqs"``) or averaged over random decorations
-  (``method="random"``).
+  structures (``method="sqs"``), averaged over random decorations
+  (``method="random"``), or predicted for the random alloy by a cluster
+  expansion that icet fits to enumerated structures
+  (``method="cluster_expansion"``).
 
 Every value is a 0 K energy standing in for an enthalpy at 298.15 K, and each
 observation records that approximation in its ``note``. The pure elements are
@@ -22,7 +24,9 @@ never fitted: their SGTE descriptions stay as they are.
   (``pool=True``) the variances of every composition of a phase are pooled,
   Σ(n_i − 1)s_i² / Σ(n_i − 1), so nine compositions with two SQS each give
   one σ_config with nine degrees of freedom. ``pool=False`` keeps one σ per
-  composition. A formation enthalpy comes from one structure and has no
+  composition. With random decorations it is the standard error of their
+  mean, and with a cluster expansion the cross-validation RMSE of the
+  expansion. A formation enthalpy comes from one structure and has no
   σ_config.
 - **σ_model** is the calculator's own error, which no spread can see. It is
   ``model_sigma=`` (kJ/mol, a number or a dict by phase) when given, and
@@ -62,6 +66,10 @@ __all__ = ["APPROXIMATION", "MLIPResult", "compute", "dataset", "reference_energ
 #: recorded on every observation made here
 APPROXIMATION = "0 K energy used as the enthalpy at 298.15 K"
 #: recorded instead when phonons are computed
+#: recorded on cluster-expansion data
+CE_NOTE = APPROXIMATION + "; random alloy from a cluster expansion"
+MD_NOTE = "classical MD at temperature (enthalpy), alchemical thermodynamic integration (free energy)"
+MC_NOTE = "canonical Monte Carlo on a cluster expansion of 0 K energies, short-range order included"
 PHONON_NOTE = "static energy plus {kind} vibrational enthalpy (zero point and thermal) at 298.15 K"
 
 
@@ -78,6 +86,12 @@ class MLIPResult:
     relaxations: list[Relaxation] = field(default_factory=list)
     #: (label, relaxation) for every structure that left its prototype
     flagged: list[tuple[str, Relaxation]] = field(default_factory=list)
+    #: phase -> :class:`~discopt.calphad.mlip.cluster_expansion.ClusterExpansionFit` (method="cluster_expansion")
+    cluster_expansions: dict = field(default_factory=dict)
+    #: phase -> list of :class:`~discopt.calphad.mlip.monte_carlo.SROResult` (``monte_carlo=``)
+    short_range_order: dict = field(default_factory=dict)
+    #: phase -> list of :class:`~discopt.calphad.mlip.liquid.LiquidResult` (``liquid=``)
+    liquids: dict = field(default_factory=dict)
 
     def table(self) -> str:
         lines = [
@@ -357,16 +371,32 @@ def _formation(
 
 
 def _mixing(
-    model, db, elements, mixing, method, policy, structures, sigma, model_sigma, pool, T, sqs, result, random=None
+    model,
+    db,
+    elements,
+    mixing,
+    method,
+    policy,
+    structures,
+    sigma,
+    model_sigma,
+    pool,
+    T,
+    sqs,
+    result,
+    random=None,
+    cluster_expansion=None,
+    monte_carlo=None,
+    entropy_sigma=None,
 ):
     from discopt.calphad.fit import Observation
     from discopt.calphad.mlip import random_alloy
     from discopt.calphad.mlip.sqs import SQSOptions, generate
 
-    if method not in ("sqs", "random"):
-        raise NotImplementedError(
-            f"method={method!r}: use 'sqs' or 'random' ('cluster_expansion' comes later, see issue #5)"
-        )
+    if method not in ("sqs", "random", "cluster_expansion"):
+        raise ValueError(f"method={method!r}: use 'sqs', 'random' or 'cluster_expansion'")
+    if monte_carlo is not None and method != "cluster_expansion":
+        raise ValueError("monte_carlo= samples a cluster expansion: use it with method='cluster_expansion'")
     options = sqs or SQSOptions()
     roptions = random or random_alloy.RandomOptions()
     tag = "SQS" if method == "sqs" else "random"
@@ -400,6 +430,26 @@ def _mixing(
                     "ΔH_mix needs it. Try RelaxPolicy(mode='symmetry')"
                 )
             ends[e] = rel
+        if method == "cluster_expansion":
+            _cluster_expansion(
+                model,
+                name,
+                ps,
+                m,
+                elements,
+                fixed,
+                ends,
+                grid,
+                policy,
+                cluster_expansion,
+                sigma,
+                model_sigma,
+                T,
+                result,
+                monte_carlo,
+                entropy_sigma,
+            )
+            continue
         points = []
         for y in np.atleast_1d(np.asarray(grid, float)):
             y = float(y)
@@ -489,6 +539,163 @@ def _mixing(
             )
 
 
+def _cluster_expansion(
+    model,
+    name,
+    ps,
+    m,
+    elements,
+    fixed,
+    ends,
+    grid,
+    policy,
+    options,
+    sigma,
+    model_sigma,
+    T,
+    result,
+    monte_carlo=None,
+    entropy_sigma=None,
+):
+    """HM_MIX of the random alloy on ``grid``, from a cluster expansion fitted to enumerated structures."""
+    from discopt.calphad.fit import Observation
+    from discopt.calphad.mlip import cluster_expansion as cem
+    from discopt.calphad.mlip import monte_carlo as mcm
+
+    options = options or cem.ClusterExpansionOptions()
+    va, vb = _volume(ends[elements[0]]), _volume(ends[elements[1]])
+    cs, symbol, candidates = cem.training_structures(ps, m, elements, fixed, vb, options)
+    n_mix = sum(len(c) > 1 for c in cs.chemical_symbols)
+    n_prim = len(cs.primitive_structure)
+    train, energies, relaxed = [], [], []
+    for k, ideal in enumerate(candidates):
+        y = cem._site_fraction(ideal, elements, n_mix * len(ideal) // n_prim)
+        atoms = ideal.copy()
+        v = y * va + (1 - y) * vb
+        atoms.set_cell(ideal.cell * (v / (ideal.get_volume() / len(ideal))) ** (1 / 3), scale_atoms=True)
+        rel = _relax(model, [atoms], policy)[0]
+        if not _check(f"{name} CE training #{k} {ideal.get_chemical_formula()}", rel, result, False):
+            continue
+        train.append(ideal)
+        relaxed.append(atoms)
+        energies.append(
+            rel.energy_per_atom - y * ends[elements[0]].energy_per_atom - (1 - y) * ends[elements[1]].energy_per_atom
+        )
+    ce = cem.fit(cs, symbol, elements, train, energies, options)
+    result.cluster_expansions[name] = ce
+    # an exact fit leaves only round-off (~1e-17 eV/atom); below 1 µeV/atom the expansion has no error to report
+    cfg = ce.rmse_validation * EV_TO_J_PER_MOL if ce.rmse_validation > 1e-6 else 0.0
+    given = _kj(sigma, name, "sigma")
+    unc = _kj(model_sigma, name, "model_sigma")
+    if given is None and unc is None:
+        u = _model_sigma(model, relaxed)
+        unc = None if u is None else u * EV_TO_J_PER_MOL
+        if unc is None:
+            warnings.warn(
+                f"{name}: σ covers only the cluster expansion's cross-validation error, not the error of "
+                f"{model.name}; pass model_sigma= (kJ/mol) to include it",
+                stacklevel=4,
+            )
+    dof = None if given is not None else len(train) - ce.n_parameters
+
+    def add(kind, t, y, value, sig, config, note, unit=1000.0):
+        sf = tuple({elements[0]: y, elements[1]: 1 - y} if s == m else {fixed[s]: 1.0} for s in range(len(fixed) + 1))
+        x = y * n_mix / n_prim  # mole fraction: the other sites hold one element each
+        result.dataset.add(
+            Observation(kind, t, value, sig, phase=name, x=x, site_fractions=sf, source=model.name, note=note)
+        )
+        result.rows.append(
+            {
+                "kind": kind,
+                "phase": name,
+                "config": config,
+                "x": x,
+                "value": value / unit,
+                "sigma": sig / unit,
+                "structures": len(train),
+                "sigma_dof": dof,
+            }
+        )
+
+    for y in np.atleast_1d(np.asarray(grid, float)):
+        y = float(y)
+        if monte_carlo is None:
+            sig = given if given is not None else _sigma(name, f"{name} y={y:g}", cfg, unc, single=False)
+            add("HM_MIX", T, y, ce.random_alloy(y) * EV_TO_J_PER_MOL, sig, f"y={y:g} CE", CE_NOTE)
+            continue
+        runs = mcm.short_range_order(ce, y, monte_carlo)
+        result.short_range_order.setdefault(name, []).extend(runs)
+        for r in runs:
+            strong = {k: a for k, a in r.alpha.items() if abs(a) > 0.5}
+            if strong:
+                warnings.warn(
+                    f"{name} y={r.y:g} at {r.T:g} K: Warren-Cowley {strong}; so strongly ordered or clustered that "
+                    "the sample may be below the expansion's ordering or miscibility temperature, and not one "
+                    "solution phase",
+                    stacklevel=4,
+                )
+            stat = r.H_error * EV_TO_J_PER_MOL
+            sig = given if given is not None else _sigma(name, f"{name} y={r.y:g}", math.hypot(cfg, stat), unc, False)
+            add("HM_MIX", r.T, r.y, r.H * EV_TO_J_PER_MOL, sig, f"y={r.y:g} MC {r.T:g}K", MC_NOTE)
+            if r.S is not None:
+                # the energy errors (expansion and model) taken over at T: an estimate, not a bound
+                energy = math.hypot(cfg, unc or 0.0)
+                s_sig = math.hypot(r.S_error * EV_TO_J_PER_MOL, energy / r.T)
+                if entropy_sigma is not None:
+                    s_sig = float(entropy_sigma)
+                add("SM_MIX", r.T, r.y, r.S * EV_TO_J_PER_MOL, s_sig, f"y={r.y:g} MC {r.T:g}K", MC_NOTE, 1.0)
+
+
+def _liquid(model, db, elements, liquid, options, sigma, model_sigma, result):
+    """HM_MIX and GM_MIX of liquids from MD and thermodynamic integration."""
+    from discopt.calphad.fit import Observation
+    from discopt.calphad.mlip.liquid import liquid_mixing
+
+    if len(elements) != 2:
+        raise NotImplementedError("liquid mixing data need a binary system")
+    for name, grid in liquid.items():
+        name = name.upper()
+        cons = _constituents(db, name, elements)
+        if len(cons) != 1 or not set(elements) <= set(cons[0]):
+            raise NotImplementedError(f"{name}: liquid data need one sublattice that mixes {elements}; it has {cons}")
+        runs = liquid_mixing(model, elements, grid, options)
+        result.liquids[name] = runs
+        given = _kj(sigma, name, "sigma")
+        unc = _kj(model_sigma, name, "model_sigma")
+        if given is None and unc is None:
+            warnings.warn(
+                f"{name}: σ covers only the MD statistics, not the error of {model.name}; "
+                "pass model_sigma= (kJ/mol) to include it",
+                stacklevel=3,
+            )
+        for r in runs:
+            sf = ({elements[0]: r.x, elements[1]: 1 - r.x},)
+            values = [("HM_MIX", r.H, r.H_error)]
+            if r.G is not None:
+                values.append(("GM_MIX", r.G, r.G_error))
+            for kind, v, e in values:
+                label = f"{name} {kind} x={r.x:g} {r.T:g} K"
+                sig = given if given is not None else _sigma(name, label, e * EV_TO_J_PER_MOL, unc, single=False)
+                value = v * EV_TO_J_PER_MOL
+                result.dataset.add(
+                    Observation(
+                        kind, r.T, value, sig, phase=name, x=r.x, site_fractions=sf, source=model.name, note=MD_NOTE
+                    )
+                )
+                result.rows.append(
+                    {
+                        "kind": kind,
+                        "phase": name,
+                        "config": f"x={r.x:g} MD {r.T:g}K",
+                        "x": r.x,
+                        "value": value / 1000,
+                        "sigma": sig / 1000,
+                        "structures": 1,
+                        "sigma_dof": None,
+                    }
+                )
+
+
 def _volume(rel: Relaxation) -> float:
     return abs(float(np.linalg.det(np.asarray(rel.cell)))) / rel.natoms
 
@@ -511,6 +718,10 @@ def compute(
     structures=None,
     sqs=None,
     random=None,
+    cluster_expansion=None,
+    monte_carlo=None,
+    liquid=None,
+    md=None,
     phonons=None,
     entropy_sigma: float | None = None,
     heat_capacity_sigma: float | None = None,
@@ -530,6 +741,24 @@ def compute(
     averages over random decorations instead
     (:class:`~discopt.calphad.mlip.random_alloy.RandomOptions` via ``random=``),
     and then σ_config is the standard error of the mean, s/√n.
+    ``method="cluster_expansion"`` relaxes the derivative superstructures of
+    the lattice, has icet fit a cluster expansion to them
+    (:class:`~discopt.calphad.mlip.cluster_expansion.ClusterExpansionOptions`
+    via ``cluster_expansion=``), and predicts the random alloy at each grid
+    composition; σ_config is the cross-validation RMSE, and the fit is kept in
+    :attr:`MLIPResult.cluster_expansions`. Any grid composition works.
+    With ``monte_carlo=`` (a
+    :class:`~discopt.calphad.mlip.monte_carlo.MonteCarloOptions`), mchammer
+    samples the expansion at each of its temperatures instead, so the data
+    include short-range order: ``HM_MIX`` at each temperature and, by
+    thermodynamic integration, ``SM_MIX`` (σ ``entropy_sigma`` when given).
+    The Warren–Cowley parameters are in :attr:`MLIPResult.short_range_order`.
+
+    ``liquid`` maps a liquid phase to a grid of mole fractions of the first
+    element. Molecular dynamics with ``md=`` (a
+    :class:`~discopt.calphad.mlip.liquid.LiquidOptions`) gives ``HM_MIX`` at
+    each of its temperatures, and alchemical thermodynamic integration gives
+    ``GM_MIX``; the runs are in :attr:`MLIPResult.liquids`.
 
     ``phonons`` (a :class:`~discopt.calphad.mlip.phonons.PhononOptions`)
     computes harmonic or quasi-harmonic phonons for every compound or
@@ -570,8 +799,26 @@ def compute(
         )
     if mixing:
         _mixing(
-            model, db, elements, mixing, method, policy, structures, sigma, model_sigma, pool, T, sqs, result, random
+            model,
+            db,
+            elements,
+            mixing,
+            method,
+            policy,
+            structures,
+            sigma,
+            model_sigma,
+            pool,
+            T,
+            sqs,
+            result,
+            random,
+            cluster_expansion,
+            monte_carlo,
+            entropy_sigma,
         )
+    if liquid:
+        _liquid(model, db, elements, liquid, md, sigma, model_sigma, result)
     return result
 
 

@@ -186,8 +186,8 @@ The diagram object is plain data, so other backends are possible.
 >   observation's own residual;
 > - ~~FIM-based design (step 4): #10~~ done: `discopt.calphad.design` ranks
 >   candidate measurements by their exact expected variance reduction, and
->   chooses batches greedily, or by `discopt.doe`'s Fedorov exchange when
->   discopt-doe is installed;
+>   chooses batches greedily, or by `discopt.doe`'s Fedorov exchange with
+>   the `doe` extra (`pip install 'discopt-calphad[doe]'`);
 > - ~~μ-based data in ternaries: #11~~ done. The measured phases keep the
 >   first full phase's tangent as the reference, with μ-equality rows for the
 >   others (ESPEI averages them instead; both vanish exactly at equilibrium,

@@ -379,7 +379,30 @@ fitted_alcu = fit(alcu, result.dataset, ("AL", "CU"), {"G(ALCU_THETA,AL:CU;0)": 
 - **Mixing methods.** `method="sqs"` uses a few icet SQS, with σ_config their
   spread. `method="random"` averages `RandomOptions(count=...)` independent
   random decorations, with σ_config the standard error of the mean, s/√n,
-  which more draws shrink.
+  which more draws shrink. `method="cluster_expansion"` relaxes icet's
+  enumerated structures (`ClusterExpansionOptions(max_size=4, ...)`, 29 for
+  FCC), lets icet fit a cluster expansion, and predicts the random alloy at any
+  grid composition; σ_config is the cross-validation RMSE, and the fit is in
+  `res.cluster_expansions[phase]`. An exact fit has no σ_config, so pass
+  `model_sigma=`. Add `monte_carlo=mlip.MonteCarloOptions(temperatures=...)`
+  for short-range order: mchammer samples the expansion, giving `HM_MIX` and
+  (thermodynamic integration from the random alloy) `SM_MIX` at each T, and
+  Warren–Cowley α in `res.short_range_order[phase]`. Use temperatures above
+  the expansion's ordering or miscibility temperature (|α| > 0.5 warns).
+- **Liquids.** `liquid={"LIQUID": [x, ...]}` with
+  `md=mlip.LiquidOptions(temperatures=..., atoms=108, pressure=0.0)` runs MD
+  (ASE Langevin BAOAB, barostat) for `HM_MIX` at T, and alchemical
+  thermodynamic integration (one B → A, Gibbs–Duhem over x) for `GM_MIX` at T.
+  Runs are in `res.liquids[phase]`; a run that did not melt warns (msd).
+  It is the most expensive data kind: many MD runs per temperature.
+- **Committee uncertainty to the diagram.** `mlip.committee(models, db, els,
+  free, **compute_kwargs)` fits each member's data; `.std` is the
+  between-member spread of the coefficients. Then
+  `from discopt.calphad.uncertainty import boundary_spread` and
+  `boundary_spread(com.databases(), els, temps, xs).table()` gives each
+  two-phase boundary's mean ± std over the members (`samples_per_member=n`
+  adds each fit's posterior; `posterior_databases(fit_result, n)` does that
+  for one fit).
 
 ## Conventions and pitfalls
 

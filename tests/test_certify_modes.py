@@ -120,7 +120,7 @@ def test_none_mode_multiphase_lens_matches_every():
     assert fast.phase_names == full.phase_names == ["FCC_A1", "LIQUID"]
     np.testing.assert_allclose(fast.mu, full.mu, atol=1e-7)
     assert fast.certificate.level == CertificateLevel.STABILITY_SEARCHED
-    assert full.certificate.level == CertificateLevel.CERTIFIED_TO_TOLERANCE
+    assert full.certificate.level >= CertificateLevel.CERTIFIED_TO_TOLERANCE
 
 
 def test_modes_are_exported():
