@@ -87,7 +87,8 @@ from discopt.calphad.symbolic import P, PiecewiseT, T, function_ref, function_re
 __all__ = ["Observation", "Dataset", "FreeParameter", "FitResult", "fit", "predict", "enthalpy_form", "THERMO_KINDS"]
 
 #: thermochemical data kinds, in J (or J/K) per mole of atoms
-THERMO_KINDS = ("GM", "HM", "SM", "CPM", "GM_MIX", "HM_MIX", "SM_MIX", "CPM_MIX", "HM_FORM")
+THERMO_KINDS = ("GM", "HM", "SM", "CPM", "GM_MIX", "HM_MIX", "SM_MIX", "CPM_MIX", "HM_FORM", "SM_FORM", "CPM_FORM")
+_FORM = {"HM_FORM": "H", "SM_FORM": "S", "CPM_FORM": "CP"}
 _PROP = {"GM": "G", "HM": "H", "SM": "S", "CPM": "CP"}
 #: at T = 1/R a coefficient of 1 J contributes exactly 1 to G/RT
 _T_UNIT = 1.0 / R_GAS
@@ -162,7 +163,9 @@ class Observation:
 
     ``HM_FORM`` is the enthalpy of formation per mole of atoms, relative to the
     pure elements in their reference phases: the database's ELEMENT lines, or
-    ``reference`` (one phase for every element) when it is given.
+    ``reference`` (one phase for every element) when it is given. ``SM_FORM``
+    and ``CPM_FORM`` are the entropy and heat capacity of formation, in
+    J/(mol K), on the same terms.
     ``source`` names where the value came from (``"experiment"``, ``"dft"``,
     ``"EMT"``, ...). ``note`` records an approximation made in producing it.
     """
@@ -272,8 +275,12 @@ class Dataset:
         source: str = "",
         note: str = "",
         citation: str = "",
+        kind: str = "HM_FORM",
     ) -> Dataset:
         """An enthalpy of formation (``HM_FORM``, J/mol of atoms) of one configuration of ``phase``.
+
+        ``kind="SM_FORM"`` or ``"CPM_FORM"`` gives an entropy or heat capacity of
+        formation instead, in J/(mol K).
 
         The configuration is an ``endmember`` (``"AL:CU"``, one constituent per
         sublattice), explicit ``site_fractions``, or ``x`` for a phase with one
@@ -284,7 +291,7 @@ class Dataset:
             site_fractions = tuple({c.strip(): 1.0} for c in parts)
         return self.add(
             Observation(
-                "HM_FORM",
+                kind,
                 float(T),
                 float(value),
                 float(sigma),
@@ -710,8 +717,8 @@ class _PhaseBasis:
         reference is then Σ_c y_c · (the endmember with c alone on that
         sublattice, every other sublattice as given).
         """
-        if kind == "HM_FORM":
-            raise ValueError("HM_FORM needs reference phases: use formation()")
+        if kind in _FORM:
+            raise ValueError(f"{kind} needs reference phases: use formation()")
         prop = _PROP[kind.removesuffix("_MIX")]
         y = self.y_of(x) if y is None else np.asarray(y, float)
         F = self.F(prop, y, t)
@@ -865,16 +872,19 @@ class _PhaseBasis:
         N = np.array(self.model.amounts(y), float)
         return (self.F("G", y, t) - N @ mu) / N.sum()
 
-    def formation(self, y, t: float, reference: str | None = None) -> np.ndarray:
-        """Enthalpy of formation per mole of atoms at ``y``, relative to the elements' reference phases."""
+    def formation(self, y, t: float, reference: str | None = None, prop: str = "H") -> np.ndarray:
+        """Enthalpy (``prop="S"``: entropy, ``"CP"``: heat capacity) of formation per mole of atoms at ``y``.
+
+        Relative to the elements in their reference phases.
+        """
         N = np.array(self.model.amounts(y), float)
-        out = self.F("H", y, t) / N.sum()
+        out = self.F(prop, y, t) / N.sum()
         for e, n in zip(self.lm.elements, N):
             if n > 1e-12:
                 ref = reference or self.lm.db.elements[e].reference_phase
                 if not ref:
                     raise ValueError(f"{e} has no reference phase in the database; pass reference=")
-                out = out - (n / N.sum()) * self.lm.phase(ref).pure_mu(e, t, prop="H")
+                out = out - (n / N.sum()) * self.lm.phase(ref).pure_mu(e, t, prop=prop)
         return out
 
 
@@ -886,8 +896,8 @@ def _rows(lm: _LinearModel, obs: Observation):
     if obs.kind in THERMO_KINDS:
         ph = lm.phase(obs.phase)
         y = None if obs.site_fractions is None else ph.y_from_site_fractions(obs.site_fractions)
-        if obs.kind == "HM_FORM":
-            vec = ph.formation(ph.y_of(obs.x) if y is None else y, obs.T, obs.reference)
+        if obs.kind in _FORM:
+            vec = ph.formation(ph.y_of(obs.x) if y is None else y, obs.T, obs.reference, prop=_FORM[obs.kind])
         else:
             vec = ph.thermo(obs.kind, obs.x, obs.T, y, obs.site_fractions)
         return [vec], [obs.value], [obs.sigma]

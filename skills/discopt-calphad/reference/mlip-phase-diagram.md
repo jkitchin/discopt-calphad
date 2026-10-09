@@ -94,7 +94,9 @@ print(fitted.summary())
 
 - **Fit only enthalpy constants.** 0 K data say nothing about entropy.
   `enthalpy_form` frees the constant and keeps the database's T-dependence,
-  GHSER functions included.
+  GHSER functions included. With phonons (`compute(..., phonons=...)`, which
+  adds entropies of formation), a compound's `b` can be fitted too:
+  `"a + b*T + 2*GHSERAL + GHSERCU"`.
 - **Fit every endmember of a phase that the data cover.** An endmember you
   leave out keeps the assessment's value, and it can then dominate. In one
   eval, an unfitted Al₃Ni₂ endmember at −427 kJ kept the phase stable although

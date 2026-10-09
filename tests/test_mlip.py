@@ -269,10 +269,10 @@ def test_emt_pipeline_end_to_end(db):
     assert eq.composition_sets
 
 
-def test_only_sqs_in_phase_one(db):
+def test_unknown_mixing_method(db):
     model = mlip.from_ase(RegularSolution(), name="mock")
-    with pytest.raises(NotImplementedError, match="'sqs' only"):
-        mlip.compute(model, db, EL, mixing={"FCC_A1": [0.5]}, method="random", sigma=1.0)
+    with pytest.raises(NotImplementedError, match="cluster_expansion"):
+        mlip.compute(model, db, EL, mixing={"FCC_A1": [0.5]}, method="cluster_expansion", sigma=1.0)
 
 
 # ---------------------------------------------------------------------------- fit extensions
@@ -419,3 +419,174 @@ def test_sqs_mixing_on_a_sublattice_that_also_allows_vacancies():
     assert len(mix) == 3 and all("VA" not in o.site_fractions[0] or o.site_fractions[0]["VA"] == 0 for o in mix)
     fr = fit(db, res.dataset, EL, {"L(BX,AL,CU:CU;0)": "a", "L(BX,AL,CU:CU;1)": "a"})
     assert fr.chi2 < 1e-12  # the mock's energy is cubic in y, which L0 and L1 represent exactly
+
+
+# ---------------------------------------------------------------------------- method="random" (#5 phase 2)
+
+
+class BondCounting(Calculator):
+    """E = J x (number of unlike nearest-neighbour pairs); no forces. Its random-alloy average is exact."""
+
+    implemented_properties = ["energy", "forces", "stress"]
+    J = 0.05  # eV per unlike pair
+
+    def calculate(self, atoms=None, properties=("energy",), system_changes=all_changes):
+        from ase.neighborlist import neighbor_list
+
+        super().calculate(atoms, properties, system_changes)
+        d = neighbor_list("d", self.atoms, 4.0)
+        nn = d.min() * 1.05
+        i, j = neighbor_list("ij", self.atoms, nn)
+        s = np.array(self.atoms.get_chemical_symbols())
+        unlike = int(np.sum(s[i] != s[j])) // 2  # each pair is listed twice
+        n = len(self.atoms)
+        self.results = {"energy": self.J * unlike, "forces": np.zeros((n, 3)), "stress": np.zeros(6)}
+
+
+def test_random_decorations_average_to_the_random_alloy(db):
+    from discopt.calphad.mlip.random_alloy import RandomOptions, supercell
+
+    model = mlip.from_ase(BondCounting(), name="bonds")
+    opts = RandomOptions(count=40, min_atoms=32, max_atoms=32, seed=3)
+    res = mlip.compute(
+        model,
+        db,
+        EL,
+        mixing={"FCC_A1": [0.25, 0.5]},
+        method="random",
+        random=opts,
+        relax=mlip.RelaxPolicy(mode="fixed"),
+        pool=False,
+        sigma=None,
+    )
+    for o, row in zip([o for o in res.dataset if o.kind == "HM_MIX"], res.rows):
+        y = o.site_fractions[0]["AL"]
+        rep = supercell(4, 4, y, opts)
+        N = 4 * rep[0] * rep[1] * rep[2]
+        k = round(y * N)
+        theory = BondCounting.J * 6 * 2 * k * (N - k) / (N * (N - 1)) * F  # 6 bonds per fcc atom, J/mol
+        assert row["structures"] == 40 and row["sigma_dof"] == 39
+        assert abs(o.value - theory) < 4 * o.sigma  # the mean agrees with theory within its standard error
+        assert 0 < o.sigma < 0.3 * abs(theory)
+
+
+def test_random_sigma_is_the_standard_error(db):
+    """σ_config = s/√n: quadrupling the draws halves σ (same spread)."""
+    model = mlip.from_ase(BondCounting(), name="bonds")
+    sig = {}
+    for n in (8, 32):
+        with pytest.warns(UserWarning, match="only the configurational"):
+            res = mlip.compute(
+                model,
+                db,
+                EL,
+                mixing={"FCC_A1": [0.5]},
+                method="random",
+                random=mlip.RandomOptions(count=n, min_atoms=32, max_atoms=32),
+                relax=mlip.RelaxPolicy(mode="fixed"),
+            )
+        sig[n] = res.dataset.observations[0].sigma
+    assert sig[32] == pytest.approx(sig[8] / 2, rel=0.5)  # s itself is an estimate, so only roughly
+
+
+def test_random_method_with_emt(db):
+    model = mlip.from_ase(EMT(), name="EMT")
+    res = mlip.compute(
+        model,
+        db,
+        EL,
+        mixing={"FCC_A1": [0.25, 0.5, 0.75]},
+        method="random",
+        random=mlip.RandomOptions(count=3, min_atoms=8, max_atoms=16),
+        model_sigma=2.0,
+    )
+    mix = [o for o in res.dataset if o.kind == "HM_MIX"]
+    assert len(mix) == 3 and not res.flagged and all(o.sigma > 2000.0 for o in mix)
+    assert [r["structures"] for r in res.rows] == [3, 3, 3]
+
+
+# ---------------------------------------------------------------------------- phonons (#5 phase 2)
+
+CUAU_TDB = """
+ELEMENT VA VACUUM 0 0 0 !
+ELEMENT AU FCC_A1 196.97 6017 47.488 !
+ELEMENT CU FCC_A1 63.546 5004.1 33.15 !
+FUNCTION GHSERAU 298.15 -6938.856+106.830098*T-22.75455*T*LN(T); 6000 N !
+FUNCTION GHSERCU 298.15 -7770.458+130.485235*T-24.112392*T*LN(T); 6000 N !
+PHASE FCC_A1 % 2 1 1 ! CONSTITUENT FCC_A1 :AU,CU:VA: !
+PARAMETER G(FCC_A1,AU:VA;0) 298.15 GHSERAU#; 6000 N !
+PARAMETER G(FCC_A1,CU:VA;0) 298.15 GHSERCU#; 6000 N !
+PHASE CU3AU % 2 0.75 0.25 ! CONSTITUENT CU3AU :CU:AU: !
+PARAMETER G(CU3AU,CU:AU;0) 298.15 -2000+0.75*GHSERCU#+0.25*GHSERAU#; 6000 N !
+"""
+R = 8.314462618
+
+
+def test_harmonic_thermodynamics_of_einstein_modes():
+    from discopt.calphad.mlip.phonons import K_B, thermo_from_modes
+
+    e, T = 0.02, 300.0
+    th = thermo_from_modes(np.full(300, e), T)
+    x = e / (K_B * T)
+    assert th["S"] * F == pytest.approx(3 * R * (x / np.expm1(x) - np.log1p(-np.exp(-x))), rel=1e-10)
+    assert th["Cv"] * F == pytest.approx(3 * R * x * x * np.exp(x) / np.expm1(x) ** 2, rel=1e-10)
+    assert thermo_from_modes(np.full(300, e), 0.0)["U"] == pytest.approx(1.5 * e)  # zero-point energy
+
+
+def test_phonons_of_emt_copper():
+    from discopt.calphad.mlip.phonons import PhononOptions, harmonic, quasi_harmonic
+
+    model = mlip.from_ase(EMT(), name="EMT")
+    cu = model.relax([mlip.PHASES["FCC_A1"].build(("CU", "VA"), mlip.atomic_volume("Cu"))])[0].atoms()
+    vib = harmonic(model, cu)
+    assert vib.imaginary_fraction == 0.0
+    assert 25.0 < vib.S(298.15) * F < 40.0  # experiment: 33.15 J/(mol K)
+    assert vib.Cp(1500.0) * F == pytest.approx(3 * R, rel=0.01)  # the classical limit
+    assert (vib.H(298.15) - vib.H(0.0)) * F == pytest.approx(5004.1, rel=0.15)  # the database's H298 - H0
+    qha = quasi_harmonic(model, cu, PhononOptions(quasi_harmonic=True))
+    assert qha.volume(800.0) > qha.volume(100.0)  # thermal expansion
+    assert qha.S(800.0) > vib.S(800.0)
+    # BCC Cu is mechanically unstable in EMT
+    bcc = model.relax([mlip.PHASES["BCC_A2"].build(("CU", "VA"), mlip.atomic_volume("Cu"))])[0].atoms()
+    assert harmonic(model, bcc).imaginary_fraction > 1e-3
+
+
+def test_phonon_entropies_fix_the_temperature_coefficient():
+    from discopt.calphad import ThermoDatabase
+    from discopt.calphad.fit import predict
+
+    db = ThermoDatabase.from_string(CUAU_TDB)
+    els = ("AU", "CU")
+    model = mlip.from_ase(EMT(), name="EMT")
+    kw = dict(compounds={"CU3AU": ["CU:AU"]}, structures={"CU3AU": ("L1_2", ["3c"], ["1a"])}, model_sigma=1.0)
+    opts = mlip.PhononOptions(temperatures=(300.0, 600.0, 900.0))
+    with pytest.raises(ValueError, match="entropy_sigma"):
+        mlip.compute(model, db, els, phonons=opts, **kw)
+    res = mlip.compute(model, db, els, phonons=opts, entropy_sigma=0.2, **kw)
+    s = [o for o in res.dataset if o.kind == "SM_FORM"]
+    h = next(o for o in res.dataset if o.kind == "HM_FORM")
+    assert [o.T for o in s] == [300.0, 600.0, 900.0] and "harmonic vibrational" in h.note
+    static = mlip.compute(model, db, els, **kw).dataset.observations[0]
+    assert h.value != pytest.approx(static.value, abs=1.0)  # the vibrational enthalpy at 298 K changes it
+    free = {"G(CU3AU,CU:AU;0)": "a + b*T + 0.75*GHSERCU + 0.25*GHSERAU"}
+    fr = fit(db, res.dataset, els, free)
+    # S of formation of the model is -b, so b is minus the mean of the (equally weighted) entropies
+    assert fr.parameters["G(CU3AU,CU:AU;0).b"] == pytest.approx(-np.mean([o.value for o in s]), rel=1e-6)
+    assert predict(fr.database, [h], els)[0] == pytest.approx(h.value, abs=1e-3)
+
+
+def test_a_dynamically_unstable_compound_is_flagged(db):
+    """EMT makes θ-Al2Cu (C16) dynamically unstable: imaginary modes persist when fully relaxed."""
+    model = mlip.from_ase(EMT(), name="EMT")
+    with pytest.warns(UserWarning, match="imaginary phonon modes"):
+        res = mlip.compute(
+            model,
+            db,
+            EL,
+            compounds={"ALCU_THETA": ["AL:CU"]},
+            structures=THETA,
+            model_sigma=2.0,
+            phonons=mlip.PhononOptions(),
+            entropy_sigma=0.5,
+        )
+    assert len(res.dataset) == 0 and "imaginary" in res.flagged[0][1].reason

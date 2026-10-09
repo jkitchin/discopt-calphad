@@ -155,9 +155,17 @@ degrees of freedom, good to about 25%. `pool=False` keeps one σ per
 composition. Raising `SQSOptions(count=)` improves either; about 7 structures
 per composition give 30% on their own, and 13 give 20%. SQS are optimized
 structures, not random draws, so their spread is mostly a finite-size effect
-and tends to understate the configurational variance. Independent random
-decorations (`method="random"`, a later phase) will give a spread with clean
-statistics.
+and tends to understate the configurational variance.
+
+**Random decorations** (`method="random"`, settings in
+`mlip.RandomOptions(count=8, min_atoms=16, max_atoms=64, seed=0)`) average
+the mixing enthalpy over `count` independent random decorations of a
+supercell that holds the composition exactly. No SQS tool is needed. The value
+is their mean, and σ_config is its **standard error**, s/√n: the draws are
+independent samples of the random-alloy average, so more draws shrink it. The
+spread s is pooled over a phase's compositions by default, as for SQS.
+Relaxing random structures moves atoms more than relaxing SQS does, so the
+prototype check flags more of them.
 
 **σ_model** is the error of the calculator itself, which no spread over
 structures can see, and it is usually the larger part. In the Al–Cu example,
@@ -194,10 +202,38 @@ cannot tell that a model's weights changed: give a changed model a new label.
 Everything runs in the calling process, one structure at a time. There is no
 job submission.
 
+## Phonons: entropies, heat capacities, H(298) − H(0)
+
+`compute(..., phonons=mlip.PhononOptions(), entropy_sigma=0.3)` computes
+phonons by finite displacements (`ase.phonons`, no extra dependency) for every
+compound or endmember and for the elements' reference structures. The
+thermodynamics are exact sums over a Monkhorst–Pack mesh (Γ excluded), 3 modes
+per atom. Then:
+
+- the formation enthalpy is reported at 298.15 K: static energy plus the
+  vibrational enthalpy, zero-point energy included;
+- `SM_FORM` observations give the entropy of formation at
+  `PhononOptions.temperatures` (default 298.15, 600, 900 K), with σ
+  `entropy_sigma` in J/(mol K);
+- with `heat_capacity=True`, `CPM_FORM` observations do the same for heat
+  capacity, with σ `heat_capacity_sigma`.
+
+These are what fix a parameter's T coefficient, which 0 K energies cannot. In
+`a + b*T + ...`, the entropy of formation is −b per formula unit's atoms.
+`quasi_harmonic=True` repeats the phonons at isotropic `strains` and
+minimizes F(V, T) for G(T), which adds thermal expansion. For EMT copper, S(298)
+is 30.9 J/(mol K) (experiment 33.15), H(298) − H(0) is 4731 J/mol (the database
+uses 5004), and Cv reaches 3R.
+
+A structure with imaginary modes (more than `imaginary_tolerance` of them) is
+mechanically unstable. It has no vibrational entropy, so it is flagged and left
+out. EMT makes BCC Cu and θ-Al₂Cu unstable in this way. Solution phases
+(phonons of SQS or random decorations) are not computed yet.
+
 ## Not yet (later phases of issue #5)
 
-- `method="random"` (averages over random decorations) and harmonic phonons
-  (S_vib, Cp, H(298) − H(0));
+- vibrational entropies of solution phases (phonons of SQS or random
+  decorations);
 - `method="cluster_expansion"` through icet, short-range order by Monte
   Carlo, and liquids by MD and thermodynamic integration;
 - ternary mixing data, and per-source weighting in the fit;
