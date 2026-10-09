@@ -231,7 +231,7 @@ Discrepancies with discopt that the certificate must handle:
 
 ```
 discopt-calphad/                       # setuptools, src layout, uv, py3.12, MIT
-  pyproject.toml                       # name discopt-calphad, include discopt.calphad*, discopt>=0.8
+  pyproject.toml                       # name discopt-calphad, include discopt.calphad*, discopt>=0.9
   src/discopt/calphad/                 # PEP 420 namespace subpackage (no src/discopt/__init__.py)
     __init__.py                        # public API + __all__
     objects.py                         # Element, Species, Sublattice, PhaseModel, CompositionSet, ...

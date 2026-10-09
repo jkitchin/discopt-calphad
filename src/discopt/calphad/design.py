@@ -20,9 +20,8 @@ huge but finite variance, and a candidate that determines it ranks first.
   candidate that most improves the A-criterion (summed variance of the chosen
   coefficients) or the D-criterion (log det of the information), with exact
   multi-row updates. With ``method="exchange"`` it uses ``discopt.doe``'s
-  modified Fedorov exchange instead. That needs discopt-doe, installed
-  separately (it requires discopt ≥ 0.9 and Python ≥ 3.12), and candidates with
-  a single row each.
+  modified Fedorov exchange instead. That needs discopt-doe (the ``doe``
+  extra) and candidates with a single row each.
 
 A candidate is an :class:`~discopt.calphad.fit.Observation` (or a
 :class:`~discopt.calphad.fit.Dataset` of them). Its ``value`` is not used,
@@ -175,10 +174,7 @@ def design_measurements(
         try:
             from discopt.doe import candidate_exchange_design
         except ImportError as err:
-            raise ImportError(
-                "method='exchange' needs discopt-doe (pip install discopt-doe; it requires discopt >= 0.9 "
-                "and Python >= 3.12)"
-            ) from err
+            raise ImportError("method='exchange' needs discopt-doe: pip install 'discopt-calphad[doe]'") from err
         prior = F0
         res = candidate_exchange_design(
             list(range(len(cands))),

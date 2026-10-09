@@ -7,12 +7,12 @@ name = "discopt-calphad"
 version = "0.0.1"
 description = "Certified CALPHAD phase equilibrium plugin for the discopt modeling language"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "John Kitchin", email = "jkitchin@andrew.cmu.edu" }]
 dependencies = [
-    "discopt>=0.8",
+    "discopt>=0.9",
     "numpy>=1.24",
     "scipy>=1.10",
     "sympy>=1.12",
@@ -25,6 +25,8 @@ plot = ["matplotlib>=3.7"]
 mlip = ["ase>=3.23", "spglib>=2.0"]
 # SQS generation (and later cluster expansions) through icet
 sqs = ["ase>=3.23", "spglib>=2.0", "icet>=3.1,<5"]
+# Fedorov exchange designs (design_measurements(method="exchange"))
+doe = ["discopt-doe>=0.4"]
 
 [dependency-groups]
 dev = [
@@ -35,6 +37,7 @@ dev = [
     "ase>=3.23",
     "spglib>=2.0",
     "icet>=3.1,<5",
+    "discopt-doe>=0.4",
 ]
 docs = [
     "mkdocs>=1.6,<2",  # MkDocs 2 drops the plugin system that Material and mkdocstrings use
@@ -44,7 +47,7 @@ docs = [
 
 [tool.ruff]
 line-length = 120
-target-version = "py310"
+target-version = "py312"
 extend-exclude = ["docs_hooks.py"]
 
 [tool.ruff.format]
