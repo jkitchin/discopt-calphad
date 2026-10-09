@@ -731,6 +731,11 @@ class _PhaseBasis:
                 return self.F(prop, y, t) / N[k]
         raise ValueError(f"{self.name} has no pure-{element} endmember to use as a reference")
 
+    def tangent_row(self, y, mu: np.ndarray, t: float) -> np.ndarray:
+        """(G − μ·N)/ΣN at fixed site fractions ``y``, per mole of atoms, as a row linear in θ."""
+        N = np.array(self.model.amounts(y), float)
+        return (self.F("G", y, t) - N @ mu) / N.sum()
+
     def driving_force(self, mu: np.ndarray, t: float) -> np.ndarray:
         """min over composition of (G − μ·N)/ΣN, per mole of atoms, as a row linear in θ.
 
@@ -782,6 +787,26 @@ def _rows(lm: _LinearModel, obs: Observation):
     return _zpf_rows(lm, obs)
 
 
+def _zpf_reference(lm: _LinearModel, obs: Observation):
+    """μ rows of a phase-equilibrium observation, and the compounds it did not use to fix them.
+
+    From the tangent of the first phase with a measured composition, or, without
+    one, from two compounds (binary only).
+    """
+    known = [(lm.phase(n), x) for n, x in obs.phases if lm.phase(n).model.n_y > 0 and x is not None]
+    comps = [lm.phase(n) for n, _ in obs.phases if lm.phase(n).model.n_y == 0]
+    if known:
+        return known[0][0].mu(known[0][1], obs.T), comps
+    if len(lm.elements) != 2 or len(comps) < 2:
+        raise ValueError("ZPF: μ needs a measured composition or, in a binary, two compounds")
+    a, b = comps[0], comps[1]
+    Nmat = np.array([a.model.amounts(), b.model.amounts()], float)
+    if abs(np.linalg.det(Nmat)) < 1e-12:
+        raise ValueError(f"ZPF: {a.name} and {b.name} have the same composition and cannot fix μ")
+    ref = np.linalg.solve(Nmat, np.array([a.F("G", np.empty(0), obs.T), b.F("G", np.empty(0), obs.T)]))
+    return ref, comps[2:]
+
+
 def _zpf_rows(lm: _LinearModel, obs: Observation):
     """Rows of a phase-equilibrium observation, all of them zero at equilibrium (J/mol of atoms).
 
@@ -791,25 +816,14 @@ def _zpf_rows(lm: _LinearModel, obs: Observation):
     composition was not measured touches it: its driving force, the minimum
     over composition of (G − μ·N)/ΣN, is zero.
     """
-    known = [(lm.phase(n), x) for n, x in obs.phases if lm.phase(n).model.n_y > 0 and x is not None]
-    unknown = [lm.phase(n) for n, x in obs.phases if lm.phase(n).model.n_y > 0 and x is None]
-    comps = [lm.phase(n) for n, _ in obs.phases if lm.phase(n).model.n_y == 0]
     if len(obs.phases) < 2:
         raise ValueError("a ZPF observation needs at least two phases")
+    known = [(lm.phase(n), x) for n, x in obs.phases if lm.phase(n).model.n_y > 0 and x is not None]
+    unknown = [lm.phase(n) for n, x in obs.phases if lm.phase(n).model.n_y > 0 and x is None]
+    ref, comps = _zpf_reference(lm, obs)
     vecs = []
-    if known:
-        ref = known[0][0].mu(known[0][1], obs.T)
-        for ph, x in known[1:]:
-            vecs.extend(ref - ph.mu(x, obs.T))
-    else:
-        if len(lm.elements) != 2 or len(comps) < 2:
-            raise ValueError("ZPF: μ needs a measured composition or, in a binary, two compounds")
-        a, b = comps[0], comps[1]
-        Nmat = np.array([a.model.amounts(), b.model.amounts()], float)
-        if abs(np.linalg.det(Nmat)) < 1e-12:
-            raise ValueError(f"ZPF: {a.name} and {b.name} have the same composition and cannot fix μ")
-        ref = np.linalg.solve(Nmat, np.array([a.F("G", np.empty(0), obs.T), b.F("G", np.empty(0), obs.T)]))
-        comps = comps[2:]
+    for ph, x in known[1:]:
+        vecs.extend(ref - ph.mu(x, obs.T))
     for ph in comps:
         N = np.array(ph.model.amounts(), float)
         vecs.append((N @ ref - ph.F("G", np.empty(0), obs.T)) / N.sum())
@@ -845,6 +859,9 @@ class FitResult:
     converged: bool = True
     #: errors in variables: (observation index, phase, measured x, fitted x, sigma_x) per composition
     compositions: list = field(default_factory=list)
+    #: global consistency (``consistency="global"``): status, rounds, cuts, worst lower bound, and
+    #: per condition and phase the certified bounds in J/mol of atoms; None when not requested
+    consistency: dict | None = None
 
     @property
     def parameters(self) -> dict[str, float]:
@@ -1010,6 +1027,10 @@ def fit(
     tol: float = 1e-3,
     verbose: bool = False,
     errors_in_variables: bool = False,
+    consistency: str | None = None,
+    consistency_eps: float = 10.0,
+    consistency_time_limit: float = 120.0,
+    max_cut_rounds: int = 10,
 ) -> FitResult:
     """Fit free parameter coefficients of ``db`` to ``data`` by weighted least squares.
 
@@ -1055,6 +1076,22 @@ def fit(
     The covariance of θ is the θ block of (JᵀJ)⁻¹ over all unknowns, and the
     degrees of freedom count the compositions as parameters.
     :attr:`FitResult.compositions` lists the measured and fitted compositions.
+
+    **Global consistency.** A fit can match every datum and still make a phase
+    stable where the data rule it out. With ``consistency="global"``, after
+    the fit every phase that a phase-equilibrium observation does not list is
+    priced globally (discopt) at that observation's μ. If its tangent distance
+    falls below −``consistency_eps`` (J/mol of atoms) somewhere, that point
+    becomes a cut, Ψ(y; θ) ≥ −ε/2, which is linear in θ at fixed y, and the fit
+    is solved again as a constrained least-squares problem. (The cut is tighter
+    than the check, so a refit lands inside the certified region.) This repeats until no
+    phase falls below −ε, for at most ``max_cut_rounds`` rounds. The result's
+    :attr:`FitResult.consistency` then says ``CERTIFIED``: every certified lower
+    bound is ≥ −ε. It says ``INCOMPLETE`` when a bound could not be raised that
+    far (magnetic phases have none yet, and ``consistency_time_limit`` bounds
+    each pricing), and ``NOT_CERTIFIED`` when rounds ran out. Phases listed in
+    an observation are not checked there: their deviation from the tangent is
+    that observation's own residual.
     """
     free = {label: "a + b*T" for label in free} if not isinstance(free, dict) else free
     fps = [FreeParameter.parse(label, form, functions=db.functions) for label, form in free.items()]
@@ -1076,6 +1113,10 @@ def fit(
         theta[lm.names.index(name)] = float(v)
     theta = np.clip(theta, lo, hi)
 
+    # Global consistency: rows c with c·[1, θ] ≥ −consistency_eps/2. The cut is tighter than the
+    # check (−consistency_eps), so a refit lands strictly inside the certified region, not on its edge.
+    cuts: list[np.ndarray] = []
+
     def solve(V, obs_v, sig):
         J = V[:, 1:] / sig[:, None]
         r0 = (obs_v - V[:, 0]) / sig
@@ -1083,61 +1124,108 @@ def fit(
         scale[scale == 0] = 1.0
         Js = J / scale
         if bounded:
-            sol = lsq_linear(Js, r0, bounds=(lo * scale, hi * scale), method="bvls", tol=1e-14)
-            return sol.x / scale
-        return np.linalg.lstsq(Js, r0, rcond=None)[0] / scale
+            t = lsq_linear(Js, r0, bounds=(lo * scale, hi * scale), method="bvls", tol=1e-14).x
+        else:
+            t = np.linalg.lstsq(Js, r0, rcond=None)[0]
+        if cuts:
+            from scipy.optimize import minimize
+
+            A = np.array([c[1:] / scale for c in cuts])
+            b = np.array([-0.5 * consistency_eps - c[0] for c in cuts])
+            box = [
+                (None if not np.isfinite(a) else a * sc, None if not np.isfinite(c) else c * sc)
+                for a, c, sc in zip(lo, hi, scale)
+            ]
+            res = minimize(
+                lambda t: 0.5 * float(np.sum((Js @ t - r0) ** 2)),
+                t,
+                jac=lambda t: Js.T @ (Js @ t - r0),
+                method="SLSQP",
+                bounds=box,
+                constraints=[{"type": "ineq", "fun": lambda t: A @ t - b, "jac": lambda t: A}],
+                options={"ftol": 1e-15, "maxiter": 1000},
+            )
+            t = res.x
+        return t / scale
 
     def chi2(V, obs_v, sig, th):
         r = (V[:, 0] + V[:, 1:] @ th - obs_v) / sig
         return float(r @ r)
 
-    def std(V, sig):
+    def std_of(V, sig):
         J = V[:, 1:] / sig[:, None]
         sc = np.linalg.norm(J, axis=0)
         sc[sc == 0] = 1.0
         return np.sqrt(np.clip(np.diag(np.linalg.pinv((J / sc).T @ (J / sc))), 0, None)) / sc
 
-    lm.theta = theta
-    V, obs_v, sig, owner = _design(lm, data)
-    iterations, converged = 1, True
-    if lm.nonlinear:
-        converged = False
-        current = chi2(V, obs_v, sig, theta)
-        if verbose:
-            print(f"fit: start chi2 = {current:.6g}")
-        iterations = 0
-        while iterations < max_iter:
-            iterations += 1
-            target = solve(V, obs_v, sig)
-            sd = std(V, sig)
-            step, accepted = 1.0, False
-            while step >= 1e-3:
-                trial = theta + step * (target - theta)
-                lm.theta = trial
-                Vt, ot, st, owner_t = _design(lm, data)
-                value = chi2(Vt, ot, st, trial)
-                if value <= current:
-                    accepted = True
-                    break
-                step /= 2
-            moved = np.max(np.abs(trial - theta) / np.where(sd > 0, sd, 1.0))
+    def run(theta, restart=False):
+        """The fit from ``theta``; with ``restart``, the first step goes to the constrained solution in full."""
+        lm.theta = theta
+        V, obs_v, sig, owner = _design(lm, data)
+        iterations, converged = 1, True
+        if lm.nonlinear:
+            converged = False
+            current = chi2(V, obs_v, sig, theta)
             if verbose:
-                print(
-                    f"fit: linearization {iterations}: chi2 = {value:.6g}, step {step:g}, "
-                    f"largest move {moved:.3g} sigma{'' if accepted else ' (rejected)'}"
-                )
-            if not accepted:
-                lm.theta = theta  # no step decreases chi2: stationary within the minimizers' noise
-                converged = True
+                print(f"fit: start chi2 = {current:.6g}")
+            iterations = 0
+            while iterations < max_iter:
+                iterations += 1
+                target = solve(V, obs_v, sig)
+                sd = std_of(V, sig)
+                step, accepted = 1.0, False
+                while step >= 1e-3:
+                    trial = theta + step * (target - theta)
+                    lm.theta = trial
+                    Vt, ot, st, owner_t = _design(lm, data)
+                    value = chi2(Vt, ot, st, trial)
+                    # a new cut can make the previous θ infeasible: then the first step is taken in full
+                    if value <= current or (restart and iterations == 1):
+                        accepted = True
+                        break
+                    step /= 2
+                moved = np.max(np.abs(trial - theta) / np.where(sd > 0, sd, 1.0))
+                if verbose:
+                    print(
+                        f"fit: linearization {iterations}: chi2 = {value:.6g}, step {step:g}, "
+                        f"largest move {moved:.3g} sigma{'' if accepted else ' (rejected)'}"
+                    )
+                if not accepted:
+                    lm.theta = theta  # no step decreases chi2: stationary within the minimizers' noise
+                    converged = True
+                    break
+                theta, V, obs_v, sig, owner, current = trial, Vt, ot, st, owner_t, value
+                if moved < tol:
+                    converged = True
+                    break
+            if not converged:
+                warnings.warn(f"the fit did not converge in {max_iter} iterations", stacklevel=3)
+        else:
+            theta = solve(V, obs_v, sig)
+            lm.theta = theta
+        return theta, V, obs_v, sig, owner, iterations, converged
+
+    theta, V, obs_v, sig, owner, iterations, converged = run(theta)
+    report = None
+    if consistency is not None:
+        if consistency != "global":
+            raise ValueError(f"consistency must be None or 'global', got {consistency!r}")
+        if errors_in_variables:
+            raise NotImplementedError("consistency='global' with errors_in_variables is not supported yet")
+        rounds = 0
+        while True:
+            report = _consistency_check(lm, data, theta, consistency_eps, consistency_time_limit, verbose)
+            rounds += 1
+            report["rounds"] = rounds
+            report["cuts"] = len(cuts)
+            new = report.pop("violations")
+            if not new or rounds > max_cut_rounds:
+                if new:
+                    report["status"] = "NOT_CERTIFIED"
                 break
-            theta, V, obs_v, sig, owner, current = trial, Vt, ot, st, owner_t, value
-            if moved < tol:
-                converged = True
-                break
-        if not converged:
-            warnings.warn(f"the fit did not converge in {max_iter} iterations", stacklevel=2)
-    else:
-        theta = solve(V, obs_v, sig)
+            cuts.extend(new)
+            theta, V, obs_v, sig, owner, it2, converged = run(theta, restart=True)
+            iterations += it2
 
     if errors_in_variables:
         return _errors_in_variables(lm, data, fps, theta, lo, hi, iterations, converged)
@@ -1178,6 +1266,7 @@ def fit(
         active_bounds=active,
         iterations=iterations,
         converged=converged,
+        consistency=report,
     )
 
 
@@ -1302,3 +1391,54 @@ def _errors_in_variables(lm, data, fps, theta, lo, hi, iterations, converged) ->
         converged=converged and bool(sol.success),
         compositions=[(j, obs[j].phases[k][0], x, float(p[n + i]), sx_) for i, (j, k, x, sx_) in enumerate(slots)],
     )
+
+
+def _consistency_check(lm, data, theta, eps: float, time_limit: float, verbose: bool) -> dict:
+    """Price every phase absent from each phase-equilibrium observation at that observation's μ.
+
+    Bounds are certified (discopt's global pricing) and converted to J/mol of
+    atoms. A phase whose best point lies below −``eps`` is a violation, and its
+    tangent-distance row at that point becomes a cut. A phase whose lower bound
+    could not be raised to −``eps`` makes the result ``INCOMPLETE``.
+    """
+    from discopt.calphad.equilibrium.pricing import price_phase
+
+    lm.theta = theta
+    theta1 = np.concatenate([[1.0], theta])
+    names = list(lm.db.phase_models(lm.elements))
+    out = {"status": "CERTIFIED", "eps": eps, "worst_lower_bound": math.inf, "conditions": [], "violations": []}
+    undecided = False
+    for j, o in enumerate(data):
+        if o.kind != "ZPF":
+            continue
+        try:
+            ref, _ = _zpf_reference(lm, o)
+        except ValueError:
+            continue
+        T = o.T
+        RT = R_GAS * T
+        mu_rt = (ref @ theta1) / RT
+        listed = {n.upper() for n, _ in o.phases}
+        for name in names:
+            if name in listed:
+                continue
+            model = lm.model_at(name)
+            atoms_min = float(model.atoms_min)
+            r = price_phase(model, mu_rt, T=T, eps=eps * atoms_min / RT, time_limit=time_limit)
+            atoms = float(sum(float(a) for a in model.amounts(r.y))) if r.y is not None else atoms_min
+            ub = r.ub * RT / max(atoms, 1e-12)
+            lb = None if r.lb is None else r.lb * RT / atoms_min
+            out["conditions"].append({"observation": j, "T": T, "phase": name, "lower": lb, "upper": ub})
+            if lb is not None:
+                out["worst_lower_bound"] = min(out["worst_lower_bound"], lb)
+            if ub < -eps:
+                out["violations"].append(lm.phase(name).tangent_row(r.y, ref, T))
+                if verbose:
+                    print(f"fit: {name} is {-ub:.4g} J/mol below the tangent at observation {j} ({T:g} K)")
+            elif lb is None or lb < -eps:
+                undecided = True
+    if out["violations"]:
+        out["status"] = "VIOLATED"
+    elif undecided:
+        out["status"] = "INCOMPLETE"
+    return out

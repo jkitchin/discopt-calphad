@@ -215,6 +215,14 @@ A phase whose composition is `None` must touch the tangent of the measured
 one (its driving force is zero), and μ of a multi-sublattice phase comes from
 its internal equilibrium.
 
+**No spurious phases.** `fit(..., consistency="global")` checks every phase
+that a phase-equilibrium observation does not list, with certified global
+pricing at that observation's μ. A phase more than `consistency_eps` (J/mol,
+default 10) below the tangent becomes a cut, and the fit is solved again.
+`res.consistency["status"]` is then `CERTIFIED`, `INCOMPLETE` (magnetic
+phases have no bound yet), or `NOT_CERTIFIED`. Each round costs one global
+pricing per phase per observation, from seconds upward.
+
 **Uncertain compositions.** Give `add_equilibrium(..., sigma_x=0.005)` and
 `fit(..., errors_in_variables=True)`. The measured compositions are then
 fitted too, and the parameter σ are calibrated: χ²/dof ≈ 1, and 97% coverage

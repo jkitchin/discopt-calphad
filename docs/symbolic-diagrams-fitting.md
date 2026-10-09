@@ -178,7 +178,11 @@ The diagram object is plain data, so other backends are possible.
 >   least squares on the existing rows, since `discopt.estimate` needs an
 >   algebraic model and the tangent rows are numeric. Calibration is checked in
 >   `benchmarks/eiv_coverage.py`;
-> - global consistency (step 3): #9;
+> - ~~global consistency (step 3): #9~~ done: `fit(..., consistency="global")`
+>   prices every unlisted phase at every phase-equilibrium observation, and
+>   adds cuts until all certified lower bounds are ≥ −ε. Phases listed in an
+>   observation are not checked there, because their deviation is that
+>   observation's own residual;
 > - FIM-based design (step 4): #10;
 > - μ-based data in ternaries: #11.
 

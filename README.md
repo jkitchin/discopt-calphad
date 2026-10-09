@@ -42,7 +42,9 @@ the tangent-plane distance Ψ(y) = G(y) − μ·A(y):
   T-forms) to thermochemical, activity and phase-equilibrium data, including
   one-sided phase-boundary points (driving-force residuals), multi-sublattice
   phases, and uncertain measured compositions (`errors_in_variables=True`,
-  which gives calibrated parameter uncertainties). ESPEI JSON datasets are read directly. Results include the
+  which gives calibrated parameter uncertainties). `consistency="global"`
+  certifies that the fit makes no phase stable that the phase-equilibrium data
+  rule out. ESPEI JSON datasets are read directly. Results include the
   covariance, a fitted TDB, and certified equilibrium checks. Fitted to the real
   Cu–Mg data curated for ESPEI (238 one-sided boundary points plus
   thermochemistry), the liquid and compound parameters come out close to the

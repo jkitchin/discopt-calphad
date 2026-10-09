@@ -387,3 +387,51 @@ def test_errors_in_variables_gives_calibrated_uncertainties(db, alzn_lines):
         z += [(res.parameters[k] - v) / res.std[res.names.index(k)] for k, v in EIV_TRUE.items()]
     assert 0.4 < np.mean(chi) < 2.0
     assert 0.4 < np.sqrt(np.mean(np.square(z))) < 1.8
+
+
+# ---------------------------------------------------------------------------- global consistency (#9)
+
+
+@pytest.fixture(scope="module")
+def alzn_700(db):
+    """The exact LIQUID + FCC tie-line of the assessment at 700 K."""
+    from discopt.calphad import equilibrium
+
+    phases = list(db.phase_models(EL, ["LIQUID", "FCC_A1"]).values())
+    res = equilibrium(phases, x=0.35, T=700.0, certify="none")
+    return [(cs.phase.name, float(cs.x[0])) for cs in res.composition_sets]
+
+
+def test_consistency_removes_a_spurious_phase(db, alzn_700):
+    """A biased HCP datum makes HCP stable at the 700 K tie-line; the consistent fit pushes it above the tangent."""
+    from discopt.calphad import R_GAS, price_phase_local
+    from discopt.calphad.fit import _LinearModel, _zpf_reference
+
+    ds = Dataset().add_equilibrium(700.0, alzn_700, sigma=10.0)
+    ds.add_thermo("HM_MIX", "HCP_A3", 700.0, 0.05, -2000.0, 100.0)
+    free = {"L(HCP_A3,AL,ZN;0)": "a"}
+
+    def hcp_below_tangent(result):
+        lm = _LinearModel(result.database, EL, [])
+        mu = _zpf_reference(lm, ds.observations[0])[0][:, 0] / (R_GAS * 700.0)
+        return price_phase_local(result.database.phase_model("HCP_A3", EL), mu, T=700.0).ub * R_GAS * 700.0
+
+    plain = fit(db, ds, EL, free)
+    assert plain.consistency is None and hcp_below_tangent(plain) < -1000.0  # spuriously stable
+    consistent = fit(db, ds, EL, free, consistency="global")
+    rep = consistent.consistency
+    assert rep["status"] == "CERTIFIED" and rep["rounds"] > 1 and rep["cuts"] >= 1
+    assert rep["worst_lower_bound"] >= -rep["eps"]
+    assert hcp_below_tangent(consistent) >= -rep["eps"]
+    assert consistent.parameters["L(HCP_A3,AL,ZN;0).a"] > plain.parameters["L(HCP_A3,AL,ZN;0).a"] + 40000.0
+
+
+def test_consistent_data_need_no_cuts(db, alzn_700):
+    ds = Dataset().add_equilibrium(700.0, alzn_700, sigma=10.0)
+    free = {"L(LIQUID,AL,ZN;0)": "a - 3.39259*T"}
+    plain = fit(db, ds, EL, free)
+    consistent = fit(db, ds, EL, free, consistency="global")
+    assert consistent.consistency["status"] == "CERTIFIED" and consistent.consistency["rounds"] == 1
+    assert consistent.parameters == pytest.approx(plain.parameters)
+    with pytest.raises(ValueError, match="consistency must be"):
+        fit(db, ds, EL, free, consistency="local")
