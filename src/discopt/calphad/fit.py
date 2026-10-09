@@ -51,9 +51,10 @@ ESPEI JSON datasets are read by :meth:`Dataset.from_espei`.
 
 Scope: μ-based data (activities, phase equilibria) needs a binary system. The
 driving-force minimum is a local search (sampling, then refinement), so a very
-narrow well of an unmeasured phase can be missed. Errors in the measured
-compositions (errors in variables) are not modelled: each composition is
-taken as exact, and its uncertainty goes into the J/mol σ of the row.
+narrow well of an unmeasured phase can be missed. By default each measured
+composition is taken as exact, and its uncertainty goes into the J/mol σ of
+the row; ``fit(..., errors_in_variables=True)`` instead fits the compositions
+too, each with its own ``sigma_x``, which gives calibrated uncertainties.
 :meth:`FitResult.check_equilibria` runs certified equilibria at the
 phase-equilibrium data after the fit.
 """
@@ -132,6 +133,9 @@ class Observation:
     source: str = ""
     #: an approximation made in producing the value
     note: str = ""
+    #: ZPF only: standard uncertainty of each measured composition (mole fraction), for
+    #: ``fit(..., errors_in_variables=True)``
+    sigma_x: float | None = None
 
     def __post_init__(self):
         self.kind = self.kind.upper()
@@ -248,16 +252,24 @@ class Dataset:
             out[o.source or "unspecified"] = out.get(o.source or "unspecified", 0) + 1
         return out
 
-    def add_equilibrium(self, T, phases, sigma: float = 500.0, citation: str = "") -> Dataset:
+    def add_equilibrium(
+        self, T, phases, sigma: float = 500.0, citation: str = "", sigma_x: float | None = None
+    ) -> Dataset:
         """Coexisting phases at ``T``: a tie-line, or an invariant with three phases.
 
         ``phases`` is a dict ``{name: x}`` or a sequence of ``(name, x)`` pairs.
         Use pairs when a phase appears twice. A compound's ``x`` may be None.
+        ``sigma_x`` is the standard uncertainty of each measured composition, used
+        by ``fit(..., errors_in_variables=True)``.
         """
         pairs = list(phases.items()) if isinstance(phases, dict) else list(phases)
         if len(pairs) < 2:
             raise ValueError("an equilibrium needs at least two phases")
-        return self.add(Observation("ZPF", float(T), 0.0, float(sigma), phases=tuple(pairs), citation=citation))
+        if sigma_x is not None and sigma_x <= 0:
+            raise ValueError("sigma_x must be positive")
+        return self.add(
+            Observation("ZPF", float(T), 0.0, float(sigma), phases=tuple(pairs), citation=citation, sigma_x=sigma_x)
+        )
 
     # ------------------------------------------------------------------ I/O
 
@@ -831,6 +843,8 @@ class FitResult:
     #: linearizations used (1 when every row is linear in θ), and whether θ converged
     iterations: int = 1
     converged: bool = True
+    #: errors in variables: (observation index, phase, measured x, fitted x, sigma_x) per composition
+    compositions: list = field(default_factory=list)
 
     @property
     def parameters(self) -> dict[str, float]:
@@ -995,6 +1009,7 @@ def fit(
     max_iter: int = 30,
     tol: float = 1e-3,
     verbose: bool = False,
+    errors_in_variables: bool = False,
 ) -> FitResult:
     """Fit free parameter coefficients of ``db`` to ``data`` by weighted least squares.
 
@@ -1026,6 +1041,20 @@ def fit(
 
     The covariance is (JᵀJ)⁻¹, with J the σ-weighted design matrix at the
     solution. It is absolute: it assumes the given σ are the true uncertainties.
+
+    **Errors in variables.** By default every measured composition is taken as
+    exact, and its uncertainty can enter only through the J/mol σ of its rows.
+    With ``errors_in_variables=True``, each measured composition of a ZPF
+    observation that has ``sigma_x`` becomes an unknown too. It gets its own
+    residual, (x − x_measured)/σ_x, and the equilibrium rows are evaluated at the
+    fitted compositions. The ZPF row σ then stands for model error only, and
+    can be small. The problem is nonlinear in the compositions. It is solved by
+    trust-region least squares (``scipy.optimize.least_squares``) from the
+    ordinary fit. The parameter columns of the Jacobian are exact, and each
+    composition column is a central difference of its own observation's rows.
+    The covariance of θ is the θ block of (JᵀJ)⁻¹ over all unknowns, and the
+    degrees of freedom count the compositions as parameters.
+    :attr:`FitResult.compositions` lists the measured and fitted compositions.
     """
     free = {label: "a + b*T" for label in free} if not isinstance(free, dict) else free
     fps = [FreeParameter.parse(label, form, functions=db.functions) for label, form in free.items()]
@@ -1110,6 +1139,9 @@ def fit(
     else:
         theta = solve(V, obs_v, sig)
 
+    if errors_in_variables:
+        return _errors_in_variables(lm, data, fps, theta, lo, hi, iterations, converged)
+
     J = V[:, 1:] / sig[:, None]
     r0 = (obs_v - V[:, 0]) / sig
     scale = np.linalg.norm(J, axis=0)
@@ -1146,4 +1178,127 @@ def fit(
         active_bounds=active,
         iterations=iterations,
         converged=converged,
+    )
+
+
+def _errors_in_variables(lm, data, fps, theta, lo, hi, iterations, converged) -> FitResult:
+    """θ and the measured compositions together, by trust-region least squares (see :func:`fit`)."""
+    from collections import defaultdict
+
+    from scipy.optimize import least_squares
+
+    obs = list(data)
+    slots = []  # (observation, position in its phases, measured x, sigma_x)
+    for j, o in enumerate(obs):
+        if o.kind == "ZPF" and o.sigma_x:
+            for k, (name, x) in enumerate(o.phases):
+                if x is not None and lm.phase(name).model.n_y > 0:
+                    slots.append((j, k, float(x), float(o.sigma_x)))
+    if not slots:
+        raise ValueError("errors_in_variables needs ZPF observations with sigma_x and measured compositions")
+    n, m = lm.n, len(slots)
+    xm = np.array([s_[2] for s_ in slots])
+    sx = np.array([s_[3] for s_ in slots])
+    by_obs = defaultdict(list)
+    for i, (j, k, _, _) in enumerate(slots):
+        by_obs[j].append((i, k))
+
+    def rows(j, z):
+        o = obs[j]
+        if j in by_obs:
+            ph = list(o.phases)
+            for i, k in by_obs[j]:
+                ph[k] = (ph[k][0], float(z[i]))
+            o = dataclasses.replace(o, phases=tuple(ph))
+        V, ov, sg = _rows(lm, o)
+        return np.array(V, float), np.array(ov, float), np.array(sg, float)
+
+    def residuals(p):
+        th, z = p[:n], p[n:]
+        lm.theta = th
+        out = []
+        for j in range(len(obs)):
+            V, ov, sg = rows(j, z)
+            out.append((V[:, 0] + V[:, 1:] @ th - ov) / sg)
+        out.append((z - xm) / sx)
+        return np.concatenate(out)
+
+    def jacobian(p):
+        th, z = p[:n], p[n:]
+        lm.theta = th
+        blocks = []
+        for j in range(len(obs)):
+            V, ov, sg = rows(j, z)
+            B = np.zeros((len(sg), n + m))
+            B[:, :n] = V[:, 1:] / sg[:, None]
+            for i, _ in by_obs.get(j, ()):
+                h = min(1e-6, 0.5 * z[i], 0.5 * (1 - z[i]))
+                zp, zn = z.copy(), z.copy()
+                zp[i] += h
+                zn[i] -= h
+                Vp, _, _ = rows(j, zp)
+                Vn, _, _ = rows(j, zn)
+                B[:, n + i] = ((Vp[:, 0] + Vp[:, 1:] @ th) - (Vn[:, 0] + Vn[:, 1:] @ th)) / (2 * h) / sg
+            blocks.append(B)
+        C = np.zeros((m, n + m))
+        C[:, n:] = np.diag(1.0 / sx)
+        blocks.append(C)
+        return np.vstack(blocks)
+
+    p0 = np.concatenate([theta, np.clip(xm, 1e-9, 1 - 1e-9)])
+    lower = np.concatenate([lo, np.full(m, 1e-9)])
+    upper = np.concatenate([hi, np.full(m, 1 - 1e-9)])
+    sol = least_squares(
+        residuals,
+        p0,
+        jac=jacobian,
+        bounds=(lower, upper),
+        method="trf",
+        x_scale="jac",
+        xtol=1e-12,
+        ftol=1e-12,
+        gtol=1e-10,
+        max_nfev=200,
+    )
+    p = sol.x
+    resid = residuals(p)
+    J = jacobian(p)
+    scale = np.linalg.norm(J, axis=0)
+    scale[scale == 0] = 1.0
+    Js = J / scale
+    rank = int(np.linalg.matrix_rank(Js))
+    if rank < n + m:
+        warnings.warn(
+            f"the data determine only {rank} of {n + m} unknowns (coefficients and compositions)", stacklevel=3
+        )
+    cov_all = np.linalg.pinv(Js.T @ Js) / np.outer(scale, scale)
+    cov = cov_all[:n, :n]
+    std = np.sqrt(np.clip(np.diag(cov), 0, None))
+    with np.errstate(invalid="ignore", divide="ignore"):
+        corr = cov / np.outer(std, std)
+    theta = p[:n]
+    owner = []
+    for j in range(len(obs)):
+        owner += [j] * len(rows(j, p[n:])[2])
+    owner += [s_[0] for s_ in slots]
+    active = [nm for nm, t, a, b in zip(lm.names, theta, lo, hi) if np.isclose(t, a) or np.isclose(t, b)]
+    return FitResult(
+        names=list(lm.names),
+        values=theta,
+        std=std,
+        covariance=cov,
+        correlation=corr,
+        residuals=resid,
+        row_observation=np.array(owner),
+        chi2=float(resid @ resid),
+        dof=int(resid.size - rank),
+        rank=rank,
+        database=_replace(lm.db, lm.functions_at(theta)),
+        data=data,
+        elements=lm.elements,
+        free=fps,
+        active_bounds=active,
+        iterations=iterations + int(sol.nfev),
+        converged=converged and bool(sol.success),
+        compositions=[(j, obs[j].phases[k][0], x, float(p[n + i]), sx_) for i, (j, k, x, sx_) in enumerate(slots)],
     )

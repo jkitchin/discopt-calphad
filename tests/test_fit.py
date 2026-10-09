@@ -334,3 +334,56 @@ def test_mixing_on_one_sublattice_of_a_cef_phase(cumg):
             "HM_MIX", 298.15, 0.0, 1.0, phase="CU2MG", site_fractions=({"CU": 0.5, "MG": 0.5}, {"CU": 0.5, "MG": 0.5})
         )
         predict(cumg, [bad], CUMG)
+
+
+# ---------------------------------------------------------------------------- errors in variables (#8)
+
+
+@pytest.fixture(scope="module")
+def alzn_lines(db):
+    """Exact Al-Zn tie-lines: the FCC miscibility gap and LIQUID + FCC."""
+    from discopt.calphad import equilibrium
+
+    phases = list(db.phase_models(EL, ["LIQUID", "FCC_A1"]).values())
+    out = []
+    for T, x in [(560.0, 0.6), (580.0, 0.6), (600.0, 0.62), (700.0, 0.3), (750.0, 0.4), (800.0, 0.55)]:
+        res = equilibrium(phases, x=x, T=T, certify="none")
+        out.append((T, [(cs.phase.name, float(cs.x[0])) for cs in res.composition_sets]))
+    assert all(len(s) == 2 for _, s in out)
+    return out
+
+
+EIV_FREE = {"L(FCC_A1,AL,ZN;0)": "a + 0.47512*T", "L(LIQUID,AL,ZN;0)": "a - 3.39259*T"}
+EIV_TRUE = {"L(FCC_A1,AL,ZN;0).a": 7297.5, "L(LIQUID,AL,ZN;0).a": 10465.5}
+
+
+def test_errors_in_variables_recovers_exact_data(db, alzn_lines):
+    ds = Dataset()
+    for T, sets in alzn_lines:
+        ds.add_equilibrium(T, sets, sigma=1.0, sigma_x=0.005)
+    res = fit(db, ds, EL, EIV_FREE, errors_in_variables=True)
+    for k, v in EIV_TRUE.items():
+        assert res.parameters[k] == pytest.approx(v, abs=0.5)
+    assert len(res.compositions) == 12 and res.chi2 < 1e-3
+    # the compositions count as unknowns: 6 lines x 2 rows + 12 composition residuals - (2 + 12) unknowns
+    assert res.dof == 12 + 12 - 14
+    for _, _, measured, fitted, _ in res.compositions:  # the "exact" tie-lines are local solves, good to ~1e-6
+        assert fitted == pytest.approx(measured, abs=1e-5)
+    with pytest.raises(ValueError, match="sigma_x"):
+        fit(db, Dataset().add_equilibrium(700.0, alzn_lines[3][1]), EL, EIV_FREE, errors_in_variables=True)
+
+
+def test_errors_in_variables_gives_calibrated_uncertainties(db, alzn_lines):
+    """Composition noise only: χ²/dof near 1 and z-scores near 1 (benchmarks/eiv_coverage.py has the full study)."""
+    chi, z = [], []
+    for seed in range(8):
+        rng = np.random.default_rng(seed)
+        ds = Dataset()
+        for T, sets in alzn_lines:
+            noisy = [(n, float(np.clip(x + rng.normal(0, 0.005), 1e-4, 1 - 1e-4))) for n, x in sets]
+            ds.add_equilibrium(T, noisy, sigma=1.0, sigma_x=0.005)
+        res = fit(db, ds, EL, EIV_FREE, errors_in_variables=True)
+        chi.append(res.chi2 / res.dof)
+        z += [(res.parameters[k] - v) / res.std[res.names.index(k)] for k, v in EIV_TRUE.items()]
+    assert 0.4 < np.mean(chi) < 2.0
+    assert 0.4 < np.sqrt(np.mean(np.square(z))) < 1.8

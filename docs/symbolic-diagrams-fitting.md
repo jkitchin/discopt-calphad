@@ -173,7 +173,11 @@ The diagram object is plain data, so other backends are possible.
 > nonlinear in θ through a minimizer, and the fit iterates linear solves
 > (Gauss–Newton with the exact, envelope-theorem Jacobian). Not yet done,
 > each now its own issue:
-> - errors in variables (step 2's nonlinear part, `discopt.estimate`): #8;
+> - ~~errors in variables (step 2's nonlinear part): #8~~ done:
+>   `fit(..., errors_in_variables=True)`, solved with scipy's trust-region
+>   least squares on the existing rows, since `discopt.estimate` needs an
+>   algebraic model and the tangent rows are numeric. Calibration is checked in
+>   `benchmarks/eiv_coverage.py`;
 > - global consistency (step 3): #9;
 > - FIM-based design (step 4): #10;
 > - μ-based data in ternaries: #11.

@@ -213,7 +213,15 @@ least squares and needs no initial guess. Data kinds:
 
 A phase whose composition is `None` must touch the tangent of the measured
 one (its driving force is zero), and μ of a multi-sublattice phase comes from
-its internal equilibrium. Both depend on the parameters, so the fit then
+its internal equilibrium.
+
+**Uncertain compositions.** Give `add_equilibrium(..., sigma_x=0.005)` and
+`fit(..., errors_in_variables=True)`. The measured compositions are then
+fitted too, and the parameter σ are calibrated: χ²/dof ≈ 1, and 97% coverage
+in a 40-seed test. Set the row `sigma` small (model error only). Without
+this, σ_x must be converted to J/mol by hand, and the resulting σ are not
+reliable. With the dilute-slope conversion they came out about 3.5× too
+large. Both depend on the parameters, so the fit then
 iterates linear solves (`res.iterations`, `res.converged`), starting from the
 database's own values or from `initial={coefficient: value}`.
 
