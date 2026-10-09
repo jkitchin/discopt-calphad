@@ -78,15 +78,33 @@ model = mlip.from_ase(FAIRChemCalculator(predictor, task_name="omat"), name="uma
 ## Structures
 
 `mlip.PROTOTYPES` holds the prototypes, each defined by its space group and
-Wyckoff sites: A1, A2, A3, A4, B2, L1₂, D0₁₉, C14, C15, C36, C16 and D8_b (σ).
+Wyckoff sites:
+
+- A1, A2, A3, A4, B2, L1₂, D0₁₉, C14, C15, C36, C16 and D8_b (σ);
+- from the [AFLOW Encyclopedia of Crystallographic Prototypes](https://aflow.org/prototype-encyclopedia/),
+  with its published coordinates: D0₂₀ (Al₃Ni), D0₁₁ (Fe₃C), D5₁₃ (Al₃Ni₂),
+  D0₂₂ (Al₃Ti), D0₂₃ (Al₃Zr), D0₃ (BiF₃, Fe₃Al), L1₀ (CuAu), B19 (AuCd), C11_b
+  (MoSi₂), B8₁ (NiAs) and Ga₃Pt₅ (Al₃Ni₅).
 `mlip.PHASES` maps the generic TDB names (FCC_A1, BCC_A2, HCP_A3, DIAMOND_A4,
 B2_BCC, L12_FCC, D019_HCP, LAVES_C14/C15/C36 and their C15_LAVES spellings,
 SIGMA in the 10:4:16 model) to a prototype and a sublattice-to-site map.
 Database names are not standardized, so any other phase takes a map from the
 user, as `ALCU_THETA` does above. A structure that no prototype covers is given
 as `(ase.Atoms, atom indices per sublattice)`, or as
-`PhaseStructure.from_atoms(atoms, sublattices)`. The map is checked against
-the phase's site ratios before anything is computed.
+`PhaseStructure.from_atoms(atoms, sublattices)`. A CIF file works directly:
+`PhaseStructure.from_cif(path, [["Al"], ["Ni"]])`, selecting sites by element
+or by CIF site label. The map is checked against the phase's site ratios
+before anything is computed.
+
+SQS mixing needs one sublattice that mixes the two elements, with every
+other sublattice fixed. That sublattice may also allow vacancies; the SQS
+then mix the elements at zero vacancy fraction. The mixing enthalpy of a
+multi-sublattice phase is taken relative to the two endmembers of its mixed
+sublattice, and `fit` uses it on the same terms.
+
+An order–disorder phase (L1₂, B2) is unsupported as such. Rewrite it as a
+plain phase with `discopt.calphad.ordering.stand_in` before computing data
+for it.
 
 Before fitting, compare the calculator with the starting database:
 `discopt.calphad.fit.predict(db, result.dataset, elements)` gives the

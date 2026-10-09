@@ -48,6 +48,10 @@ the tangent-plane distance Ψ(y) = G(y) − μ·A(y):
   NIMS assessment, and the diagram follows the liquidus and eutectic data.
   The FCC interaction differs: the DFT mixing enthalpies pull the Cu-rich
   solvus wider than the measured one (`examples/cumg_espei_fit.py`).
+- **Order–disorder stand-ins (issue #14):** `ordering.stand_in` rewrites a
+  partitioned phase (L1₂, B2) as a plain phase the solver supports. For Ni–Al
+  both are exact (pycalphad agrees to 1e-10 J/mol); magnetism and vacancies on
+  substitutional sites are dropped and listed.
 - **Data from ASE calculators (issue #5, phase 1):** `discopt.calphad.mlip`
   turns any ASE calculator (a machine-learned potential such as UMA or MACE,
   EAM, EMT) into fitting data: formation enthalpies of compounds and CEF

@@ -153,13 +153,28 @@ The fitted database also has `fitted.to_tdb()`, with a provenance header.
 - **Order–disorder phases.** `applicability()` may report
   `order-disorder (DISORDERED_PART) models are not supported yet`, often for
   the phases that matter most (B2 and L1₂ in Ni–Al and Fe–Al). Options:
-  - Tell the user, and stop there.
-  - Compare against pycalphad, if it is installed. It models these phases, and
-    the package itself never imports it.
-  - Add a plain ordered stand-in with `add_tdb` (PHASE, CONSTITUENT and
-    PARAMETER lines). Its endmembers must be derived from the partitioned
-    model by hand. Say plainly that the stand-in has no ordering transition,
-    and that its homogeneity range is too narrow.
+  - **Build a stand-in** with `discopt.calphad.ordering.stand_in(db, ordered,
+    elements)`. It writes the partitioned phase as a plain CEF phase on the
+    ordered sublattices, added to a copy of the database. For Dupin's Ni–Al it
+    is exact for both L1₂ and B2, matching pycalphad to 1e-10 J/mol.
+  - **Say what it drops.** `si.dropped` lists the magnetic contributions and
+    any vacancies on substitutional sublattices that it leaves out. Repeat that
+    list to the user, and check `si.max_error`.
+  - **To refit,** refit the partitioned description's own parameters (the
+    disordered parent, or the ordered part), then call `stand_in` again. Do
+    not refit the stand-in's parameters directly: that unties its disordered
+    limit from the parent.
+  - Or compare against pycalphad, if it is installed. It models these phases,
+    and the package itself never imports it.
+
+  ```python
+  from discopt.calphad.ordering import stand_in
+
+  alni = databases.load("alni_dupin")
+  si = stand_in(alni, "FCC_L12", ("AL", "NI"))        # γ′; then "BCC_B2" on si.database for β
+  print(si.summary())                                 # parameters, largest G error, what was dropped
+  alni_si = si.database                               # FCC_L12_SI is now a supported phase
+  ```
 - **Magnetic phases** (FCC Ni, BCC Fe, Co) fit normally; only TC and BMAGN
   cannot be freed. Any equilibrium that contains them certifies at most to
   `GLOBAL_SEARCH_INCOMPLETE`. So Ni-, Fe- and Co-based systems cannot be fully
@@ -170,18 +185,28 @@ The fitted database also has `fitted.to_tdb()`, with a provenance header.
 - `mlip.PHASES` gives the generic names. Note that `B2_BCC`, `L12_FCC` and
   `D019_HCP` expect the three-sublattice layout `(A,B)(A,B)(VA)`. A phase whose
   layout differs needs its own map.
-- **Registered prototypes** (`mlip.PROTOTYPES`: A1–A4, B2, L1₂, D0₁₉, C14, C15,
-  C36, C16, D8_b) take `structures={"PHASE": ("C16", ["8h"], ["4a"])}`, with
-  one entry of Wyckoff sites per sublattice, or None for a vacancy-only one.
+- **Registered prototypes** take `structures={"PHASE": ("C16", ["8h"],
+  ["4a"])}`, with one entry of Wyckoff sites per sublattice, or None for a
+  vacancy-only one. `mlip.PROTOTYPES` has:
+  - A1–A4, B2, L1₂, D0₁₉, C14, C15, C36, C16 and D8_b (σ);
+  - from the AFLOW prototype library: D0₂₀ (Al₃Ni), D0₁₁ (Fe₃C), D5₁₃
+    (Al₃Ni₂), D0₂₂, D0₂₃, D0₃, L1₀, B19, C11_b, B8₁ and Ga₃Pt₅ (Al₃Ni₅).
+
+  `mlip.PROTOTYPES[name].description` says which site holds which element.
+- **From a CIF file** (ICSD, Materials Project, AFLOW): use
+  `mlip.PhaseStructure.from_cif(path, [["Al"], ["Ni"]])`, selecting each
+  sublattice's sites by element or by CIF site label.
 - **Anything else** takes `structures={"PHASE": (atoms, sublattices)}`. `atoms`
   is an `ase.Atoms` of the cell, and `sublattices` lists the atom indices of
   each sublattice in the phase's order (None for a vacancy-only one). The
   symbols don't matter; each endmember decorates the sites anew.
 - Endmembers with a single element (for example `AL:AL`) are lattice
   stabilities, and are computed only when you list them explicitly.
-- `mixing=` (SQS) needs exactly one sublattice that mixes the two elements,
-  without VA. Every other sublattice must be fixed. A phase such as Dupin's
-  BCC_A2, (AL,NI,VA)(VA), is refused.
+- `mixing=` (SQS) needs exactly one sublattice that mixes the two elements;
+  every other sublattice must be fixed. That sublattice may also allow VA: the
+  SQS mix the two elements at zero vacancy fraction. A phase whose every
+  sublattice can be empty, such as Dupin's BCC_A2 `(AL,NI,VA)(VA)`, is not
+  modelled at all: it has an all-vacancy configuration with no atoms.
 
 ## Points that fail, and time
 

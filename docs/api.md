@@ -36,6 +36,12 @@ Generated from the docstrings in `src/`.
 
 ::: discopt.calphad.fit
 
+::: discopt.calphad.io.espei
+
+## Order–disorder stand-ins
+
+::: discopt.calphad.ordering
+
 ## Data from ASE calculators
 
 ::: discopt.calphad.mlip.calculator

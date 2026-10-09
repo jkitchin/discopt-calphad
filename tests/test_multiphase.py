@@ -146,3 +146,31 @@ def test_lone_compound_is_certified_with_a_centred_mu():
     # every other phase sits clearly above the tangent, not just touching it
     others = [p for p in res.history[-1].pricing if p.phase.name != "CUMG2"]
     assert min(p.ub for p in others) > 1e-3
+
+
+# ---------------------------------------------------------------------------- issue #13
+
+EMT_FIT = __import__("pathlib").Path(__file__).parent / "data" / "alni_emt_fitted.tdb"
+
+
+def test_optimum_below_the_domain_floor_is_pinned_and_converges():
+    """FCC Ni next to Al3Ni: its equilibrium Al fraction (~1e-14) is below the floor; the solve used to fail."""
+    from discopt.calphad import DOMAIN_FLOOR, CompositionSet, ThermoDatabase, solve_restricted
+
+    ph = ThermoDatabase.from_tdb(EMT_FIT).phase_models(("AL", "NI"))
+    fcc, al3ni = ph["FCC_A1"], ph["AL3NI1"]
+    r = solve_restricted([CompositionSet(fcc, [0.02], 0.97), CompositionSet(al3ni, [], 0.03)], [0.02, 0.98], T=700.0)
+    assert r.converged
+    assert r.sets[0].y[0] == pytest.approx(DOMAIN_FLOOR) and r.sets[1].amount == pytest.approx(0.02 / 0.75)
+    assert r.residual < 1e-9
+
+
+@pytest.mark.parametrize("x", [0.02, 0.2])
+def test_far_from_equilibrium_starts_converge(x):
+    """Seven phases destabilize at the start (x = 0.02), and terminal FCC sits on the floor: both used to fail."""
+    from discopt.calphad import ThermoDatabase
+
+    phases = list(ThermoDatabase.from_tdb(EMT_FIT).phase_models(("AL", "NI")).values())
+    res = equilibrium(phases, x=x, T=700.0, certify="none")
+    assert res.certificate.level.name == "STABILITY_SEARCHED"
+    assert sorted(res.phase_names) == ["AL3NI5", "FCC_A1"]

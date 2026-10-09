@@ -6,6 +6,7 @@ in the slow suite.
 """
 
 import re
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -26,7 +27,8 @@ def run(path, *, slow, tmp_path, monkeypatch):
     for i, code in enumerate(blocks(path)):
         if code.startswith("# slow") and not slow:
             continue
-        exec(compile(code, f"{path.name}[block {i}]", "exec"), ns)
+        # a block inside a list item is indented with it
+        exec(compile(textwrap.dedent(code), f"{path.name}[block {i}]", "exec"), ns)
         ran += 1
     assert ran
 

@@ -488,6 +488,30 @@ building the prototype. The upstream requests are tracked in discopt#1249.
       exactly, and the fixed magnetic term is added back, with its
       T-derivatives for H, S and Cp taken by finite differences.
 
+19. **Site fractions on the domain floor** (issue #13). A terminal phase can
+    have an equilibrium solubility far below `DOMAIN_FLOOR` (about 1e-14 Al in
+    FCC Ni next to Al₃Ni, in an EMT-fitted Ni–Al database). The optimum then
+    lies on the bound. The interior-point solve reaches it but does not
+    declare convergence, and a warm start exactly on a bound is not interior
+    either. `solve_restricted` therefore treats a free site fraction within
+    10 floors of a bound as an active constraint. It solves with that fraction
+    pinned first, then frees everything from there, keeping the free solve
+    only if it succeeds and is no worse. After a failed solve, it pins the
+    fractions that ended on a bound and tries once more. Separately, when
+    several new sets were added at once and R fails, the loop backs off to
+    the single most destabilizing one. Pricing still checks every bound
+    afterwards, so the certificate is unaffected. When only stoichiometric
+    sets are active, R is a linear program, and if μ is not unique the loop
+    takes the μ in the middle of the compounds' stability range (§9.12).
+20. **Order–disorder stand-ins** (issue #14). `ordering.stand_in` rewrites a
+    partitioned phase, G_dis(x) + G_ord(y) − G_ord(x), as a plain CEF phase.
+    Every source parameter's factor in y is projected onto endmembers,
+    Redlich–Kister terms up to order 3, and reciprocal terms of order 0–2.
+    Each stand-in parameter is then a fixed linear combination of the source
+    parameters' functions. For Dupin's Ni–Al, L1₂ and B2 are exact, matching
+    pycalphad to 1e-10 J/mol, apart from what is dropped: magnetism, and
+    vacancies on substitutional sublattices.
+
 ## 10. Roadmap after MVP 1
 
 **MVP 1 status: done.**

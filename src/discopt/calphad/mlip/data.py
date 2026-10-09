@@ -286,11 +286,13 @@ def _mixing(model, db, elements, mixing, method, policy, structures, sigma, mode
         cons = _constituents(db, name, elements)
         ps.check_ratios(db.phases[name].site_ratios, cons, name)
         mix = [s for s, c in enumerate(cons) if set(elements) <= set(c)]
-        if len(mix) != 1 or any(len(c) > 1 for s, c in enumerate(cons) if s != mix[0]) or "VA" in cons[mix[0]]:
+        if len(mix) != 1 or any(len(c) > 1 for s, c in enumerate(cons) if s != mix[0]):
             raise NotImplementedError(
                 f"{name}: SQS mixing needs exactly one sublattice mixing {elements}, "
-                f"without VA, and every other sublattice fixed; the phase has {cons}"
+                f"and every other sublattice fixed; the phase has {cons}"
             )
+        # VA may also be allowed on the mixing sublattice: the SQS mix the two elements only, at a
+        # vacancy fraction of zero, and the observations say so through their site fractions.
         m = mix[0]
         fixed = {s: c[0] for s, c in enumerate(cons) if s != m}
         ends = {}

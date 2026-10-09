@@ -27,6 +27,10 @@ the tangent-plane distance Ψ(y) = G(y) − μ·A(y):
 - **Fitting:** weighted least squares of TDB parameters to thermochemical,
   activity and phase-equilibrium data (one-sided boundary points included),
   with an ESPEI JSON reader and a real Cu–Mg example.
+- **Order–disorder stand-ins (issue #14):** `ordering.stand_in` rewrites a
+  partitioned phase (L1₂, B2) as a plain phase the solver supports. For Ni–Al
+  both are exact (pycalphad agrees to 1e-10 J/mol); magnetism and vacancies on
+  substitutional sites are dropped and listed.
 - **Data from ASE calculators (issue #5, phase 1):** `discopt.calphad.mlip`
   turns any ASE calculator (a machine-learned potential such as UMA or MACE,
   EAM, EMT) into fitting data: formation enthalpies of compounds and CEF

@@ -592,17 +592,35 @@ class _PhaseBasis:
     def atoms(self, y) -> float:
         return float(sum(self.model.amounts(y)))
 
-    def thermo(self, kind: str, x: float | None, t: float, y=None) -> np.ndarray:
+    def thermo(self, kind: str, x: float | None, t: float, y=None, site_fractions=None) -> np.ndarray:
+        """A thermochemical quantity per mole of atoms.
+
+        ``_MIX`` is relative to the phase's own endmembers. With one site
+        fraction that is the two pure ends. With several, it needs
+        ``site_fractions`` in which exactly one sublattice is mixed: the
+        reference is then Σ_c y_c · (the endmember with c alone on that
+        sublattice, every other sublattice as given).
+        """
         if kind == "HM_FORM":
             raise ValueError("HM_FORM needs reference phases: use formation()")
         prop = _PROP[kind.removesuffix("_MIX")]
         y = self.y_of(x) if y is None else np.asarray(y, float)
         F = self.F(prop, y, t)
         if kind.endswith("_MIX"):
-            if self.model.n_y != 1:
-                raise ValueError(f"{kind}: mixing quantities need a phase with one site fraction")
-            y1 = float(y[0])
-            F = F - y1 * self.F(prop, [1.0 - _ENDPOINT], t) - (1 - y1) * self.F(prop, [_ENDPOINT], t)
+            if self.model.n_y == 1:
+                y1 = float(y[0])
+                F = F - y1 * self.F(prop, [1.0 - _ENDPOINT], t) - (1 - y1) * self.F(prop, [_ENDPOINT], t)
+            else:
+                if site_fractions is None:
+                    raise ValueError(f"{kind} on {self.name}: give site_fractions (it has several site fractions)")
+                mixed = [s for s, d in enumerate(site_fractions) if sum(v > 0 for v in d.values()) > 1]
+                if len(mixed) != 1:
+                    raise ValueError(f"{kind} on {self.name}: needs exactly one mixed sublattice, got {len(mixed)}")
+                m = mixed[0]
+                for c, v in site_fractions[m].items():
+                    if v > 0:
+                        end = [dict(d) if s != m else {c: 1.0} for s, d in enumerate(site_fractions)]
+                        F = F - v * self.F(prop, self.y_from_site_fractions(end), t)
         return F / self.atoms(y)
 
     def y_at(self, x: float, t: float) -> np.ndarray:
@@ -742,7 +760,7 @@ def _rows(lm: _LinearModel, obs: Observation):
         if obs.kind == "HM_FORM":
             vec = ph.formation(ph.y_of(obs.x) if y is None else y, obs.T, obs.reference)
         else:
-            vec = ph.thermo(obs.kind, obs.x, obs.T, y)
+            vec = ph.thermo(obs.kind, obs.x, obs.T, y, obs.site_fractions)
         return [vec], [obs.value], [obs.sigma]
     if obs.kind == "ACR":
         k = lm.elements.index(obs.element)

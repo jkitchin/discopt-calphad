@@ -229,9 +229,12 @@ def test_espei_reader_on_the_cu_mg_data(cumg):
     root = Path(__file__).parents[1] / "examples" / "data" / "espei-cu-mg"
     ds, skipped = read_espei(root, cumg, CUMG, phase_map={"LAVES_C15": "CU2MG"})
     kinds = {k: sum(o.kind == k for o in ds) for k in ("ZPF", "HM_MIX", "HM_FORM", "ACR")}
-    assert kinds == {"ZPF": 238, "HM_MIX": 51, "HM_FORM": 15, "ACR": 9}
+    assert kinds == {"ZPF": 238, "HM_MIX": 55, "HM_FORM": 15, "ACR": 9}
     reasons = " ".join(r for _, r in skipped)
-    assert "BCC_A2" in reasons and "HM_MIX on HCP_A3" in reasons and "2 site fractions" in reasons
+    assert "BCC_A2" in reasons and "does not fit HCP_A3" in reasons
+    # Bocklund's Laves mixing enthalpies mix one sublattice at a time: read, and usable by the fit
+    laves = [o for o in ds if o.kind == "HM_MIX" and o.phase == "CU2MG"]
+    assert len(laves) == 4
     # Garg (1973): a_Mg in the liquid at 1200 K, x_Cu = 0.9 -> x (first element, Cu) = 0.9, σ(ln a) = 500/RT
     acr = next(o for o in ds if o.kind == "ACR" and o.x == pytest.approx(0.9))
     assert acr.element == "MG" and acr.value == pytest.approx(0.0057)
@@ -312,3 +315,22 @@ def test_predict_and_enthalpy_form():
     theta = Dataset(ds.observations[:1])
     res = fit(alcu, theta, ("AL", "CU"), {"G(ALCU_THETA,AL:CU;0)": enthalpy_form(alcu, "G(ALCU_THETA,AL:CU;0)")})
     assert res.parameters["G(ALCU_THETA,AL:CU;0).a"] == pytest.approx(0.0, abs=1e-3)  # the datum said ΔH_f = 0
+
+
+def test_mixing_on_one_sublattice_of_a_cef_phase(cumg):
+    """HM_MIX on Cu2Mg with one sublattice mixed: relative to the two endmembers of that sublattice."""
+    from discopt.calphad.fit import _LinearModel, predict
+
+    ph = _LinearModel(cumg, CUMG, []).phase("CU2MG")
+    sf = ({"CU": 0.5, "MG": 0.5}, {"MG": 1.0})
+    obs = Observation("HM_MIX", 298.15, 0.0, 1.0, phase="CU2MG", site_fractions=sf)
+    h = lambda f: ph.F("H", ph.y_from_site_fractions(f), 298.15)[0] / 3  # noqa: E731
+    expected = h(sf) - 0.5 * h(({"CU": 1.0}, {"MG": 1.0})) - 0.5 * h(({"MG": 1.0}, {"MG": 1.0}))
+    assert predict(cumg, [obs], CUMG)[0] == pytest.approx(expected, rel=1e-12)
+    # the CU,MG:* interaction is per formula unit (y_Cu y_Mg L0), and a formula unit has 3 atoms
+    assert expected == pytest.approx(0.25 * 6599.45 / 3, rel=1e-6)
+    with pytest.raises(ValueError, match="exactly one mixed sublattice"):
+        bad = Observation(
+            "HM_MIX", 298.15, 0.0, 1.0, phase="CU2MG", site_fractions=({"CU": 0.5, "MG": 0.5}, {"CU": 0.5, "MG": 0.5})
+        )
+        predict(cumg, [bad], CUMG)
