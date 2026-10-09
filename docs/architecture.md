@@ -481,8 +481,12 @@ building the prototype. The upstream requests are tracked in discopt#1249.
     - **Next.** Interval rules for ln(1 + β) and for f on s-intervals that may
       straddle 1. Then global pricing split into the branch regions, each
       solved with its branch constraints and taking the smaller bound.
-    - **Fitting.** `fit` refuses magnetic phases, because G is not linear in
-      TC and BMAGN.
+    - **Fitting.** G is not linear in TC and BMAGN, so `fit` cannot free
+      them. It does fit the G and L parameters of a magnetic phase, and data
+      referenced to one (a formation enthalpy against magnetic FCC Ni): the
+      probes run with TC and BMAGN at zero, which removes the magnetic term
+      exactly, and the fixed magnetic term is added back, with its
+      T-derivatives for H, S and Cp taken by finite differences.
 
 ## 10. Roadmap after MVP 1
 

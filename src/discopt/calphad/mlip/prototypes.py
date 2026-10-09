@@ -13,7 +13,9 @@ constituent leaves its sites empty.
 Phase names are not standardized across databases (``LAVES_C15`` and
 ``C15_LAVES``; ``ALCU_THETA`` for C16). :data:`PHASES` holds the common
 generic names, and every function that takes a phase also takes a
-:class:`PhaseStructure`, or a plain ``ase.Atoms`` with a site map, from the user.
+:class:`PhaseStructure` from the user: a registered prototype with a
+sublattice map, or any ``ase.Atoms`` with the atoms of each sublattice
+(:meth:`PhaseStructure.from_atoms`), for a structure that is not registered.
 """
 
 from __future__ import annotations
@@ -41,6 +43,9 @@ class Prototype:
     sites: dict[str, tuple[float, float, float]]
     cell: tuple[float, float, float, float, float, float] = (1.0, 1.0, 90.0, 90.0, 90.0)
     description: str = ""
+    #: a user structure (see :meth:`PhaseStructure.from_atoms`): ``ase.Atoms`` whose array
+    #: ``"wyckoff"`` names each atom's site; used instead of the space group when set
+    template: object = field(default=None, compare=False, repr=False)
 
     def build(self, decoration: dict[str, str], volume_per_atom: float | None = None):
         """``ase.Atoms`` with each site label occupied by an element symbol (``"VA"``: empty).
@@ -53,23 +58,27 @@ class Prototype:
         missing = set(self.sites) - set(decoration)
         if missing:
             raise ValueError(f"{self.name}: no decoration for sites {sorted(missing)}")
-        labels = list(self.sites)
-        ba, ca, al, be, ga = self.cell
-        # Build with a placeholder element so empty (VA) sites keep their positions until removed.
-        atoms = crystal(
-            ["X"] * len(labels),
-            basis=[self.sites[k] for k in labels],
-            spacegroup=self.spacegroup,
-            cellpar=[1.0, ba, ca, al, be, ga],
-            primitive_cell=False,
-        )
-        kinds = atoms.get_array("spacegroup_kinds")
-        site = np.array([labels[k] for k in kinds], dtype=object)
+        if self.template is not None:
+            atoms = self.template.copy()
+            site = np.array(atoms.get_array("wyckoff"), dtype=object)
+        else:
+            labels = list(self.sites)
+            ba, ca, al, be, ga = self.cell
+            # Build with a placeholder element so empty (VA) sites keep their positions until removed.
+            atoms = crystal(
+                ["X"] * len(labels),
+                basis=[self.sites[k] for k in labels],
+                spacegroup=self.spacegroup,
+                cellpar=[1.0, ba, ca, al, be, ga],
+                primitive_cell=False,
+            )
+            kinds = atoms.get_array("spacegroup_kinds")
+            site = np.array([labels[k] for k in kinds], dtype=object)
+            del atoms.arrays["spacegroup_kinds"]
         symbols = [decoration[s] for s in site]
         keep = np.array([s.upper() != "VA" for s in symbols])
         atoms.set_chemical_symbols([s if k else "H" for s, k in zip(symbols, keep)])
         atoms.set_array("wyckoff", site.astype(str))
-        del atoms.arrays["spacegroup_kinds"]
         atoms = atoms[keep]
         if len(atoms) == 0:
             raise ValueError(f"{self.name}: every site is vacant")
@@ -166,6 +175,36 @@ class PhaseStructure:
             raise ValueError(f"{self.prototype.name}: unknown sites {sorted(unknown)}")
         if len(set(used)) != len(used) or set(used) != set(self.prototype.sites):
             raise ValueError(f"{self.prototype.name}: every site must belong to exactly one sublattice")
+
+    @classmethod
+    def from_atoms(cls, atoms, sublattices, name: str = "custom", note: str = "") -> PhaseStructure:
+        """A structure that is not registered: ``ase.Atoms`` and, per sublattice of the phase, its atoms.
+
+        ``sublattices`` has one entry per sublattice of the database phase, in
+        its order: the indices of the atoms on that sublattice, or None for a
+        sublattice that holds only vacancies. Every atom must be on exactly one
+        sublattice. The chemical symbols of ``atoms`` do not matter; each
+        endmember decorates the sublattices anew. Give positions and cell as
+        relaxed or reasonable as you have them: the cell is rescaled to a
+        Vegard volume before relaxation, but not reshaped.
+        """
+        labels = np.full(len(atoms), "", dtype=object)
+        subl = []
+        for s, idx in enumerate(sublattices):
+            if idx is None:
+                subl.append(None)
+                continue
+            idx = [int(i) for i in idx]
+            if any(labels[i] for i in idx):
+                raise ValueError(f"an atom of sublattice {s} is already on another sublattice")
+            labels[idx] = f"s{s}"
+            subl.append((f"s{s}",))
+        if any(lab == "" for lab in labels):
+            raise ValueError("every atom must belong to a sublattice")
+        template = atoms.copy()
+        template.set_array("wyckoff", labels.astype(str))
+        sites = {lab[0]: (0.0, 0.0, 0.0) for lab in subl if lab}
+        return cls(Prototype(name, 0, sites, template=template, description="user structure"), tuple(subl), note)
 
     def site_counts(self) -> list[int]:
         """Atoms per sublattice in the conventional cell (0 for a vacancy-only sublattice)."""

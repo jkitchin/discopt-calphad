@@ -244,3 +244,71 @@ def test_espei_reader_on_the_cu_mg_data(cumg):
     zhou = [o for o in ds if o.source == "Zhou2007"]
     assert [o.site_fractions for o in zhou][0] == ({"CU": 1.0}, {"MG": 1.0})
     assert [o.value for o in zhou if o.phase == "CU2MG"] == [-15720.0, 34720.0, 7000.0, 15500.0]
+
+
+# ---------------------------------------------------------------------------- magnetic phases
+
+ALNI = ("AL", "NI")
+
+
+@pytest.fixture(scope="module")
+def alni():
+    return databases.load("alni_dupin")
+
+
+def test_magnetic_phase_rows_include_the_fixed_magnetic_term(alni):
+    """FCC_A1 is magnetic in Al-Ni: G matches the model, H is the Gibbs-Helmholtz derivative, also at 298.15 K."""
+    from discopt.calphad.fit import _LinearModel
+
+    fcc = _LinearModel(alni, ALNI, []).phase("FCC_A1")
+    model = alni.phase_model("FCC_A1", ALNI)
+    assert model.magnetic is not None
+    for t, x in [(600.0, 0.1), (298.15, 0.0)]:
+        y = fcc.y_from_site_fractions([{"AL": x, "NI": 1 - x}, {"VA": 1.0}])
+        assert fcc.F("G", y, t)[0] == pytest.approx(float(model.gibbs(y, T=t)) * R_GAS * t, rel=1e-12)
+    y, t, h = fcc.y_from_site_fractions([{"AL": 0.1, "NI": 0.9}, {"VA": 1.0}]), 600.0, 1e-3
+    g_over_t = lambda tt: fcc.F("G", y, tt)[0] / tt  # noqa: E731
+    assert fcc.F("H", y, t)[0] == pytest.approx(-t * t * (g_over_t(t + h) - g_over_t(t - h)) / (2 * h), rel=1e-7)
+    assert np.isfinite(fcc.F("H", fcc.y_from_site_fractions([{"NI": 1.0}, {"VA": 1.0}]), 298.15)[0])
+
+
+def test_fit_through_a_magnetic_reference_and_a_magnetic_phase(alni):
+    """A compound's formation enthalpy refers to magnetic FCC Ni; FCC itself is magnetic. Both used to raise."""
+    from discopt.calphad.fit import _LinearModel
+
+    lm = _LinearModel(alni, ALNI, [])
+    fcc = lm.phase("FCC_A1")
+    ds = Dataset().add_formation(
+        "AL3NI1", lm.phase("AL3NI1").formation(np.empty(0), 298.15)[0], 100.0, endmember="AL:NI"
+    )
+    for x in (0.1, 0.2):
+        y = fcc.y_from_site_fractions([{"AL": x, "NI": 1 - x}, {"VA": 1.0}])
+        ds.add_thermo("HM_MIX", "FCC_A1", 800.0, x, fcc.thermo("HM_MIX", None, 800.0, y)[0], 50.0)
+    free = {
+        "G(AL3NI1,AL:NI;0)": "a + 12.29913*T + 0.75*GHSERAL + 0.25*GHSERNI",
+        "L(FCC_A1,AL,NI:VA;0)": "a + 16.212965*T",
+        "L(FCC_A1,AL,NI:VA;1)": "a - 34.914168*T",
+    }
+    res = fit(alni, ds, ALNI, free)
+    assert res.parameters["G(AL3NI1,AL:NI;0).a"] == pytest.approx(-48483.73, abs=1e-3)
+    assert res.parameters["L(FCC_A1,AL,NI:VA;0).a"] == pytest.approx(-162407.75, abs=1e-3)
+    assert res.parameters["L(FCC_A1,AL,NI:VA;1).a"] == pytest.approx(73417.798, abs=1e-3)
+    with pytest.raises(NotImplementedError, match="TC and BMAGN cannot be fitted"):
+        fit(alni, ds, ALNI, {"TC(FCC_A1,NI:VA;0)": "a"})
+
+
+def test_predict_and_enthalpy_form():
+    from discopt.calphad.fit import enthalpy_form, predict
+
+    alcu = databases.load("alcuy_zhang")
+    assert enthalpy_form(alcu, "G(ALCU_THETA,AL:CU;0)") == "a + 6.75*T+2*GHSERAL#+GHSERCU#"
+    assert enthalpy_form(alcu, "L(FCC_A1,AL,CU:VA;1)") == "a - 2*T"
+    assert enthalpy_form(alcu, "L(FCC_A1,AL,CU:VA;2)") == "a"
+    ds = Dataset().add_formation("ALCU_THETA", 0.0, 1.0, endmember="AL:CU")
+    ds.add_thermo("HM_MIX", "FCC_A1", 298.15, 0.5, 0.0, 1.0)
+    # θ: -47406/3 J/mol of atoms; FCC: x(1-x) L0 at 298 K, H of (-53520 + 2T) is -53520
+    assert predict(alcu, ds, ("AL", "CU")) == pytest.approx([-47406 / 3, 0.25 * -53520], abs=1.0)
+    # an enthalpy-only fit with that form recovers the constant and keeps the assessed entropy term
+    theta = Dataset(ds.observations[:1])
+    res = fit(alcu, theta, ("AL", "CU"), {"G(ALCU_THETA,AL:CU;0)": enthalpy_form(alcu, "G(ALCU_THETA,AL:CU;0)")})
+    assert res.parameters["G(ALCU_THETA,AL:CU;0).a"] == pytest.approx(0.0, abs=1e-3)  # the datum said ΔH_f = 0

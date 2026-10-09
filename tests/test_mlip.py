@@ -329,3 +329,22 @@ def test_site_fraction_observations_round_trip(tmp_path):
     assert back.observations == ds.observations
     assert back.observations[0].site_fractions == ({"AL": 1.0}, {"CU": 1.0})
     assert back.sources() == {"uma": 1}
+
+
+def test_a_structure_from_plain_atoms_matches_the_registered_prototype(db):
+    """θ-Al2Cu given as ase.Atoms plus the atoms of each sublattice: the same data as the C16 prototype."""
+    c16 = mlip.phase_structure(*THETA["ALCU_THETA"])
+    atoms = c16.build(("AL", "CU"), volume_per_atom=15.0)
+    wyckoff = atoms.get_array("wyckoff")
+    sublattices = [[i for i, w in enumerate(wyckoff) if w == "8h"], [i for i, w in enumerate(wyckoff) if w == "4a"]]
+    custom = mlip.PhaseStructure.from_atoms(atoms, sublattices, name="theta")
+    assert custom.site_counts() == [8, 4]
+    model = mlip.from_ase(EMT(), name="EMT")
+    kw = dict(compounds={"ALCU_THETA": ["AL:CU"]}, sigma=1.0)
+    ref = mlip.compute(model, db, EL, structures=THETA, **kw)
+    mine = mlip.compute(model, db, EL, structures={"ALCU_THETA": (atoms, sublattices)}, **kw)
+    assert mine.dataset.observations[0].value == pytest.approx(ref.dataset.observations[0].value, abs=1e-6)
+    with pytest.raises(ValueError, match="every atom"):
+        mlip.PhaseStructure.from_atoms(atoms, [sublattices[0], []])
+    with pytest.raises(ValueError, match="already on another"):
+        mlip.PhaseStructure.from_atoms(atoms, [sublattices[0], sublattices[0] + sublattices[1]])
