@@ -166,7 +166,8 @@ The diagram object is plain data, so other backends are possible.
 > Free parameters are TDB labels with a symbolic T-form that is linear in its
 > coefficients. The site-fraction factors φ_p are found by probing the phase
 > models, so no separate `linear_in` is needed. H, S and Cp come from symbolic
-> T-derivatives. μ-based data (activities, ZPF) need a binary system. Boundary
+> T-derivatives. μ-based data (activities, ZPF) work in any number of elements,
+> with compositions given as a dict by element (#11). Boundary
 > points without a measured partner composition use the driving-force
 > residual (the unmeasured phase touches the measured phase's tangent), and
 > μ of a multi-sublattice phase uses its internal equilibrium. Both are
@@ -187,7 +188,12 @@ The diagram object is plain data, so other backends are possible.
 >   candidate measurements by their exact expected variance reduction, and
 >   chooses batches greedily, or by `discopt.doe`'s Fedorov exchange when
 >   discopt-doe is installed;
-> - μ-based data in ternaries: #11.
+> - ~~μ-based data in ternaries: #11~~ done. The measured phases keep the
+>   first full phase's tangent as the reference, with μ-equality rows for the
+>   others (ESPEI averages them instead; both vanish exactly at equilibrium,
+>   and keeping the reference leaves every binary result unchanged). A line or
+>   point phase in a ternary is put on that tangent and made stationary along
+>   its own variables.
 
 ```python
 from discopt.calphad.fit import Dataset, fit

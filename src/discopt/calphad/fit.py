@@ -49,7 +49,13 @@ from :mod:`discopt.calphad.mlip` supplies. Every observation carries a
 
 ESPEI JSON datasets are read by :meth:`Dataset.from_espei`.
 
-Scope: μ-based data (activities, phase equilibria) needs a binary system. The
+Compositions are a float in a binary (the first element's fraction), or, in
+any system, a dict by element or a sequence (the last element may be left
+out). μ of a phase comes from the gradient of G per mole of atoms; a phase
+whose compositions do not span the system (a line phase in a ternary) is put
+on the reference tangent instead, and stationary along its own variables. E
+compounds with independent compositions fix μ when no composition was
+measured. Errors in variables still need a binary. The
 driving-force minimum is a local search (sampling, then refinement), so a very
 narrow well of an unmeasured phase can be missed. By default each measured
 composition is taken as exact, and its uncertainty goes into the J/mol σ of
@@ -91,6 +97,52 @@ _ENDPOINT = 1e-14
 
 
 # ---------------------------------------------------------------------------- data
+
+
+def _normalize_x(x):
+    """A composition as given: None, a float (binary: the first element), a dict by element, or a tuple."""
+    if x is None:
+        return None
+    if isinstance(x, dict):
+        return {str(k).upper(): float(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple, np.ndarray)):
+        return tuple(float(v) for v in x)
+    return float(x)
+
+
+def _composition(elements, x) -> np.ndarray:
+    """Mole fractions of every element, in ``elements`` order, from a composition as given.
+
+    A float is the first element's fraction in a binary. A dict or a sequence
+    may leave out the last element, which is then 1 minus the rest.
+    """
+    E = len(elements)
+    if x is None:
+        raise ValueError("a composition is required")
+    if isinstance(x, dict):
+        given = {k.upper(): float(v) for k, v in x.items()}
+        stray = set(given) - set(elements)
+        if stray:
+            raise ValueError(f"composition names {sorted(stray)}, not in {elements}")
+        missing = [e for e in elements if e not in given]
+        if len(missing) > 1:
+            raise ValueError(f"composition {given} leaves out {missing}; at most one may be implied")
+        v = np.array([given.get(e, np.nan) for e in elements])
+        if missing:
+            v[elements.index(missing[0])] = 1.0 - np.nansum(v)
+    elif isinstance(x, (tuple, list, np.ndarray)):
+        v = np.array(x, float)
+        if v.size == E - 1:
+            v = np.append(v, 1.0 - v.sum())
+        if v.size != E:
+            raise ValueError(f"composition {tuple(x)} does not match {elements}")
+    else:
+        if E != 2:
+            raise ValueError(f"a single mole fraction is only for binaries; give one per element of {elements}")
+        v = np.array([float(x), 1.0 - float(x)])
+    if np.any(v < -1e-12) or abs(v.sum() - 1.0) > 1e-9:
+        raise ValueError(f"composition {v} must be nonnegative and sum to 1")
+    return np.clip(v, 0.0, 1.0)
 
 
 def _broadcast(*args):
@@ -145,7 +197,8 @@ class Observation:
             raise ValueError("sigma must be positive")
         if self.kind == "ACR" and self.value <= 0:
             raise ValueError("an activity must be positive")
-        self.phases = tuple((str(n).upper(), None if xx is None else float(xx)) for n, xx in self.phases)
+        self.phases = tuple((str(n).upper(), _normalize_x(xx)) for n, xx in self.phases)
+        self.x = _normalize_x(self.x)
         if self.phase is not None:
             self.phase = self.phase.upper()
         if self.site_fractions is not None:
@@ -568,14 +621,58 @@ class _PhaseBasis:
             d2 = (2 * g - 5 * g1 + 4 * g2 - g3) / (h * h)
         return {"S": -d1, "H": g - t * d1, "CP": -t * d2}[prop]
 
-    def y_of(self, x: float) -> np.ndarray:
+    def _determined(self) -> bool:
+        """Whether a composition fixes the site fractions (no internal degree of freedom)."""
+        return self.model.n_y <= len(self.lm.elements) - 1
+
+    def spans(self) -> bool:
+        """Whether the phase's compositions span the whole system (not a line or a point in it).
+
+        Only such a phase has a full tangent of its own, and can fix every μ.
+        """
+        E = len(self.lm.elements)
+        if self.model.n_y < E - 1:
+            return False
+        rng = np.random.default_rng(1)
+        u = rng.uniform(0.2, 0.8, self.model.n_y)
+
+        def comp(v):
+            a = np.array([float(w) for w in self.model.amounts(v)])
+            return a / a.sum()
+
+        J = np.array([(comp(u + 1e-6 * e) - comp(u - 1e-6 * e)) / 2e-6 for e in np.eye(self.model.n_y)])
+        return int(np.linalg.matrix_rank(J, tol=1e-8)) == E - 1
+
+    def touch_rows(self, x, mu: np.ndarray, t: float) -> list[np.ndarray]:
+        """Rows that put a measured phase whose compositions do not span the system on the tangent.
+
+        At its measured composition it touches the tangent of ``mu``, and the
+        tangent distance is stationary along each of its own site fractions.
+        """
+        y = self.y_of(x) if self._determined() else self.y_at(x, t)
+        rows = [self.tangent_row(y, mu, t)]
+        for k in range(self.model.n_y):
+            h = min(1e-6, y[k] / 2, (1 - y[k]) / 2) or 1e-9
+            yp, yn = y.copy(), y.copy()
+            yp[k] += h
+            yn[k] -= h
+            Gp = self.F("G", yp, t) - np.array(self.model.amounts(yp), float) @ mu
+            Gn = self.F("G", yn, t) - np.array(self.model.amounts(yn), float) @ mu
+            rows.append((Gp - Gn) / (2 * h) / self.atoms(y))
+        return rows
+
+    def y_of(self, x) -> np.ndarray:
+        """Site fractions at composition ``x`` (see :func:`_composition`), when the composition fixes them."""
         if self.model.n_y == 0:
             return np.empty(0)
-        if self.model.n_y != 1:
-            raise NotImplementedError(f"{self.name}: fitting data needs a phase with at most one site fraction")
-        y = self.model.initial_y((x, 1.0 - x))
+        if not self._determined():
+            raise NotImplementedError(
+                f"{self.name}: the composition does not fix its {self.model.n_y} site fractions; use y_at"
+            )
+        b = _composition(self.lm.elements, x)
+        y = self.model.initial_y(tuple(b))
         if y is None:
-            raise ValueError(f"{self.name}: x = {x:g} is outside the phase's composition range")
+            raise ValueError(f"{self.name}: composition {np.round(b, 6)} is outside the phase's composition range")
         return np.asarray(y, float)
 
     def y_from_site_fractions(self, fractions) -> np.ndarray:
@@ -635,26 +732,26 @@ class _PhaseBasis:
                         F = F - v * self.F(prop, self.y_from_site_fractions(end), t)
         return F / self.atoms(y)
 
-    def y_at(self, x: float, t: float) -> np.ndarray:
+    def y_at(self, x, t: float) -> np.ndarray:
         """Site fractions at overall composition ``x``.
 
-        With one site fraction or none, ``x`` fixes them. With more, they are
-        the internal equilibrium: the minimum of G at fixed ``x``, for the free
-        parameters at :attr:`_LinearModel.theta`. That makes rows built from them
-        depend on θ, and :func:`fit` iterates.
+        When the composition fixes them (:meth:`_determined`), they follow
+        directly. Otherwise they are the internal equilibrium: the minimum of G
+        at fixed composition, for the free parameters at
+        :attr:`_LinearModel.theta`. That makes rows built from them depend on θ,
+        and :func:`fit` iterates.
         """
-        if self.model.n_y <= 1:
+        if self._determined():
             return self.y_of(x)
-        if len(self.lm.elements) != 2:
-            raise NotImplementedError(f"{self.name}: compositions of multi-sublattice phases need a binary")
         from scipy.optimize import minimize
 
         self.lm.nonlinear = True
         model = self.lm.model_at(self.name)
+        b = _composition(self.lm.elements, x)
 
         def comp(u):
             a = np.array([float(v) for v in model.amounts(u)])
-            return a[0] / a.sum() - x
+            return a[:-1] / a.sum() - b[:-1]
 
         def g(u):
             with np.errstate(all="ignore"):
@@ -666,11 +763,11 @@ class _PhaseBasis:
         rng = np.random.default_rng(0)
         starts = []
         for u0 in [np.full(model.n_y, 0.5), *rng.uniform(0.02, 0.98, size=(11, model.n_y))]:
-            r = least_squares(lambda u: [comp(u)], u0, bounds=(0.0, 1.0), xtol=1e-14, ftol=1e-14, gtol=1e-14)
-            if abs(r.fun[0]) < 1e-9 and all(np.max(np.abs(r.x - s)) > 1e-3 for s in starts):
+            r = least_squares(comp, u0, bounds=(0.0, 1.0), xtol=1e-14, ftol=1e-14, gtol=1e-14)
+            if np.max(np.abs(r.fun)) < 1e-9 and all(np.max(np.abs(r.x - s)) > 1e-3 for s in starts):
                 starts.append(r.x)
         if not starts:
-            raise ValueError(f"{self.name}: x = {x:g} is outside the phase's composition range")
+            raise ValueError(f"{self.name}: composition {np.round(b, 6)} is outside the phase's composition range")
         best, best_g = None, math.inf
         for u0 in starts:
             r = minimize(
@@ -682,28 +779,43 @@ class _PhaseBasis:
                 options={"ftol": 1e-14, "maxiter": 300},
             )
             for u in (np.clip(r.x, 0.0, 1.0), u0):
-                if abs(comp(u)) < 1e-8 and g(u) < best_g:
+                if np.max(np.abs(comp(u))) < 1e-8 and g(u) < best_g:
                     best, best_g = np.array(u), g(u)
         return best
 
-    def mu(self, x: float, t: float) -> np.ndarray:
-        """Chemical potentials (J/mol) of the two elements on the tangent at ``x``: a 2 × (n+1) array."""
-        if len(self.lm.elements) != 2:
-            raise NotImplementedError(f"{self.name}: μ data needs a binary system")
-        if self.model.n_y > 1:
-            # G per mole of atoms along the internal equilibrium; d/dθ of it is the
-            # row at y*(x) (envelope theorem), and its x-derivative a difference of rows
-            h = min(1e-4, x / 50.0, (1.0 - x) / 50.0)
+    def mu(self, x, t: float) -> np.ndarray:
+        """Chemical potentials (J/mol) of every element on the tangent at composition ``x``: an E × (n+1) array.
 
-            def gm(xx):
-                y = self.y_at(xx, t)
+        In a binary, a phase with one site fraction uses the exact tangent of G
+        per formula unit. Otherwise G per mole of atoms, g(x), is evaluated at
+        the site fractions of each composition (:meth:`y_at`), and differentiated
+        along directions that exchange element i with the last one:
+        μ_last = g − Σ_i x_i ∂g/∂x_i and μ_i = μ_last + ∂g/∂x_i. Every g is a
+        row linear in θ (for an internal equilibrium, by the envelope theorem),
+        so μ is too.
+        """
+        if self.model.n_y == 0:
+            raise NotImplementedError(f"{self.name}: a compound has no tangent of its own")
+        E = len(self.lm.elements)
+        if not (E == 2 and self.model.n_y == 1):
+            b = _composition(self.lm.elements, x)
+
+            def gm(v):
+                y = self.y_at(v, t)
                 return self.F("G", y, t) / self.atoms(y)
 
-            g0 = gm(x)
-            dg = (gm(x - 2 * h) - 8 * gm(x - h) + 8 * gm(x + h) - gm(x + 2 * h)) / (12 * h)
-            return np.array([g0 + (1 - x) * dg, g0 - x * dg])
-        if self.model.n_y != 1:
-            raise NotImplementedError(f"{self.name}: a compound has no tangent of its own")
+            g0 = gm(b)
+            dg = []
+            for i in range(E - 1):
+                h = min(1e-4, b[i] / 50.0, b[-1] / 50.0)
+                if h <= 0:
+                    raise ValueError(f"{self.name}: μ at composition {np.round(b, 6)} needs every element present")
+                d = np.zeros(E)
+                d[i], d[-1] = 1.0, -1.0
+                f = [gm(b + k * h * d) for k in (-2, -1, 1, 2)]
+                dg.append((f[0] - 8 * f[1] + 8 * f[2] - f[3]) / (12 * h))
+            mu_last = g0 - sum(b[i] * dg[i] for i in range(E - 1))
+            return np.array([mu_last + dg[i] for i in range(E - 1)] + [mu_last])
         y = float(self.y_of(x)[0])
         h = min(1e-4, y / 50.0, (1.0 - y) / 50.0)
         Fs = [self.F("G", [y + k * h], t) for k in (-2, -1, 1, 2)]
@@ -795,16 +907,22 @@ def _zpf_reference(lm: _LinearModel, obs: Observation):
     """
     known = [(lm.phase(n), x) for n, x in obs.phases if lm.phase(n).model.n_y > 0 and x is not None]
     comps = [lm.phase(n) for n, _ in obs.phases if lm.phase(n).model.n_y == 0]
-    if known:
-        return known[0][0].mu(known[0][1], obs.T), comps
-    if len(lm.elements) != 2 or len(comps) < 2:
-        raise ValueError("ZPF: μ needs a measured composition or, in a binary, two compounds")
-    a, b = comps[0], comps[1]
-    Nmat = np.array([a.model.amounts(), b.model.amounts()], float)
-    if abs(np.linalg.det(Nmat)) < 1e-12:
-        raise ValueError(f"ZPF: {a.name} and {b.name} have the same composition and cannot fix μ")
-    ref = np.linalg.solve(Nmat, np.array([a.F("G", np.empty(0), obs.T), b.F("G", np.empty(0), obs.T)]))
-    return ref, comps[2:]
+    full = [(ph, x) for ph, x in known if ph.spans()]
+    if full:
+        return full[0][0].mu(full[0][1], obs.T), comps
+    E = len(lm.elements)
+    used = []
+    for c in comps:  # E compounds with independent compositions fix μ
+        trial = used + [c]
+        if np.linalg.matrix_rank(np.array([p.model.amounts() for p in trial], float)) == len(trial):
+            used = trial
+        if len(used) == E:
+            break
+    if len(used) < E:
+        raise ValueError(f"ZPF: μ needs a measured composition, or {E} compounds with independent compositions")
+    Nmat = np.array([p.model.amounts() for p in used], float)
+    ref = np.linalg.solve(Nmat, np.array([p.F("G", np.empty(0), obs.T) for p in used]))
+    return ref, [c for c in comps if all(c is not u for u in used)]
 
 
 def _zpf_rows(lm: _LinearModel, obs: Observation):
@@ -821,9 +939,13 @@ def _zpf_rows(lm: _LinearModel, obs: Observation):
     known = [(lm.phase(n), x) for n, x in obs.phases if lm.phase(n).model.n_y > 0 and x is not None]
     unknown = [lm.phase(n) for n, x in obs.phases if lm.phase(n).model.n_y > 0 and x is None]
     ref, comps = _zpf_reference(lm, obs)
+    full = [(ph, x) for ph, x in known if ph.spans()]
     vecs = []
-    for ph, x in known[1:]:
+    for ph, x in full[1:]:
         vecs.extend(ref - ph.mu(x, obs.T))
+    for ph, x in known:
+        if not ph.spans():  # a line or point phase: on the tangent, and stationary along its own variables
+            vecs.extend(ph.touch_rows(x, ref, obs.T))
     for ph in comps:
         N = np.array(ph.model.amounts(), float)
         vecs.append((N @ ref - ph.F("G", np.empty(0), obs.T)) / N.sum())
@@ -932,11 +1054,12 @@ class FitResult:
                 model = self.database.phase_model(name, self.elements)
                 if x is None and model.n_y == 0:
                     a = np.array(model.amounts(), float)
-                    x = a[0] / a.sum()
-                if x is not None:
-                    xs.append(x)
-            xbar = float(np.mean(xs))
-            res = equilibrium(phases, x=xbar, T=obs.T, eps=eps, **kwargs)
+                    xs.append(a / a.sum())
+                elif x is not None:
+                    xs.append(_composition(self.elements, x))
+            bbar = np.mean(xs, axis=0)
+            xbar = float(bbar[0]) if len(self.elements) == 2 else tuple(map(float, bbar))
+            res = equilibrium(phases, b=tuple(bbar), T=obs.T, eps=eps, **kwargs)
             observed = sorted(n for n, _ in obs.phases)
             computed = sorted(cs.phase.name for cs in res.composition_sets)
             out.append(
@@ -1282,6 +1405,8 @@ def _errors_in_variables(lm, data, fps, theta, lo, hi, iterations, converged) ->
         if o.kind == "ZPF" and o.sigma_x:
             for k, (name, x) in enumerate(o.phases):
                 if x is not None and lm.phase(name).model.n_y > 0:
+                    if not isinstance(x, float):
+                        raise NotImplementedError("errors_in_variables needs a binary (one mole fraction per phase)")
                     slots.append((j, k, float(x), float(o.sigma_x)))
     if not slots:
         raise ValueError("errors_in_variables needs ZPF observations with sigma_x and measured compositions")

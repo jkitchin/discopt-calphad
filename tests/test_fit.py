@@ -435,3 +435,128 @@ def test_consistent_data_need_no_cuts(db, alzn_700):
     assert consistent.parameters == pytest.approx(plain.parameters)
     with pytest.raises(ValueError, match="consistency must be"):
         fit(db, ds, EL, free, consistency="local")
+
+
+# ---------------------------------------------------------------------------- ternary μ data (#11)
+
+ALCUY = ("AL", "CU", "Y")
+TERNARY_FREE = {"L(LIQUID,AL,CU,Y;0)": "a + 8.03*T", "L(LIQUID,AL,Y;0)": "a + 29.03622*T"}
+TERNARY_TRUE = {"L(LIQUID,AL,CU,Y;0).a": -50886.6, "L(LIQUID,AL,Y;0).a": -192571.2}
+TERNARY_START = {"L(LIQUID,AL,CU,Y;0).a": -40000.0, "L(LIQUID,AL,Y;0).a": -180000.0}
+
+
+@pytest.fixture(scope="module")
+def alcuy():
+    return databases.load("alcuy_zhang")
+
+
+@pytest.fixture(scope="module")
+def alcuy_lines(alcuy):
+    """LIQUID + ALCU11Y3 tie-lines of the assessment, in the Al-rich corner."""
+    from discopt.calphad import equilibrium
+
+    phases = list(alcuy.phase_models(ALCUY).values())
+    out = []
+    for T, b in [(900.0, (0.85, 0.12, 0.03)), (1000.0, (0.7, 0.25, 0.05))]:
+        res = equilibrium(phases, b=b, T=T, certify="none")
+        sets = [(cs.phase.name, dict(zip(ALCUY, map(float, cs.x)))) for cs in res.composition_sets]
+        assert sorted(n for n, _ in sets) == ["ALCU11Y3", "LIQUID"]
+        out.append((T, sets))
+    return out
+
+
+def test_ternary_mu_satisfies_gibbs_duhem_and_the_gradient(alcuy):
+    from discopt.calphad.fit import _LinearModel
+
+    lm = _LinearModel(alcuy, ALCUY, [])
+    liq = lm.phase("LIQUID")
+    x, t = np.array([0.7, 0.2, 0.1]), 1000.0
+    mu = liq.mu(dict(zip(ALCUY, x)), t)[:, 0]
+
+    def g(v):
+        return liq.F("G", liq.y_of(tuple(v)), t)[0]
+
+    assert mu @ x == pytest.approx(g(x), rel=1e-10)
+    # an independent direction: Cu up, Al down; dg = μ_Cu - μ_Al
+    h, d = 1e-5, np.array([-1.0, 1.0, 0.0])
+    assert (g(x + h * d) - g(x - h * d)) / (2 * h) == pytest.approx(mu[1] - mu[0], rel=1e-6)
+    # a two-sublattice phase (AL2Y, four variables) at a ternary composition: its internal equilibrium
+    laves = lm.phase("AL2Y")
+    assert laves.model.n_y == 4 and not laves._determined()
+    y = laves.y_at({"AL": 0.6, "CU": 0.1, "Y": 0.3}, t)
+    a = np.array(laves.model.amounts(y), float)
+    assert a / a.sum() == pytest.approx([0.6, 0.1, 0.3], abs=1e-8)
+    mu_l = laves.mu({"AL": 0.6, "CU": 0.1, "Y": 0.3}, t)[:, 0]
+    assert mu_l @ [0.6, 0.1, 0.3] == pytest.approx(laves.F("G", y, t)[0] / a.sum(), rel=1e-8)
+
+
+def test_ternary_tie_lines_and_activities_recover_parameters(alcuy, alcuy_lines):
+    from discopt.calphad.fit import _LinearModel
+
+    truth = _LinearModel(alcuy, ALCUY, []).phase("LIQUID")
+    ds = Dataset()
+    for T, sets in alcuy_lines:
+        ds.add_equilibrium(T, sets, sigma=10.0)  # two-sided
+        ds.add_equilibrium(
+            T,
+            [
+                (sets[0][0], sets[0][1] if sets[0][0] == "LIQUID" else None),
+                (sets[1][0], sets[1][1] if sets[1][0] == "LIQUID" else None),
+            ],
+            sigma=10.0,
+        )  # one-sided
+    for comp in ({"AL": 0.7, "CU": 0.2, "Y": 0.1}, {"AL": 0.8, "CU": 0.1, "Y": 0.1}):
+        a = float(np.exp((truth.mu(comp, 1200.0)[1, 0] - truth.pure_mu("CU", 1200.0)[0]) / (R_GAS * 1200.0)))
+        ds.add(Observation("ACR", 1200.0, a, 0.01 * a, phase="LIQUID", x=comp, element="CU"))
+    res = fit(alcuy, ds, ALCUY, TERNARY_FREE, initial=TERNARY_START)
+    assert res.converged and res.chi2 < 1e-6
+    for k, v in TERNARY_TRUE.items():
+        assert res.parameters[k] == pytest.approx(v, abs=0.5)
+
+
+def test_ternary_espei_datasets(alcuy, alcuy_lines, tmp_path):
+    """ESPEI files for a ternary (ZPF with two composition entries, activities with two X conditions)."""
+    import json
+
+    from discopt.calphad.fit import _LinearModel
+
+    zpf = {
+        "components": ["AL", "CU", "Y", "VA"],
+        "phases": ["LIQUID", "ALCU11Y3"],
+        "output": "ZPF",
+        "conditions": {"P": 101325, "T": [T for T, _ in alcuy_lines]},
+        "values": [
+            [[n, ["CU", "Y"], [c["CU"], c["Y"]] if n == "LIQUID" else [None, None]] for n, c in sets]
+            for _, sets in alcuy_lines
+        ],
+        "reference": "synthetic",
+    }
+    truth = _LinearModel(alcuy, ALCUY, []).phase("LIQUID")
+    comps = [(0.2, 0.1), (0.1, 0.1)]
+    acts = [
+        float(
+            np.exp(
+                (truth.mu({"AL": 1 - c - y, "CU": c, "Y": y}, 1200.0)[1, 0] - truth.pure_mu("CU", 1200.0)[0])
+                / (R_GAS * 1200.0)
+            )
+        )
+        for c, y in comps
+    ]
+    acr = {
+        "components": ["AL", "CU", "Y"],
+        "phases": ["LIQUID"],
+        "output": "ACR_CU",
+        "reference_state": {"phases": ["LIQUID"], "conditions": {"P": 101325, "T": 1200, "X_CU": 1.0, "X_Y": 0.0}},
+        "conditions": {"P": 101325, "T": 1200, "X_CU": [c for c, _ in comps], "X_Y": [y for _, y in comps]},
+        "values": [[acts]],
+        "reference": "synthetic",
+    }
+    (tmp_path / "zpf.json").write_text(json.dumps(zpf))
+    (tmp_path / "acr.json").write_text(json.dumps(acr))
+    ds = Dataset.from_espei(tmp_path, alcuy, ALCUY)
+    assert not ds.skipped and sorted(o.kind for o in ds) == ["ACR", "ACR", "ZPF", "ZPF"]
+    zp = next(o for o in ds if o.kind == "ZPF")
+    assert isinstance(zp.phases[0][1], dict) and zp.phases[0][1]["AL"] == pytest.approx(1 - sum(zpf["values"][0][0][2]))
+    res = fit(alcuy, ds, ALCUY, TERNARY_FREE, initial=TERNARY_START)
+    for k, v in TERNARY_TRUE.items():
+        assert res.parameters[k] == pytest.approx(v, abs=5.0)

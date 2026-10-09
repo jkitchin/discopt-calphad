@@ -7,6 +7,7 @@ one JSON file per dataset. Three layouts are read:
   configurations): ``HM``, ``SM``, ``CPM``, ``GM`` and their ``_MIX`` forms, and
   ``HM_FORM``, at explicit site fractions;
 - **activities** (``"output": "ACR_<EL>"``) against a pure-element reference phase;
+  in a ternary, two ``X_<EL>`` conditions give each composition;
 - **ZPF** (``"output": "ZPF"``): coexisting phases at a temperature, with a
   composition for each phase or ``null`` when it was not measured.
 
@@ -30,6 +31,7 @@ from pathlib import Path
 import numpy as np
 
 from discopt.calphad.equilibrium.common import R_GAS
+from discopt.calphad.fit import Observation
 
 __all__ = ["DEFAULT_SIGMA", "read_espei"]
 
@@ -74,6 +76,12 @@ class _Reader:
 
     def x_first(self, element: str, fraction: float) -> float:
         return fraction if element.upper() == self.elements[0] else 1.0 - fraction
+
+    def composition(self, given: dict) -> np.ndarray:
+        """Every element's mole fraction, from all but (at most) one of them."""
+        from discopt.calphad.fit import _composition
+
+        return _composition(self.elements, given)
 
     def read(self, path: Path) -> None:
         d = json.loads(path.read_text())
@@ -165,35 +173,47 @@ class _Reader:
             return self.skip(path, f"reference {ref_name}: {ref_model}")
         cond = d["conditions"]
         xkeys = [k for k in cond if k.upper().startswith("X_")]
-        if len(xkeys) != 1:
-            return self.skip(path, "activities need one composition condition")
-        xel = xkeys[0][2:].upper()
-        ref_x = ref_state.get("conditions", {}).get(xkeys[0])
-        pure = 1.0 if element == self.elements[0] else 0.0
-        if ref_x is not None and abs(self.x_first(xel, float(ref_x)) - pure) > 1e-9:
+        if len(xkeys) != len(self.elements) - 1:
+            return self.skip(path, f"activities need {len(self.elements) - 1} composition conditions")
+        ref_c = {
+            k[2:].upper(): float(v) for k, v in ref_state.get("conditions", {}).items() if k.upper().startswith("X_")
+        }
+        if len(ref_c) == len(xkeys) and abs(self.composition(ref_c)[self.elements.index(element)] - 1.0) > 1e-9:
             return self.skip(path, f"the reference state is not pure {element}")
         values = np.asarray(d["values"], float)
-        Ts, Xs = _grid(cond["T"]), _grid(cond[xkeys[0]])
-        if values.shape != (len(_grid(cond.get("P", 101325))), len(Ts), len(Xs)):
+        Ts = _grid(cond["T"])
+        columns = {k[2:].upper(): _grid(cond[k]) for k in xkeys}
+        n = len(next(iter(columns.values())))
+        if any(len(c) != n for c in columns.values()) or values.shape != (
+            len(_grid(cond.get("P", 101325))),
+            len(Ts),
+            n,
+        ):
             return self.skip(path, f"values have shape {values.shape}")
         source, citation = self.cite(d)
         sig_mu = self.sigma["ACR"] / float(d.get("weight", 1.0))
         for j, t in enumerate(Ts):
-            for k, xv in enumerate(Xs):
-                x, a = self.x_first(xel, float(xv)), float(values[0, j, k])
-                if not 1e-9 < x < 1 - 1e-9 or a <= 0:
-                    continue  # a pure endpoint (a = 1 or 0) carries no information
-                self.data.add_activity(
-                    element,
-                    name,
-                    float(t),
-                    x,
-                    a,
-                    a * sig_mu / (R_GAS * float(t)),
-                    reference=ref_name,
-                    citation=citation,
+            for k in range(n):
+                comp = self.composition({e: float(c[k]) for e, c in columns.items()})
+                a = float(values[0, j, k])
+                if np.any(comp <= 1e-9) or a <= 0:
+                    continue  # an edge or a pure endpoint (a = 1 or 0) carries no information
+                x = float(comp[0]) if len(self.elements) == 2 else dict(zip(self.elements, map(float, comp)))
+                sig = a * sig_mu / (R_GAS * float(t))
+                self.data.add(
+                    Observation(
+                        "ACR",
+                        float(t),
+                        a,
+                        sig,
+                        phase=name,
+                        x=x,
+                        element=element,
+                        reference=ref_name,
+                        citation=citation,
+                        source=source,
+                    )
                 )
-                self.data.observations[-1].source = source
 
     # ------------------------------------------------------------------ phase equilibria
 
@@ -214,8 +234,12 @@ class _Reader:
                     break
                 comps, fracs = entry[1], entry[2]
                 x = None
-                if model.n_y > 0 and fracs and fracs[0] is not None:
-                    x = self.x_first(comps[0], float(fracs[0]))
+                if model.n_y > 0 and fracs and all(f is not None for f in fracs):
+                    if len(self.elements) == 2:
+                        x = self.x_first(comps[0], float(fracs[0]))
+                    else:
+                        c = self.composition({e.upper(): float(f) for e, f in zip(comps, fracs)})
+                        x = dict(zip(self.elements, map(float, c)))
                 pairs.append((name, x, model.n_y))
             if not reason:
                 known = [p for p in pairs if p[1] is not None]

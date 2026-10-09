@@ -25,7 +25,9 @@ phases this package cannot model.
 Know the limits before you promise a result:
 
 - **Systems:** binary systems are best supported. Ternaries work for
-  equilibria and thermochemical fits, but not for μ-based fit data.
+  equilibria and for fits, including activities and phase equilibria; give a
+  ternary composition as a dict, `{"AL": 0.7, "CU": 0.2, "Y": 0.1}`. Errors in
+  variables, SQS mixing data and `x=` in `equilibrium` are binary only.
 - **Unsupported phases:** order–disorder phases (B2, L1₂ in Ni–Al and Fe–Al)
   cannot be modelled directly, but `ordering.stand_in` turns each into a plain
   phase (see section 1). Ionic liquids cannot be modelled.
