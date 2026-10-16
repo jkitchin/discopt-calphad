@@ -56,7 +56,6 @@ from itertools import permutations
 import numpy as np
 
 from discopt.calphad.models.cef import CEFPhase, _prod
-from discopt.calphad.models.magnetic import Branch, branch_constraints, branch_of, branch_ranges, ihj
 from discopt.calphad.ops import NUM
 
 __all__ = ["PartitionedPhase"]
@@ -221,8 +220,7 @@ class PartitionedPhase:
         if not self.never_disorder:
             G = G - o.energy_at(y_ord, T)
         if d.magnetic is not None:
-            tc, beta = d._magnetic_sums(y_dis, T)
-            G = G + self.scale * ihj(d.magnetic, tc, beta, T, ops)
+            G = G + self.scale * d.magnetic.term(d._magnetic_q(y_dis, T), T, ops)
         return G
 
     def ordering_energy(self, y, T: float) -> float:
@@ -240,38 +238,41 @@ class PartitionedPhase:
 
     # ------------------------------------------------------------------ magnetism (the disordered part's, at x)
 
-    def _magnetic_sums(self, y, T, x=None):
+    def _magnetic_q(self, y, T, x=None):
         _, y_dis = self._at_x(self.ordered._Y(y), x)
-        return self.disordered._magnetic_sums(y_dis, T)
+        return self.disordered._magnetic_q(y_dis, T)
+
+    def _magnetic_value(self, name, y, T) -> float:
+        if self.magnetic is None or name not in self.magnetic.quantities:
+            return 0.0
+        q = self._magnetic_q(np.asarray(y, float), T)
+        return float(q[self.magnetic.quantities.index(name)])
 
     def curie_temperature(self, y, T: float) -> float:
-        return 0.0 if self.magnetic is None else float(self._magnetic_sums(np.asarray(y, float), T)[0])
+        return self._magnetic_value("tc", y, T)
+
+    def neel_temperature(self, y, T: float) -> float:
+        return self._magnetic_value("nt", y, T)
 
     def magnetic_moment(self, y, T: float) -> float:
-        return 0.0 if self.magnetic is None else float(self._magnetic_sums(np.asarray(y, float), T)[1])
+        return self._magnetic_value("beta", y, T)
 
-    def magnetic_branch(self, y, T: float) -> Branch | None:
+    def magnetic_branch(self, y, T: float):
         if self.magnetic is None:
             return None
-        return branch_of(self.curie_temperature(y, T), self.magnetic_moment(y, T), T, self.magnetic.afm)
+        q = [float(v) for v in self._magnetic_q(np.asarray(y, float), T)]
+        return self.magnetic.branch_at(q, T)
 
-    def branch_constraints(self, y, T: float, branch: Branch) -> list:
-        tc, beta = self._magnetic_sums(y, T)
-        return branch_constraints(self.magnetic, tc, beta, T, branch)
+    def branch_constraints(self, y, T: float, branch) -> list:
+        return self.magnetic.constraints(self._magnetic_q(y, T), T, branch)
 
     def magnetic_pieces(self, box, T: float):
         from discopt.calphad.ops import Interval
 
-        tc, beta = self._magnetic_sums([Interval(lo, hi) for lo, hi in box], T)
-        return branch_ranges(self.magnetic, tc, beta, T)
+        return self.magnetic.ranges(self._magnetic_q([Interval(lo, hi) for lo, hi in box], T), T)
 
-    def pricing_constraints(self, y, T: float, branch: Branch, s=None, x=None):
-        tc, beta = self._magnetic_sums(y, T, x)
-        rows = branch_constraints(self.magnetic, tc, beta, T, branch)
-        if s is None:
-            return [], [g for g in rows if g is not None]
-        tc_eff = tc * (1 / self.magnetic.afm) if branch.tc_negative else tc
-        return [s - tc_eff * (1 / T)], [g for g in rows[:2] if g is not None]
+    def pricing_constraints(self, y, T: float, branch, s=None, x=None):
+        return self.magnetic.pricing_rows(self._magnetic_q(y, T, x), T, branch, s)
 
     # ------------------------------------------------------------------ symmetry
 

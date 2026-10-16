@@ -161,12 +161,118 @@ def test_symbolic_view_matches_numeric(bcc):
             assert f(y, 1 - y, T, R_GAS) == pytest.approx(float(bcc.gibbs([y], NUM, T)) * R_GAS * T, rel=1e-10)
 
 
-def test_xiong_model_is_reported_unsupported():
-    db = ThermoDatabase.from_string(
-        TDB.replace("MAGNETIC -1.0 4.00000E-01", "MAGNETIC 0.0 0.25"),
-    )
-    with pytest.raises(UnsupportedModelError, match="Xiong"):
-        db.phase_model("BCC", ("A", "B"))
+XIONG_TDB = """
+ELEMENT VA VACUUM 0 0 0 !
+ELEMENT A BLANK 1 0 0 !
+ELEMENT B BLANK 1 0 0 !
+TYPE_DEFINITION % SEQ * !
+TYPE_DEFINITION & GES A_P_D BCC MAGNETIC 0.0 0.25 !
+PHASE BCC %& 2 1 3 !
+CONSTITUENT BCC : A,B : VA : !
+PARAMETER G(BCC,A:VA;0) 298.15 -8000-30*T; 6000 N !
+PARAMETER G(BCC,B:VA;0) 298.15 -7000-32*T; 6000 N !
+PARAMETER G(BCC,A,B:VA;0) 298.15 15000-6*T; 6000 N !
+PARAMETER TC(BCC,A:VA;0) 298.15 1000; 6000 N !
+PARAMETER TC(BCC,B:VA;0) 298.15 -50; 6000 N !
+PARAMETER NT(BCC,B:VA;0) 298.15 600; 6000 N !
+PARAMETER NT(BCC,A:VA;0) 298.15 -100; 6000 N !
+PARAMETER BMAGN(BCC,A:VA;0) 298.15 2.2; 6000 N !
+PARAMETER BMAGN(BCC,B:VA;0) 298.15 0.6; 6000 N !
+PARAMETER BMAGN(BCC,A,B:VA;0) 298.15 -0.5; 6000 N !
+PHASE LIQ % 1 1 !
+CONSTITUENT LIQ : A,B : !
+PARAMETER G(LIQ,A;0) 298.15 5000-36*T; 6000 N !
+PARAMETER G(LIQ,B;0) 298.15 6000-37*T; 6000 N !
+"""
+
+
+@pytest.fixture(scope="module")
+def xiong_db():
+    return ThermoDatabase.from_string(XIONG_TDB)
+
+
+def test_xiong_function_is_continuous_and_decreasing():
+    """With the τ²¹ term inside the (1/p − 1) bracket (Xiong et al. 2012), g is C¹ at τ = 1 and decreasing."""
+    from discopt.calphad.models.magnetic import _x_ord, _x_para
+
+    for p in (0.25, 0.28, 0.4):
+        assert _x_para(1.0, p) == pytest.approx(_x_ord(1.0, p), abs=1e-7)
+        h = 1e-6
+        assert (_x_para(1.0, p) - _x_para(1 - h, p)) / h == pytest.approx((_x_ord(1 + h, p) - _x_ord(1.0, p)) / h, rel=1e-4)
+        assert np.all(np.diff(_x_para(np.linspace(0, 1, 5001), p)) <= 0)
+        assert np.all(np.diff(_x_ord(np.geomspace(1, 1e3, 5001), p)) < 0)
+
+
+def test_xiong_phase_builds_with_neel_terms(xiong_db):
+    bcc = xiong_db.phase_model("BCC", ("A", "B"))
+    assert bcc.magnetic.xiong and bcc.magnetic.quantities == ("tc", "nt", "beta")
+    assert len(bcc.magnetic.nt) == 2
+    assert bcc.neel_temperature([0.2], 500.0) == pytest.approx(-100 * 0.2 + 600 * 0.8)
+
+
+def _pycalphad_xiong_shift(s, p):
+    """pycalphad 0.11.2 minus ours for one g with s = X/T: its τ²¹/1617 sits outside the (1/p − 1) bracket."""
+    from discopt.calphad.models.magnetic import _XB, _xD
+
+    if s < 1:  # τ > 1, or X ≤ 0: the same
+        return 0.0
+    return -(1 - _XB * (1 / p - 1)) * s**-21 / 1617 / _xD(p)
+
+
+@pytest.mark.parametrize("t", [300.0, 450.0, 700.0, 1100.0, 1500.0])
+def test_xiong_gibbs_matches_pycalphad(xiong_db, t):
+    pytest.importorskip("pycalphad")
+    from pycalphad import Database, calculate
+
+    bcc = xiong_db.phase_model("BCC", ("A", "B"))
+    ys = np.linspace(0.02, 0.98, 13)
+    pts = np.array([[y, 1 - y, 1.0] for y in ys])
+    ref = calculate(Database(XIONG_TDB), ["A", "B", "VA"], "BCC", T=t, P=101325, N=1, points=pts, output="GM")
+    for y, gm in zip(ys, np.asarray(ref.GM).ravel()):
+        tc, nt, beta = bcc.curie_temperature([y], t), bcc.neel_temperature([y], t), bcc.magnetic_moment([y], t)
+        shift = (_pycalphad_xiong_shift(tc / t, 0.25) + _pycalphad_xiong_shift(nt / t, 0.25)) * np.log1p(beta)
+        ideal = y * np.log(y) + (1 - y) * np.log(1 - y)
+        mag = float(bcc.magnetic.term((tc, nt, beta), t, NUM))
+        ours = (float(bcc.gibbs([y], NUM, t)) + shift) * R_GAS * t + (PYCALPHAD_R - R_GAS) * t * (ideal + mag + shift)
+        assert ours == pytest.approx(gm, rel=1e-9, abs=1e-6), (t, y)
+
+
+def test_xiong_interval_encloses(xiong_db):
+    bcc = xiong_db.phase_model("BCC", ("A", "B"))
+    rng = np.random.default_rng(4)
+    for T in (300.0, 550.0, 900.0, 1400.0):
+        for _ in range(150):
+            c, w = rng.uniform(0, 1), rng.uniform(0, 0.3)
+            lo, hi = max(c - w, 0.0), min(c + w, 1.0)
+            box = bcc.gibbs([Interval(lo, hi)], INTERVAL, T)
+            vals = np.array([float(bcc.gibbs([y], NUM, T)) for y in np.linspace(lo, hi, 201)])
+            assert box.lo <= vals.min() and box.hi >= vals.max()
+
+
+def test_xiong_global_pricing_matches_a_grid(xiong_db):
+    bcc = xiong_db.phase_model("BCC", ("A", "B"))
+    ys = np.linspace(1e-9, 1 - 1e-9, 20001)
+    for T, mu in ((450.0, [-4.0, -3.5]), (800.0, [-3.0, -2.5])):
+        r = price_phase(bcc, np.array(mu), T=T)
+        psi = np.array([float(bcc.gibbs([y], NUM, T)) - mu[0] * y - mu[1] * (1 - y) for y in ys])
+        assert r.ub == pytest.approx(psi.min(), abs=1e-6)
+        assert r.lb is not None and psi.min() - 1e-5 <= r.lb <= psi.min() + 1e-12
+
+
+def test_xiong_equilibrium_matches_pycalphad(xiong_db):
+    pytest.importorskip("pycalphad")
+    from pycalphad import Database
+    from pycalphad import equilibrium as pyeq
+    from pycalphad import variables as v
+
+    phases = list(xiong_db.phase_models(("A", "B")).values())
+    for x, t in ((0.5, 500.0), (0.3, 900.0)):
+        res = equilibrium(phases, x=x, T=t, certify="none")
+        eq = pyeq(Database(XIONG_TDB), ["A", "B", "VA"], ["BCC", "LIQ"], {v.X("A"): x, v.T: t, v.P: 101325, v.N: 1})
+        names = [str(n) for n in np.squeeze(eq.Phase.values) if n]
+        xs = np.atleast_1d(np.squeeze(eq.X.sel(component="A").values))[: len(names)]
+        ref = sorted((n, round(float(c), 2)) for n, c in zip(names, xs))
+        assert sorted((cs.phase.name, round(float(cs.x[0]), 2)) for cs in res.composition_sets) == ref
 
 
 def test_fixed_composition_magnetic_phase_is_priced_exactly():

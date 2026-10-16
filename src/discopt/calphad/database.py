@@ -56,7 +56,7 @@ __all__ = [
 
 
 #: parameter kinds of the magnetic contribution; ``BM`` is the TDB abbreviation of ``BMAGN``
-MAGNETIC_KINDS = ("TC", "BMAGN", "BM")
+MAGNETIC_KINDS = ("TC", "BMAGN", "BM", "NT")
 
 
 #: sublattice symmetry implied by the phase options F and B of a 4-sublattice ordered phase, as in
@@ -555,15 +555,14 @@ class ThermoDatabase:
         if hint is None or not params:
             return None
         afm, p = hint
-        if afm == 0:
-            raise UnsupportedModelError(f"{key}: the Xiong magnetic model (AFM factor 0) is not supported yet")
 
         def terms(kinds):
             return tuple(
                 CEFTerm(q.constituents, q.order, DatabaseValue(self, ((1.0, q),))) for q in params if q.kind in kinds
             )
 
-        return Magnetic(afm=afm, p=p, tc=terms(("TC",)), beta=terms(("BMAGN", "BM")))
+        nt = terms(("NT",)) if afm == 0 else ()  # pycalphad reads NT only in the Xiong model
+        return Magnetic(afm=afm, p=p, tc=terms(("TC",)), beta=terms(("BMAGN", "BM")), nt=nt)
 
     def _cef_phase(self, key, ph, subl, params, elements, magnetic: Magnetic | None = None) -> CEFPhase:
         """Every parameter becomes one CEF term (see :mod:`discopt.calphad.models.cef`)."""

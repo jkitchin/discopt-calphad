@@ -258,3 +258,28 @@ def test_zro2_nd2o3_matches_pycalphad(a, t):
     names = [str(p) for p in np.squeeze(eq.Phase.values) if p]
     X = np.atleast_2d(np.squeeze(eq.X.values))[: len(names)]  # components sorted: ND, O, ZR
     assert ours == sorted((n, round(float(c[0] / (c[0] + c[2])), 3)) for n, c in zip(names, X))
+
+
+@pytest.mark.parametrize(
+    "fname,elements",
+    [
+        ("cuo.tdb", ("CU", "O")),  # species, an ionic liquid, a gas with R and P
+        ("al2o3_nd2o3_zro2.tdb", ("ND", "ZR", "O")),  # charged CEF phases, an ionic liquid without Va
+        ("alni_dupin_2001.tdb", ("AL", "NI")),  # DIS_PART, MAGNETIC, vacancies
+        ("CoV-20Wan.tdb", ("CO", "V")),  # the F option, NEVER_DIS, space-separated constituents
+    ],
+)
+def test_tdb_round_trip_keeps_every_model(fname, elements):
+    """Write the database as TDB and read it back: every phase model gives the same G (issue #6)."""
+    db = ThermoDatabase.from_tdb(pycalphad_db(fname))
+    back = ThermoDatabase.from_string(db.to_tdb())
+    a, b = db.phase_models(elements), back.phase_models(elements)
+    assert set(a) == set(b) and a
+    rng = np.random.default_rng(2)
+    for name, m in a.items():
+        n = b[name]
+        assert type(n) is type(m)
+        for T in (1000.0, 1800.0):
+            pts = [np.empty(0)] if m.n_y == 0 else list(rng.uniform(0.05, 0.95, size=(5, m.n_y)))
+            for y in pts:
+                assert float(n.gibbs(y, NUM, T)) == pytest.approx(float(m.gibbs(y, NUM, T)), rel=1e-12), (name, T)

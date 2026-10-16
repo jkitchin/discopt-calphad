@@ -13,8 +13,11 @@ This script
 2. maps it with pycalphad, on the same database, and compares both maps point
    by point. Where they differ, it compares G: both codes give the same G for
    every phase, so the lower state is the better minimum of the same model;
-3. finds the eutectic (L ↔ FCC + Cu₂O) and the monotectic (L₁ ↔ Cu₂O + L₂)
-   temperatures by bisection;
+3. finds the eutectic (L ↔ FCC + Cu₂O) by bisection, and the monotectic
+   (L₂ ↔ L₁ + Cu₂O, the oxide-rich liquid decomposing on cooling) as the
+   temperature where Cu₂O touches the common tangent of the two liquids. That
+   tangency is smooth in T, so it does not depend on local pricing finding the
+   second liquid near the invariant;
 4. plots the diagram, marking the points where pycalphad misses the liquid
    miscibility gap.
 
@@ -138,9 +141,26 @@ def bisect(xo, test, lo, hi, tol=0.05):
 
 
 t_eut = bisect(0.005, lambda n: "IONIC_LIQ" in n, 1300.0, 1400.0)
-t_mono = bisect(0.15, lambda n: n.count("IONIC_LIQ") == 2, 1350.0, 1500.0)
+
+
+def cu2o_above_liquid_gap(T):
+    """Ψ of Cu2O at the μ of the two-liquid tie line (the liquid alone, at x(O) = 0.2)."""
+    from discopt.calphad.ops import NUM
+
+    r = equilibrium([models["IONIC_LIQ"]], x=0.8, T=float(T), certify="none")
+    cu2o = models["CU2O"]
+    return float(cu2o.gibbs([], NUM, T)) - float(r.mu @ np.array(cu2o.amounts([]))), r
+
+
+from scipy.optimize import brentq  # noqa: E402
+
+t_mono = brentq(lambda T: cu2o_above_liquid_gap(T)[0], 1400.0, 1550.0, xtol=0.01)
+liquids = sorted(float(cs.x[1]) for cs in cu2o_above_liquid_gap(t_mono)[1].composition_sets)
 print(f"\neutectic L -> FCC + Cu2O: {t_eut:.1f} K ({t_eut - 273.15:.1f} °C)")
-print(f"monotectic L1 -> Cu2O + L2: {t_mono:.1f} K ({t_mono - 273.15:.1f} °C)")
+print(
+    f"monotectic L2 -> L1 + Cu2O: {t_mono:.1f} K ({t_mono - 273.15:.1f} °C), "
+    f"L1 at x(O) = {liquids[0]:.3f}, L2 at {liquids[1]:.3f}"
+)
 
 # ------------------------------------------------------------------ figure
 fig, ax = plt.subplots(figsize=(7.5, 5))

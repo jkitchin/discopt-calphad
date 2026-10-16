@@ -172,7 +172,7 @@ def solve_restricted(
                 break
             nxt = dict(branches)
             for k, i in active:
-                nxt[k] = nxt[k]._replace(**{nxt[k]._fields[i]: not nxt[k][i]})
+                nxt[k] = sets[k].phase.magnetic.neighbor(nxt[k], i)
             if tuple(sorted(nxt.items())) in seen:
                 break  # the solution sits on an edge between branches already tried
             branches = nxt

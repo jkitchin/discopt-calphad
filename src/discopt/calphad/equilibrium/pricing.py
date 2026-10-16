@@ -361,10 +361,10 @@ def _pieces(phase, mu, T, box) -> list[_Piece]:
         m.minimize(objective(y, kw, EXPR))
         return [_Piece(m)]
     out = []
-    for k, (branch, (s_lo, s_hi)) in enumerate(phase.magnetic_pieces(box, T)):
+    for k, (branch, ranges) in enumerate(phase.magnetic_pieces(box, T)):
         m, y, kw = model(f"price_{phase.name}_{k}")
         x = kw.get("x")
-        s = m.continuous("s", lb=s_lo, ub=s_hi) if phase.magnetic.tc and s_hi > s_lo else None
+        s = [m.continuous(f"s{j}", lb=lo, ub=hi) if hi > lo else None for j, (lo, hi) in enumerate(ranges)]
         if x is None:
             eqs, ineqs = phase.pricing_constraints(y, T, branch, s)
         else:

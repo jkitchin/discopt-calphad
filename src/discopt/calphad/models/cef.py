@@ -57,7 +57,7 @@ from itertools import product
 import numpy as np
 
 from discopt.calphad.equilibrium.common import R_GAS
-from discopt.calphad.models.magnetic import Branch, Magnetic, branch_constraints, branch_of, branch_ranges, ihj
+from discopt.calphad.models.magnetic import Magnetic
 from discopt.calphad.models.tfunc import coef
 from discopt.calphad.ops import NUM
 
@@ -297,8 +297,7 @@ class CEFPhase:
         """G_mag/RT at site fractions ``Y`` (0 without magnetism)."""
         if self.magnetic is None:
             return 0.0
-        tc, beta = self._magnetic_sums(Y, T)
-        return ihj(self.magnetic, tc, beta, T, ops)
+        return self.magnetic.term(self._magnetic_q(Y, T), T, ops)
 
     def _ideal(self, F, ops):
         G = 0.0
@@ -321,6 +320,11 @@ class CEFPhase:
     def _magnetic_sums(self, Y, T):
         return self._sum(self.magnetic.tc, Y, T), self._sum(self.magnetic.beta, Y, T)
 
+    def _magnetic_q(self, Y, T):
+        """The magnetic model's quantities (``Magnetic.quantities``) at site fractions ``Y``."""
+        mag = self.magnetic
+        return tuple(self._sum(getattr(mag, name), Y, T) for name in mag.quantities)
+
     def _Y(self, y):
         return [{c: _prod(f) for c, f in d.items()} for d in self._factors(y)]
 
@@ -330,51 +334,48 @@ class CEFPhase:
             return 0.0
         return float(self._sum(self.magnetic.tc, self._Y(np.asarray(y, float)), T))
 
+    def neel_temperature(self, y, T: float) -> float:
+        """T_N(y) in K (Xiong model; 0 otherwise)."""
+        if self.magnetic is None:
+            return 0.0
+        return float(self._sum(self.magnetic.nt, self._Y(np.asarray(y, float)), T))
+
     def magnetic_moment(self, y, T: float) -> float:
         """β(y) in Bohr magnetons, before the AFM division (0 for a phase without magnetism)."""
         if self.magnetic is None:
             return 0.0
         return float(self._sum(self.magnetic.beta, self._Y(np.asarray(y, float)), T))
 
-    def magnetic_branch(self, y, T: float) -> Branch | None:
+    def magnetic_branch(self, y, T: float):
         """The smooth piece of the magnetic term at numeric ``y``, or None without magnetism."""
         if self.magnetic is None:
             return None
-        return branch_of(self.curie_temperature(y, T), self.magnetic_moment(y, T), T, self.magnetic.afm)
+        q = [float(v) for v in self._magnetic_q(self._Y(np.asarray(y, float)), T)]
+        return self.magnetic.branch_at(q, T)
 
-    def branch_constraints(self, y, T: float, branch: Branch) -> list:
-        """discopt expressions in ``y`` that are ≥ 0 exactly on ``branch``.
+    def branch_constraints(self, y, T: float, branch) -> list:
+        """discopt expressions in ``y`` that are ≥ 0 exactly on ``branch`` (``Magnetic.constraints``)."""
+        return self.magnetic.constraints(self._magnetic_q(self._Y(y), T), T, branch)
 
-        See :func:`discopt.calphad.models.magnetic.branch_constraints`.
-        """
-        tc, beta = self._magnetic_sums(self._Y(y), T)
-        return branch_constraints(self.magnetic, tc, beta, T, branch)
+    def magnetic_pieces(self, box, T: float) -> list:
+        """The magnetic branches the site-fraction ``box`` may reach, each with its auxiliary-variable ranges.
 
-    def magnetic_pieces(self, box, T: float) -> list[tuple[Branch, tuple[float, float]]]:
-        """The magnetic branches the site-fraction ``box`` may reach, each with its range of s = T_c'/T.
-
-        An interval evaluation of T_c and β over the box rules out the others.
-        See :func:`discopt.calphad.models.magnetic.branch_ranges`.
+        An interval evaluation of the magnetic quantities over the box rules
+        out the others (``Magnetic.ranges``).
         """
         from discopt.calphad.ops import Interval
 
-        tc, beta = self._magnetic_sums(self._Y([Interval(lo, hi) for lo, hi in box]), T)
-        return branch_ranges(self.magnetic, tc, beta, T)
+        q = self._magnetic_q(self._Y([Interval(lo, hi) for lo, hi in box]), T)
+        return self.magnetic.ranges(q, T)
 
-    def pricing_constraints(self, y, T: float, branch: Branch, s=None) -> tuple[list, list]:
+    def pricing_constraints(self, y, T: float, branch, s=None) -> tuple[list, list]:
         """``(equalities, inequalities)`` in discopt variables ``y`` that hold ``y`` on ``branch``.
 
-        With an auxiliary variable ``s`` for T_c'/T, the equality s = T_c'/T
-        ties it to ``y`` (scaled by 1/T), and the bounds of ``s`` take the place
-        of the ordered-side constraint. Without ``s``, the result is
+        ``s`` holds the auxiliary variables of the branch's ranges
+        (``Magnetic.pricing_rows``). Without them, the result is
         :meth:`branch_constraints` as inequalities.
         """
-        tc, beta = self._magnetic_sums(self._Y(y), T)
-        rows = branch_constraints(self.magnetic, tc, beta, T, branch)
-        if s is None:
-            return [], [g for g in rows if g is not None]
-        tc_eff = tc * (1 / self.magnetic.afm) if branch.tc_negative else tc
-        return [s - tc_eff * (1 / T)], [g for g in rows[:2] if g is not None]
+        return self.magnetic.pricing_rows(self._magnetic_q(self._Y(y), T), T, branch, s)
 
     def _term_factor(self, t: CEFTerm, Y):
         mixing = [s for s, c in enumerate(t.constituents) if len(c) > 1]
@@ -504,6 +505,13 @@ class CEFPhase:
         mag = self.magnetic
         tc = sum((self._term_factor(t, Y) * value(t) for t in mag.tc), sp.Integer(0))
         beta = sum((self._term_factor(t, Y) * value(t) for t in mag.beta), sp.Integer(0))
+        if mag.xiong:
+            from discopt.calphad.models.magnetic import _x_ord, _x_para
+
+            nt = sum((self._term_factor(t, Y) * value(t) for t in mag.nt), sp.Integer(0))
+            s = sp.Symbol("s", real=True)
+            g = sp.Piecewise((0, s <= 0), (_x_para(s, mag.p), s <= 1), (_x_ord(s, mag.p), True))
+            return sp.log(beta + 1) * (g.subs(s, tc / T_) + g.subs(s, nt / T_))
         afm = sp.nsimplify(mag.afm)
         tc_eff = sp.Piecewise((tc / afm, tc <= 0), (tc, True))
         beta_eff = sp.Piecewise((beta / afm, beta <= 0), (beta, True))
