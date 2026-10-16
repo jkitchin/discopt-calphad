@@ -1,36 +1,42 @@
-"""Ni-rich Al–Ni: γ and γ′ with the native order–disorder model (issue #6).
+"""Al–Ni with its order–disorder phases: γ′ (L1₂) and β (B2, with vacancies), issue #6.
 
-γ′ (Ni₃Al, L1₂) is FCC_L12 in Dupin, Ansara and Sundman's assessment, a
-partitioned phase over the disordered FCC_A1 (γ):
+Dupin, Ansara and Sundman's assessment describes two ordered phases as
+partitioned phases over a disordered parent:
 
-    G = G_dis(x) + G_ord(y) − G_ord(x)
+- γ′ (Ni₃Al, L1₂): FCC_L12 over FCC_A1 (γ);
+- β (NiAl, B2): BCC_B2 over BCC_A2, with constitutional vacancies on both
+  sublattices.
 
-y are the site fractions on the 0.75 and 0.25 sublattices, and x is their
-average. With equal fractions on both, the ordering term vanishes and FCC_L12
-is γ exactly, so ordering appears as a second well in site-fraction space. A
-grid over x alone cannot see it. Pricing over y finds it as a new composition
-set of the same phase.
+Both have G = G_dis(x) + G_ord(y) − G_ord(x). y are the ordered site fractions
+and x their site average. With equal fractions on every sublattice, the
+ordering term vanishes and the phase is its parent exactly, so order appears as
+a second well in site-fraction space. A grid over x alone cannot see it.
+Pricing over y finds it as a new composition set of the same phase.
+
+β can hold a vacancy on every sublattice. Read literally, the model then has
+no global minimum: a dilute fraction of atoms in an empty lattice gains
+unbounded entropy per atom. Such a phase is restricted to formula units at
+least half occupied (``min_occupancy``), far beyond the few percent of
+constitutional vacancies in Al-rich β. Certificates say so.
 
 This script
 
-1. maps the Ni-rich side (x(Al) ≤ 0.30, 900–1700 K) with local pricing;
-2. maps it with pycalphad, on the same database and phase list, and compares
-   the phase boundaries;
-3. plots the diagram next to the degree of order of γ′ along its composition
-   range at 1200 K.
+1. maps the diagram (900–1700 K) with local pricing;
+2. maps it with pycalphad, on the same database, and compares the phase
+   boundaries;
+3. plots the diagram next to β's vacancy fraction across its single-phase
+   range at 1200 K. On the Al-rich side of NiAl, β takes up the excess Al by
+   leaving Ni sites empty.
 
-The disordered state of FCC_L12 has FCC_A1's G exactly. pycalphad reports such
-a set as FCC_L12, so both maps name a set by its degree of order, max |y_s − x|.
-
-BCC_A2 and BCC_B2 allow vacancies on their substitutional sublattices, which
-the solver does not support yet. They are left out of both maps. In the full
-assessment, β (B2) bounds γ′ on the Al-rich side, above x(Al) ≈ 0.27.
+The disordered state of a partitioned phase has its parent's G exactly.
+pycalphad reports such a set under the ordered name, so both maps name a set by
+its degree of order, max |y_s − x|.
 
 Reference: N. Dupin, I. Ansara and B. Sundman, *Thermodynamic re-assessment of
 the ternary system Al–Cr–Ni*, Calphad 25 (2001) 279–298 (registry name
 ``alni_dupin``).
 
-Run with ``uv run python examples/alni_order_disorder.py``. It takes about 5
+Run with ``uv run python examples/alni_order_disorder.py``. It takes about 15
 minutes and writes examples/alni_order_disorder.png.
 """
 
@@ -48,8 +54,8 @@ from discopt.calphad.models.partitioned import PartitionedPhase
 HERE = Path(__file__).parent
 EL = ("AL", "NI")
 TEMPS = np.arange(900.0, 1701.0, 100.0)
-XS = np.linspace(0.02, 0.30, 29)  # x(Al)
-ORDERED = 1e-3  # a set with max |y_s − x| above this is γ′
+XS = np.linspace(0.02, 0.98, 49)  # x(Al)
+ORDERED = 1e-3  # a set with max |y_s − x| above this is ordered
 
 db = databases.load("alni_dupin")
 models = db.phase_models(EL)
@@ -60,6 +66,8 @@ print("phases:", sorted(models), "| skipped:", sorted(set(db.applicability(EL)) 
 def label(name, order):
     if name in ("FCC_L12", "FCC_A1"):
         return "γ′" if order > ORDERED else "γ"
+    if name in ("BCC_B2", "BCC_A2"):
+        return "β" if order > ORDERED else "A2"
     return {"LIQUID": "L", "AL3NI5": "Al3Ni5", "AL3NI2": "Al3Ni2", "AL3NI1": "Al3Ni"}.get(name, name)
 
 
@@ -103,7 +111,10 @@ def pycalphad_map():
             for k, name in enumerate(ph[i]):
                 if not name:
                     continue
-                order = abs(ys[i][k][0] - ys[i][k][2]) if name == "FCC_L12" else 0.0
+                y = ys[i][k]
+                order = (
+                    abs(y[0] - y[2]) if name == "FCC_L12" else np.max(np.abs(y[0:3] - y[3:6])) if name == "BCC_B2" else 0.0
+                )
                 sets.append((label(str(name), order), round(float(xs[i][k][0]), 6)))
             tp = two_phase(sets)
             if tp:
@@ -124,25 +135,27 @@ for key in sorted(set(ours) & set(ref)):
     a = np.mean([[x for _, x in s] for s in ours[key]], axis=0)
     b = np.mean([[x for _, x in s] for s in ref[key]], axis=0)
     diffs.append(float(np.max(np.abs(a - b))))
-    print(f"  {key[0]:6.0f} K {' + '.join(key[1]):10s} ours {a.round(4)}  pycalphad {b.round(4)}  |Δx| {diffs[-1]:.5f}")
+    print(f"  {key[0]:6.0f} K {' + '.join(key[1]):14s} ours {a.round(4)}  pycalphad {b.round(4)}  |Δx| {diffs[-1]:.5f}")
 print(f"largest boundary difference: {max(diffs):.5f} in x(Al)")
 print("regions only in discopt-calphad:", sorted(set(ours) - set(ref)))
 print("regions only in pycalphad:", sorted(set(ref) - set(ours)))
 
-# degree of order of γ′ across its single-phase range at 1200 K
-T_ORDER = 1200.0
-gp = models["FCC_L12"]
-xo, do = [], []
-for x in np.linspace(0.20, 0.30, 21):
-    r = equilibrium(phases, x=float(x), T=T_ORDER, certify="none")
+# vacancies in β across its single-phase range at 1200 K
+T_VAC = 1200.0
+beta = models["BCC_B2"]
+xv, vac = [], []
+for x in np.linspace(0.36, 0.58, 23):
+    r = equilibrium(phases, x=float(x), T=T_VAC, certify="none")
     for cs in r.composition_sets:
-        if cs.phase is gp and cs.amount > 0.5:
-            xo.append(float(cs.x[0]))
-            do.append(gp.degree_of_order(cs.y))
+        if cs.phase is beta and cs.amount > 0.99 * sum(c.amount for c in r.composition_sets):
+            sf = beta.site_fractions(cs.y)
+            xv.append(float(cs.x[0]))
+            vac.append(0.5 * (sf[0]["VA"] + sf[1]["VA"]))
+print(f"β at {T_VAC:.0f} K: vacancy fraction {min(vac):.2e} to {max(vac):.2e} for x(Al) {min(xv):.3f} to {max(xv):.3f}")
 
 # ------------------------------------------------------------------ figure
 fig, (ax, ax2) = plt.subplots(1, 2, figsize=(10.5, 4.6), gridspec_kw={"width_ratios": [3, 2]})
-colors = {"γ": "C0", "γ′": "C2", "L": "C3"}
+colors = {"γ": "C0", "γ′": "C2", "β": "C1", "L": "C3", "Al3Ni5": "C4", "Al3Ni2": "C5", "Al3Ni": "C6", "A2": "C7"}
 for tl, style, name in [(ref, dict(color="0.65", ms=7), "pycalphad"), (ours, dict(ms=3), "discopt-calphad")]:
     for (T, _), sets in tl.items():
         for s in sets:
@@ -155,13 +168,13 @@ for n, c in colors.items():
     ax.plot([], [], "o", color=c, label=n)
 ax.set_xlabel("x(Al)")
 ax.set_ylabel("T (K)")
-ax.set_xlim(0, 0.32)
-ax.set_title("Ni-rich Al–Ni (Dupin et al. 2001): tie-line ends", fontsize=10)
-ax.legend(fontsize=7, loc="upper left")
-ax2.plot(xo, do, "C2o-", ms=3)
+ax.set_xlim(0, 1)
+ax.set_title("Al–Ni (Dupin et al. 2001): tie-line ends", fontsize=10)
+ax.legend(fontsize=7, loc="upper right", ncol=2)
+ax2.semilogy(xv, vac, "C1o-", ms=3)
 ax2.set_xlabel("x(Al)")
-ax2.set_ylabel("max |y_s − x|")
-ax2.set_title(f"γ′ degree of order at {T_ORDER:.0f} K", fontsize=10)
+ax2.set_ylabel("vacancy site fraction in β")
+ax2.set_title(f"β (B2) constitutional vacancies at {T_VAC:.0f} K", fontsize=10)
 fig.tight_layout()
 fig.savefig(HERE / "alni_order_disorder.png", dpi=150)
 print("wrote", HERE / "alni_order_disorder.png")

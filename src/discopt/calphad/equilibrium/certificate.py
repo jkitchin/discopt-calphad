@@ -86,6 +86,13 @@ def certify(
     worst_lb = min(valid) if valid else None
     msgs: list[str] = []
 
+    limited = sorted({p.phase.name for p in pricing if getattr(p.phase, "vacancy_limited", False)})
+    if limited:
+        occ = sorted({p.phase.min_occupancy for p in pricing if getattr(p.phase, "vacancy_limited", False)})
+        msgs.append(
+            f"{', '.join(limited)}: vacancies on every sublattice; bounds cover formula units at least "
+            f"{', '.join(f'{o:g}' for o in occ)} occupied (min_occupancy)"
+        )
     if not restricted.converged:
         level = CertificateLevel.FAILED
         msgs.append(f"restricted solve status: {restricted.status}")

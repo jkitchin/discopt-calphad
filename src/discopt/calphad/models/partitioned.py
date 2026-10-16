@@ -168,6 +168,21 @@ class PartitionedPhase:
         return self.ordered.atoms_min
 
     @property
+    def atoms_max(self) -> float:
+        return self.ordered.atoms_max
+
+    @property
+    def vacancy_limited(self) -> bool:
+        return self.ordered.vacancy_limited
+
+    @property
+    def min_occupancy(self) -> float:
+        return self.ordered.min_occupancy
+
+    def domain_constraints(self, y) -> list:
+        return self.ordered.domain_constraints(y)
+
+    @property
     def magnetic(self):
         """The disordered part's magnetic description, or None (see the module docstring)."""
         return self.disordered.magnetic

@@ -90,8 +90,13 @@ def boundary_lower_bound(
     """
     outer = phase.y_bounds
 
+    domain = getattr(phase, "domain_constraints", lambda y: [])
+
     def bound(box):
-        return tangent_distance(phase, [Interval(a, c) for a, c in box], mu, INTERVAL, T).lo
+        iv = [Interval(a, c) for a, c in box]
+        if any(Interval._coerce(g).hi < 0 for g in domain(iv)):
+            return math.inf  # the box lies outside the phase's domain (see CEFPhase.domain_constraints)
+        return tangent_distance(phase, iv, mu, INTERVAL, T).lo
 
     lbs = []
     for i, (lo, hi) in enumerate(outer):
@@ -274,6 +279,8 @@ def _pieces(phase, mu, T, box) -> list[_Piece]:
         y = [m.continuous(f"y{i}", lb=lo, ub=hi) for i, (lo, hi) in enumerate(box)]
         for i, g in enumerate(getattr(phase, "symmetry_constraints", lambda y: [])(y)):
             m.subject_to(g >= 0, name=f"symmetry{i}")
+        for i, g in enumerate(getattr(phase, "domain_constraints", lambda y: [])(y)):
+            m.subject_to(g >= 0, name=f"domain{i}")
         x = None
         if hasattr(phase, "average_expressions"):
             # a partitioned phase: the site averages as variables, so G_dis(x) and G_ord(x) are
@@ -310,8 +317,20 @@ def _pieces(phase, mu, T, box) -> list[_Piece]:
     return out
 
 
+def _outside(phase, z) -> bool:
+    """True if ``z`` violates one of the phase's domain constraints."""
+    return any(float(g) < 0 for g in getattr(phase, "domain_constraints", lambda y: [])(z))
+
+
 def _psi_many(phase, pts, mu, T) -> np.ndarray:
-    """Ψ at each row of ``pts``: vectorized when the model allows it, otherwise point by point."""
+    """Ψ at each row of ``pts`` (+inf outside the phase's domain): vectorized when the model allows it."""
+    v = _psi_many_box(phase, pts, mu, T)
+    if getattr(phase, "vacancy_limited", False):
+        v = np.where([_outside(phase, p) for p in pts], np.inf, v)
+    return v
+
+
+def _psi_many_box(phase, pts, mu, T) -> np.ndarray:
     try:
         with np.errstate(all="ignore"):
             v = np.asarray(tangent_distance(phase, list(pts.T), mu, NUM, T), dtype=float)
@@ -365,6 +384,8 @@ def price_phase_local(
             starts.append(pts[i])
 
     def f(z):
+        if _outside(phase, z):
+            return 1e300
         with np.errstate(all="ignore"):
             v = float(tangent_distance(phase, z, mu, NUM, T))
         return v if math.isfinite(v) else 1e300

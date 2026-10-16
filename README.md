@@ -57,9 +57,11 @@ the tangent-plane distance Ψ(y) = G(y) − μ·A(y):
   phases (L1₂, B2, four-sublattice FCC/BCC with the F and B options) are
   modeled natively as G_dis(x) + G_ord(y) − G_ord(x). G matches pycalphad to
   1e-9, and Al–Ni γ + γ′ matches its equilibria. Pricing removes the duplicate
-  minima of equivalent ordered variants with symmetry constraints. Not yet:
-  vacancies on substitutional sublattices, and magnetic parameters on the
-  ordered part. `ordering.stand_in` (issue #14) still rewrites such a phase as
+  minima of equivalent ordered variants with symmetry constraints.
+  Constitutional vacancies (B2 NiAl) are supported. A phase that can hold a
+  vacancy on every sublattice is certified over formula units at least half
+  occupied, because the model has no global minimum below that. Not yet:
+  magnetic parameters on the ordered part. `ordering.stand_in` (issue #14) still rewrites such a phase as
   a plain one, dropping and listing what it cannot carry.
 - **Data from ASE calculators (issue #5, phase 1):** `discopt.calphad.mlip`
   turns any ASE calculator (a machine-learned potential such as UMA or MACE,

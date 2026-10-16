@@ -10,8 +10,8 @@ over the substitutional sublattices, which is the disordered phase's
 composition. The configurational entropy is that of the ordered sublattices.
 The solver models this form natively
 (:class:`~discopt.calphad.models.partitioned.PartitionedPhase`), except with
-vacancies on substitutional sublattices or magnetic parameters on the ordered
-part. A stand-in covers those cases, and gives a plain phase to refit.
+magnetic parameters on the ordered part. A stand-in covers that case, and gives
+a plain phase to refit.
 
 :func:`stand_in` writes it as a plain CEF phase on the ordered sublattices. The
 G and L parameters enter linearly, each with a known factor in y:

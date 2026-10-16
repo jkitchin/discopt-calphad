@@ -188,6 +188,9 @@ class ThermoDatabase:
     extrapolate: bool = False
     #: pressure (Pa) at which pressure-dependent expressions are evaluated
     pressure: float = 101325.0
+    #: for a phase with a vacancy on every sublattice, the fewest atoms per formula unit, as a fraction of
+    #: the most (see :class:`~discopt.calphad.models.cef.CEFPhase`)
+    min_occupancy: float = 0.5
 
     def __post_init__(self):
         self._cache: dict = {}
@@ -479,7 +482,9 @@ class ThermoDatabase:
                 if not any(q is not p and q.constituents == p.constituents for q in params):
                     terms += [CEFTerm(p.constituents, k, DatabaseValue(self, ((1.0, p),))) for k in (1, 2)]
         try:
-            return CEFPhase(key, elements, tuple(ph.site_ratios), tuple(subl), tuple(terms), magnetic)
+            return CEFPhase(
+                key, elements, tuple(ph.site_ratios), tuple(subl), tuple(terms), magnetic, self.min_occupancy
+            )
         except NotImplementedError as err:
             raise UnsupportedModelError(str(err)) from err
 

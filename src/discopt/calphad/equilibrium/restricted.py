@@ -310,6 +310,10 @@ def _solve_once(sets, b, T, boxes, branches, held, n_max, x0, els, options):
         for i, g in enumerate(sets[k].phase.branch_constraints(Y[k], T, branches[k])):
             if g is not None:
                 m.subject_to(g >= 0, name=f"branch{k}_{i}")
+    for k, s in enumerate(sets):
+        if s.phase.n_y:
+            for i, g in enumerate(getattr(s.phase, "domain_constraints", lambda y: [])(Y[k])):
+                m.subject_to(g >= 0, name=f"domain{k}_{i}")
 
     r = local_nlp_solve(m, x0, options)
     active = []

@@ -207,8 +207,8 @@ The fitted database also has `fitted.to_tdb()`, with a provenance header.
 - `mixing=` (SQS) needs exactly one sublattice that mixes the two elements;
   every other sublattice must be fixed. That sublattice may also allow VA: the
   SQS mix the two elements at zero vacancy fraction. A phase whose every
-  sublattice can be empty, such as Dupin's BCC_A2 `(AL,NI,VA)(VA)`, is not
-  modelled at all: it has an all-vacancy configuration with no atoms.
+  sublattice can be empty, such as Dupin's BCC_A2 `(AL,NI,VA)(VA)`, is
+  modelled over formula units at least half occupied (`min_occupancy`).
 
 ## Points that fail, and time
 

@@ -29,10 +29,11 @@ Know the limits before you promise a result:
   ternary composition as a dict, `{"AL": 0.7, "CU": 0.2, "Y": 0.1}`. Errors in
   variables, SQS mixing data and `x=` in `equilibrium` are binary only.
 - **Order–disorder phases** (L1₂, B2, DISORDERED_PART) are modelled natively.
-  Two variants are not supported yet: vacancies on substitutional sublattices
-  (Dupin's Al–Ni BCC_B2) and magnetic parameters on the ordered part
-  (Sundman's Al–Fe). For those, `ordering.stand_in` turns the phase into a
-  plain one (see section 1). Ionic liquids cannot be modelled.
+  Constitutional vacancies (Dupin's Al–Ni BCC_B2) are supported; such a phase
+  is certified over formula units at least half occupied (`min_occupancy`,
+  stated in `certificate.messages`). Magnetic parameters on the ordered part
+  (Sundman's Al–Fe) are not supported yet; for those, `ordering.stand_in`
+  turns the phase into a plain one (see section 1). Ionic liquids cannot be modelled.
 - **Magnetism:** Inden–Hillert–Jarl magnetic phases (FCC Ni, BCC Fe, Co)
   certify like any other phase. Global pricing solves one model per magnetic
   branch, so it costs a few times more than for a plain phase. The Xiong model
@@ -436,11 +437,9 @@ fitted_alcu = fit(alcu, result.dataset, ("AL", "CU"), {"G(ALCU_THETA,AL:CU;0)": 
   - A T outside the ranges raises `ValueError`. Set
     `ThermoDatabase.extrapolate = True` to use the nearest range instead.
 - **Unsupported models raise with the reason.** `UnsupportedModelError` covers:
-  - order–disorder phases with vacancies on substitutional sublattices or
-    magnetic parameters on the ordered part, unless replaced by
-    `ordering.stand_in`;
+  - order–disorder phases with magnetic parameters on the ordered part,
+    unless replaced by `ordering.stand_in`;
   - ionic liquids;
-  - phases whose every sublattice can be empty (an all-vacancy configuration);
   - the Xiong magnetic model;
   - some high-order CEF interactions.
 

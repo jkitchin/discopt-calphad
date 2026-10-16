@@ -29,8 +29,8 @@ A file whose hash differs from the registry's is never used.
 
 "Complete" lists the binaries in which every phase can be modeled. The browser
 app offers exactly these. "Incomplete" lists binaries with at least one phase that
-uses a model not supported yet: in practice order–disorder variants with vacancies on
-substitutional sublattices or ordered-part magnetism.
+uses a model not supported yet: in practice order–disorder phases with magnetic
+parameters on the ordered part.
 Magnetic phases (Inden–Hillert–Jarl) are supported and certified globally.
 
 | name | system | complete | incomplete | reference |

@@ -178,7 +178,7 @@
       "notes": "Holds four alternative BCC descriptions of the same parameters; use one at a time.",
       "elements": ["AL", "FE"],
       "binaries": {
-        "AL-FE": ["A2_VA", "B2_BCC", "BCC_4SL", "BCC_NOB", "BCC_VA"]
+        "AL-FE": ["B2_BCC", "BCC_4SL", "BCC_NOB", "BCC_VA"]
       }
     },
     {
@@ -194,7 +194,7 @@
       "notes": "",
       "elements": ["AL", "NI"],
       "binaries": {
-        "AL-NI": ["BCC_A2", "BCC_B2"]
+        "AL-NI": []
       }
     },
     {

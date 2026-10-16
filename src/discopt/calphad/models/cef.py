@@ -30,6 +30,18 @@ slabs) without linear constraints. For a product of factors,
 x ln x = Σ_i f_i ln f_i Π_{j≠i} f_j. Every ``xlogx`` call therefore acts on a
 single u or 1 − u, where discopt's ``entropy`` rules are tightest.
 
+**Vacancies.** A vacancy on a sublattice makes the number of atoms per formula
+unit depend on y. When every sublattice can hold one (constitutional vacancies
+in B2, for example), a formula unit could even be empty, and the model has no
+global minimum. With G(VA:…:VA) = 0, as in most databases, a dilute fraction δ
+of atoms in an otherwise empty lattice has G per atom ≈ G_atom + L + RT ln δ,
+which goes to −∞: an unbounded "vacuum phase" that only sampling resolution
+hides. The phase is therefore restricted to formula units holding at least
+``min_occupancy`` (default 0.5) of :attr:`atoms_max` in atoms, through
+:meth:`domain_constraints`. Constitutional vacancies in real phases are far
+below that. A certificate covers that domain, and the bound on the total
+amount of formula units, Σb/atoms_min, is finite again.
+
 **Magnetic ordering.** With ``magnetic`` set, G also gets the Inden–Hillert–Jarl
 term RT ln(β' + 1) f(T/T_c'). T_c(y) and β(y) are built from TC and BMAGN terms
 with the same products as above. See :mod:`discopt.calphad.models.magnetic`.
@@ -100,6 +112,9 @@ class CEFPhase:
     terms: tuple[CEFTerm, ...] = ()
     #: the magnetic ordering contribution, if the phase has one
     magnetic: Magnetic | None = None
+    #: with a vacancy on every sublattice, the fewest atoms a formula unit may hold, as a fraction of
+    #: :attr:`atoms_max` (see "Vacancies" in the module docstring)
+    min_occupancy: float = 0.5
     _layout: tuple = field(init=False, repr=False, compare=False)
 
     def __post_init__(self):
@@ -118,11 +133,10 @@ class CEFPhase:
             layout.append(tuple(range(i, i + len(cons) - 1)))
             i += len(cons) - 1
         object.__setattr__(self, "_layout", tuple(layout))
-        if self.atoms_min <= 0:
-            raise NotImplementedError(
-                f"{self.name}: an all-vacancy configuration has no atoms, "
-                "so the certificate's amount bound is unbounded"
-            )
+        if not 0 < self.min_occupancy <= 1:
+            raise ValueError(f"{self.name}: min_occupancy must be in (0, 1], got {self.min_occupancy}")
+        if self.atoms_max <= 0:
+            raise ValueError(f"{self.name}: no sublattice can hold an atom")
 
     def _check_term(self, t: CEFTerm) -> None:
         if len(t.constituents) != len(self.constituents):
@@ -152,9 +166,38 @@ class CEFPhase:
         return [(0.0, 1.0)] * self.n_y
 
     @property
+    def atoms_max(self) -> float:
+        """Most atoms per formula unit: every sublattice with an element is full."""
+        return float(sum(a for a, cons in zip(self.site_ratios, self.constituents) if cons != (VACANCY,)))
+
+    @property
+    def vacancy_limited(self) -> bool:
+        """True if every sublattice can hold a vacancy, so that a formula unit could be empty."""
+        return all(VACANCY in cons for cons in self.constituents)
+
+    @property
     def atoms_min(self) -> float:
-        """Fewest atoms per formula unit: each sublattice that can hold VA may be empty."""
+        """Fewest atoms per formula unit.
+
+        Each sublattice that can hold VA may be empty. If every one can, the
+        phase is restricted to :attr:`min_occupancy` · :attr:`atoms_max` (see
+        :meth:`domain_constraints`).
+        """
+        if self.vacancy_limited:
+            return self.min_occupancy * self.atoms_max
         return float(sum(a for a, cons in zip(self.site_ratios, self.constituents) if VACANCY not in cons))
+
+    def domain_constraints(self, y) -> list:
+        """Expressions in ``y`` that are ≥ 0 on the phase's domain, beyond the box.
+
+        Only a vacancy-limited phase has one: atoms(y) − atoms_min ≥ 0.
+        """
+        if not self.vacancy_limited:
+            return []
+        total = 0.0
+        for a in self.amounts(y):
+            total = total + a
+        return [(total - self.atoms_min) * (1.0 / self.atoms_max)]
 
     def _factors(self, y):
         """Per sublattice, the stick-breaking factors of each constituent's site fraction."""

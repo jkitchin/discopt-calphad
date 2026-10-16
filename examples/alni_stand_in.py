@@ -2,12 +2,14 @@
 
 Dupin, Ansara and Sundman's Al–Ni assessment (``alni_dupin``) describes γ′
 (L1₂, FCC_L12) and β (B2, BCC_B2) as partitioned phases: an ordered part on
-top of a disordered parent. The solver models γ′ natively (issue #6, see
-examples/alni_order_disorder.py). β allows vacancies on its substitutional
-sublattices, which the native model does not support yet, so it is unavailable.
-:func:`discopt.calphad.ordering.stand_in` rewrites it as a plain CEF phase on
-the ordered sublattices. Without magnetism and constitutional vacancies, the
-stand-in reproduces the partitioned G exactly; pycalphad agrees to 1e-10 J/mol.
+top of a disordered parent. The solver models both natively (issue #6, see
+examples/alni_order_disorder.py), β with its constitutional vacancies.
+:func:`discopt.calphad.ordering.stand_in` rewrites a partitioned phase as a
+plain CEF phase on the ordered sublattices, for refitting or for a variant the
+native model rejects. It drops magnetism and vacancies on substitutional
+sublattices, and is otherwise exact; pycalphad agrees to 1e-10 J/mol. This
+script uses the stand-in for β in place of the native phase, to show what
+dropping the vacancies costs.
 
 This script maps the Ni–Al diagram twice:
 
@@ -40,7 +42,7 @@ for ordered in ("BCC_B2",):
     si = stand_in(db, ordered, EL)
     print(si.summary())
     db = si.database
-phases = list(db.phase_models(EL).values())
+phases = [p for n, p in db.phase_models(EL).items() if n != "BCC_B2"]  # β only as its stand-in
 print("phases:", sorted(p.name for p in phases))
 
 

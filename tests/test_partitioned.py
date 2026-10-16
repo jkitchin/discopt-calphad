@@ -140,9 +140,6 @@ def test_unsupported_variants_say_why():
     alfe = ThermoDatabase.from_tdb(pycalphad_db("Al-Fe_sundman2009.tdb"))
     with pytest.raises(UnsupportedModelError, match="magnetic parameters on the ordered part"):
         alfe.phase_model("BCC_4SL", ("AL", "FE"))
-    alni = ThermoDatabase.from_tdb(pycalphad_db("alni_dupin_2001.tdb"))
-    with pytest.raises(UnsupportedModelError, match="all-vacancy"):
-        alni.phase_model("BCC_B2", ("AL", "NI"))
 
 
 # ---------------------------------------------------------------------------- pycalphad oracle
@@ -155,6 +152,8 @@ CASES = [
     ("COST507.tdb", ("FE", "NI"), "BCC_B2"),
     ("CoV-20Wan.tdb", ("CO", "V"), "FCC_4SL"),  # 4 sublattices, F option
     ("CoV-20Wan.tdb", ("CO", "V"), "SIGMA_D8B"),  # NEVER_DISORDER
+    ("alni_dupin_2001.tdb", ("AL", "NI"), "BCC_B2"),  # vacancies on both substitutional sublattices
+    ("alcrni.tdb", ("AL", "NI"), "B2"),  # vacancies, and no interstitial sublattice
 ]
 
 
@@ -169,7 +168,8 @@ def test_partitioned_gibbs_matches_pycalphad(fname, elements, name, t):
     rng = np.random.default_rng(7)
     fractions = [[dict(zip(c, rng.dirichlet(np.ones(len(c))))) for c in model.constituents] for _ in range(8)]
     # a disordered point: the same fractions on every substitutional sublattice
-    x = dict(zip(model.constituents[model.substitutional[0]], rng.dirichlet(np.ones(2))))
+    cons0 = model.constituents[model.substitutional[0]]
+    x = dict(zip(cons0, rng.dirichlet(np.ones(len(cons0)))))
     fractions.append([dict(x) if s in model.substitutional else {c: 1.0 for c in cons} for s, cons in enumerate(model.constituents)])
     points = [[d[c] for cons, d in zip(model.constituents, fr) for c in cons] for fr in fractions]
     ref = calculate(Database(str(path)), [*elements, "VA"], name, T=t, P=101325, N=1, points=np.array(points), output="GM")
@@ -204,7 +204,7 @@ def test_alni_gamma_gamma_prime_matches_pycalphad(x, t):
     from pycalphad import variables as v
 
     models = ThermoDatabase.from_tdb(path).phase_models(("AL", "NI"))
-    assert "FCC_L12" in models and "BCC_B2" not in models  # B2 has vacancies on substitutional sites
+    assert "FCC_L12" in models
     res = equilibrium(list(models.values()), x=x, T=t, certify="none")
     ours = sorted((_label(cs), round(float(cs.x[0]), 3)) for cs in res.composition_sets if cs.amount > 1e-8)
     eq = pyeq(Database(str(path)), ["AL", "NI", "VA"], sorted(models), {v.X("AL"): x, v.T: t, v.P: 101325, v.N: 1})
@@ -248,3 +248,78 @@ def test_alni_gamma_gamma_prime_is_certified():
         ("FCC_A1", 0.147),
         ("FCC_L12", 0.23),
     ]
+
+
+# ---------------------------------------------------------------------------- vacancies on every sublattice
+
+VAC_TDB = """
+ELEMENT A X 0 0 0 ! ELEMENT B X 0 0 0 ! ELEMENT VA X 0 0 0 !
+PHASE V % 2 1 3 ! CONST V : A,B,VA : VA : !
+PARA G(V,A:VA;0) 298.15 -10000; 6000 N !
+PARA G(V,B:VA;0) 298.15 -12000; 6000 N !
+PARA G(V,VA:VA;0) 298.15 0; 6000 N !
+PARA G(V,A,VA:VA;0) 298.15 20000; 6000 N !
+PARA G(V,B,VA:VA;0) 298.15 25000; 6000 N !
+PARA G(V,A,B:VA;0) 298.15 -3000; 6000 N !
+"""
+
+
+def test_vacancy_limited_phase_domain():
+    """With VA on every sublattice, atoms_min is min_occupancy · atoms_max, and the domain says so."""
+    v = ThermoDatabase.from_string(VAC_TDB).phase_model("V", ("A", "B"))
+    assert v.vacancy_limited and v.atoms_max == 1.0 and v.atoms_min == 0.5
+    u_full = v.variables_from_site_fractions([{"A": 0.5, "B": 0.5, "VA": 0.0}, {"VA": 1.0}])
+    u_empty = v.variables_from_site_fractions([{"A": 0.2, "B": 0.1, "VA": 0.7}, {"VA": 1.0}])
+    (g_full,) = v.domain_constraints(u_full)
+    (g_empty,) = v.domain_constraints(u_empty)
+    assert g_full == pytest.approx(0.5) and g_empty == pytest.approx(-0.2)
+    db = ThermoDatabase.from_string(VAC_TDB)
+    db.min_occupancy = 0.9
+    assert db.phase_model("V", ("A", "B")).atoms_min == pytest.approx(0.9)
+
+
+def test_vacancy_limited_pricing_covers_the_domain_only():
+    """Without the domain, a dilute 'vacuum' state makes Ψ per atom unbounded; within it, pricing matches a grid."""
+    from discopt.calphad.equilibrium.pricing import price_phase
+
+    v = ThermoDatabase.from_string(VAC_TDB).phase_model("V", ("A", "B"))
+    T, mu = 1000.0, np.array([-1.5, -1.6])
+    rng = np.random.default_rng(3)
+    pts = rng.uniform(0, 1, size=(200000, 2))
+    psi = np.array([float(v.gibbs(p, NUM, T)) - mu @ np.array(v.amounts(p)) for p in pts[:20000]])
+    inside = np.array([float(v.domain_constraints(p)[0]) >= 0 for p in pts[:20000]])
+    r = price_phase(v, mu, T=T)
+    assert r.lb is not None and r.lb <= psi[inside].min() + 1e-9
+    assert r.ub == pytest.approx(psi[inside].min(), abs=2e-3)
+    assert float(v.domain_constraints(r.y)[0]) >= -1e-9
+    # the dilute corner, outside the domain, is far below: per atom it is unbounded
+    dilute = v.variables_from_site_fractions([{"A": 1e-8, "B": 0.0, "VA": 1 - 1e-8}, {"VA": 1.0}])
+    per_atom = (float(v.gibbs(dilute, NUM, T)) - mu @ np.array(v.amounts(dilute))) / 1e-8
+    assert per_atom < -10
+
+
+@pytest.mark.parametrize("x,t", [(0.5, 1200.0), (0.3, 1200.0), (0.58, 1200.0), (0.55, 1000.0)])
+def test_alni_beta_with_vacancies_matches_pycalphad(x, t):
+    """Dupin's Al–Ni with every phase, including B2 with constitutional vacancies on both sublattices."""
+    path = pycalphad_db("alni_dupin_2001.tdb")
+    from pycalphad import Database
+    from pycalphad import equilibrium as pyeq
+    from pycalphad import variables as v
+
+    models = ThermoDatabase.from_tdb(path).phase_models(("AL", "NI"))
+    assert {"BCC_A2", "BCC_B2"} <= set(models) and models["BCC_B2"].vacancy_limited
+    res = equilibrium(list(models.values()), x=x, T=t, certify="none")
+    assert any("min_occupancy" in m for m in res.certificate.messages)
+    ours = sorted((_label(cs), round(float(cs.x[0]), 3)) for cs in res.composition_sets if cs.amount > 1e-8)
+    eq = pyeq(Database(str(path)), ["AL", "NI", "VA"], sorted(models), {v.X("AL"): x, v.T: t, v.P: 101325, v.N: 1})
+    names = [str(p) for p in np.squeeze(eq.Phase.values) if p]
+    xs = np.atleast_1d(np.squeeze(eq.X.sel(component="AL").values))[: len(names)]
+    ys = np.atleast_2d(np.squeeze(eq.Y.values))[: len(names)]
+    ref = []
+    for n, c, y in zip(names, xs, ys):
+        if n == "BCC_B2" and np.max(np.abs(y[0:3] - y[3:6])) < 1e-3:
+            n = "BCC_A2"
+        if n == "FCC_L12" and abs(y[0] - y[2]) < 1e-3:
+            n = "FCC_A1"
+        ref.append((n, round(float(c), 3)))
+    assert ours == sorted(ref)

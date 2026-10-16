@@ -401,7 +401,9 @@ building the prototype. The upstream requests are tracked in discopt#1249.
       sublattices, and more than 3 mixing constituents.
     - **Vacancies.** A_φ(y) counts atoms on non-VA constituents.
       `atoms_min` is the sum of site ratios over sublattices without VA, and
-      N_tot,max = Σb/atoms_min. A phase with `atoms_min = 0` is rejected.
+      N_tot,max = Σb/atoms_min. A phase with a vacancy on every sublattice
+      would have `atoms_min = 0`. It is restricted to a minimum occupancy
+      instead (§9.22).
     - **Oracle.** pycalphad's GM is per mole of atoms, with R = 8.3145.
       Eleven phases (Laves C14/C15, CU2MG, AL13FE4, ALMG_GAMMA, AL3NI2, CHI_RENB,
       AL8FE5_D82, ternary liquids) agree to 1e-9 relative at 3 temperatures.
@@ -619,15 +621,48 @@ building the prototype. The upstream requests are tracked in discopt#1249.
       disordered basin, and the loop cycled. The free solve after the
       held-set solve therefore starts with `mu_init = 1e-6`.
     - **Not supported yet.**
-      - **Vacancies on substitutional sublattices** (Dupin's BCC_A2 and
-        BCC_B2, alcrni's B2). An all-vacancy configuration has no atoms, so
-        the certificate's amount bound N_tot,max = Σb/atoms_min is unbounded.
       - **Magnetic parameters on the ordered part** (Sundman's Al–Fe,
         alcfe_b2).
       - **Mismatched interstitial sublattices.** COST 507's BCC_B2 in seven
         binaries, such as Al–N, which pycalphad rejects too.
     - **Registry.** COST 507 goes from 7 to 338 of 345 complete binaries, and
       the COST 507 Al–Fe file is complete.
+22. **Vacancies on every sublattice.** *Issue #6.* Dupin's BCC_A2 and BCC_B2,
+    and alcrni's B2, can hold a vacancy on every sublattice, so a formula unit
+    can be empty.
+    - **The model has no global minimum there.** These databases set
+      G(VA:…:VA) = 0. Take a fraction δ of atoms in an otherwise empty
+      lattice. Its G per atom is about G_atom + L_atom,VA + RT ln δ, which
+      goes to −∞ as δ → 0. Read literally, the model lets a huge amount of
+      nearly empty lattice dissolve any atoms at unbounded entropy per atom.
+      pycalphad never meets this, because its point sampling does not reach
+      δ ≈ e⁻²⁰, and a local minimizer never starts there. No certificate can
+      cover the full simplex, and no amount bound N_tot,max exists.
+    - **The domain.** A phase with a vacancy on every sublattice is
+      restricted to formula units holding at least `min_occupancy` (default
+      0.5, `ThermoDatabase.min_occupancy`) of `atoms_max` in atoms:
+      `CEFPhase.domain_constraints` gives atoms(y) − atoms_min ≥ 0. Then
+      atoms_min = min_occupancy · atoms_max > 0, and the certificate theorem
+      (§2) holds unchanged on that domain. Constitutional vacancies in real
+      phases are a few percent: Al-rich NiAl at 1200 K reaches about 4% of
+      sites. The constraint is never active at an equilibrium, and the
+      certificate's messages state the assumption.
+    - **Where it applies.**
+      - The constraint is a row in the restricted solve, after the balance
+        rows.
+      - It is a constraint in every global pricing model.
+      - The boundary-slab bound prunes a box whose interval of the
+        constraint is entirely negative.
+      - Local pricing gives such points +∞.
+    - **Checked.**
+      - G matches pycalphad to 1e-9 for Dupin's BCC_B2 and alcrni's B2.
+      - Al–Ni equilibria with every phase match `pycalphad.equilibrium` in
+        phases and compositions, including Al-rich β + Al₃Ni₂ (0.556 /
+        0.594 at 1200 K). There the vacancy-free stand-in was off by up to
+        0.04.
+      - On a toy phase with G(VA:VA) = 0, global pricing matches a dense
+        grid restricted to the domain, while a point with δ = 1e-8 lies more
+        than 10 RT per atom below the tangent.
 
 ## 10. Roadmap after MVP 1
 
