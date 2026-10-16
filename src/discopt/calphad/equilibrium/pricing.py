@@ -9,7 +9,9 @@ at least ``domain_floor`` from its bounds. The boundary slabs outside that box
 are bounded by interval evaluation of the same expression. The reported lower
 bound is the smaller of the two, so it covers the full site-fraction domain.
 A phase with no site fractions (a stoichiometric compound) is priced by
-evaluating Ψ exactly.
+evaluating Ψ exactly. A magnetic phase is piecewise in y: it is split into the
+branches it can reach, each solved as its own model, and the smallest bound
+over them is the phase's (see ``_pieces``).
 
 :func:`price_phase_local` is the cheap alternative. It samples the box and
 refines the best samples with a bounded local minimizer. The result is an upper
@@ -160,55 +162,60 @@ def price_phase(
     global bound that never over-reports. It is therefore a valid lower bound
     even from a stage that hits its time limit, and the largest one seen
     across stages is used.
+
+    A magnetic phase gives one model per branch it can reach. Each stage
+    solves the branches still open, and the bound is the smallest over them.
+    A branch that discopt proves infeasible inside the box contributes +∞.
     """
     mu = np.asarray(mu, dtype=float)
     if phase.n_y == 0:
         return _price_fixed(phase, mu, T)  # exact, magnetic or not
-    if getattr(phase, "magnetic", None) is not None:
-        return _price_without_bound(phase, mu, T, domain_floor)
-    m = dm.Model(f"price_{phase.name}")
     box = inner_bounds(phase, domain_floor)
-    y = [m.continuous(f"y{i}", lb=lo, ub=hi) for i, (lo, hi) in enumerate(box)]
-    m.minimize(tangent_distance(phase, y, mu, EXPR, T))
+    pieces = _pieces(phase, mu, T, box)
     boundary = boundary_lower_bound(phase, mu, domain_floor, T, target=None if eps is None else -eps)
-
-    seen: dict[str, float | None] = {"bound": None}
-
-    def record_bound(ctx, model):
-        b = ctx.best_bound
-        if b is not None and math.isfinite(b) and (seen["bound"] is None or b > seen["bound"]):
-            seen["bound"] = float(b)
 
     t0 = time.perf_counter()
     ystar, ub, nodes, stages = None, math.inf, 0, 0
     limit = time_limit if eps is None else min(first_stage, time_limit)
     while True:
         stages += 1
-        remaining = time_limit - (time.perf_counter() - t0)
-        r = m.solve(
-            gap_tolerance=gap_tolerance,
-            time_limit=max(min(limit, remaining), 0.1),
-            node_callback=record_bound,
-            **solve_kwargs,
-        )
-        nodes += int(r.node_count or 0)
-        if r.x:
-            yr = np.array([float(np.asarray(r.x[f"y{i}"])) for i in range(len(box))])
-            ur = float(tangent_distance(phase, yr, mu, NUM, T))
-            if ur < ub:
-                ystar, ub = yr, ur
-        if r.gap_certified and r.bound is not None:
-            seen["bound"] = float(r.bound) if seen["bound"] is None else max(seen["bound"], float(r.bound))
-        if r.gap_certified or eps is None or time.perf_counter() - t0 >= time_limit - 0.1:
+        for pc in pieces:
+            if eps is not None and ub < -eps:
+                break  # decided: the phase destabilizes, whatever the other branches hold
+            if pc.closed or (eps is not None and pc.bound is not None and pc.bound >= -eps):
+                continue  # this piece is settled
+            remaining = time_limit - (time.perf_counter() - t0)
+            r = pc.model.solve(
+                gap_tolerance=gap_tolerance,
+                time_limit=max(min(limit, remaining), 0.1),
+                node_callback=pc.record,
+                **solve_kwargs,
+            )
+            pc.status = str(r.status)
+            nodes += int(r.node_count or 0)
+            if r.gap_certified and str(r.status) == "infeasible":
+                pc.closed, pc.bound = True, math.inf  # this branch is empty inside the box
+                continue
+            if r.x:
+                yr = np.array([float(np.asarray(r.x[f"y{i}"])) for i in range(len(box))])
+                ur = float(tangent_distance(phase, yr, mu, NUM, T))
+                if ur < ub:
+                    ystar, ub = yr, ur
+            if r.gap_certified and r.bound is not None:
+                pc.closed = True
+                pc.raise_bound(float(r.bound))
+        closed = all(pc.closed for pc in pieces)
+        if closed or eps is None or time.perf_counter() - t0 >= time_limit - 0.1:
             break
-        lb_now = None if seen["bound"] is None else min(seen["bound"], boundary)
-        if ub < -eps or (lb_now is not None and lb_now >= -eps):
+        lb_now = _min_bound(pieces)
+        if ub < -eps or (lb_now is not None and min(lb_now, boundary) >= -eps):
             break
         limit *= 4.0
     wall = time.perf_counter() - t0
 
-    solver_lb = seen["bound"]
-    source = "none" if solver_lb is None else ("tree" if r.gap_certified else "callback")
+    solver_lb = _min_bound(pieces)
+    source = "none" if solver_lb is None else ("tree" if closed else "callback")
+    open_ = [pc.status for pc in pieces if not pc.closed]
     return PricingResult(
         phase=phase,
         mu=mu,
@@ -217,8 +224,8 @@ def price_phase(
         lb=None if solver_lb is None else min(solver_lb, boundary),
         solver_lb=solver_lb,
         boundary_lb=boundary,
-        status=str(r.status),
-        gap_certified=bool(r.gap_certified),
+        status=open_[0] if open_ else ("optimal" if math.isfinite(ub) else "infeasible"),
+        gap_certified=closed,
         node_count=nodes,
         wall_time=wall,
         bound_source=source,
@@ -226,21 +233,62 @@ def price_phase(
     )
 
 
-def _price_without_bound(phase, mu, T, domain_floor) -> PricingResult:
-    """Search a phase that cannot be priced globally yet. The result has an upper bound and no lower bound.
+class _Piece:
+    """One discopt pricing model, and the best certified bound seen on it."""
 
-    A magnetic phase has no interval extension yet (issue #6), so neither the
-    global solve nor the boundary bound can run. It is searched locally. The
-    certificate then reports ``GLOBAL_SEARCH_INCOMPLETE`` for it, or
-    ``LOCAL_EQUILIBRIUM`` if the search found a destabilizing point.
+    def __init__(self, model):
+        self.model = model
+        self.bound: float | None = None
+        self.closed = False
+        self.status = "not solved"
+
+    def raise_bound(self, b: float) -> None:
+        if math.isfinite(b) and (self.bound is None or b > self.bound):
+            self.bound = b
+
+    def record(self, ctx, model) -> None:
+        if ctx.best_bound is not None:
+            self.raise_bound(float(ctx.best_bound))
+
+
+def _min_bound(pieces) -> float | None:
+    """The smallest bound over the pieces, or None while one of them has none."""
+    if any(pc.bound is None for pc in pieces):
+        return None
+    return min(pc.bound for pc in pieces)
+
+
+def _pieces(phase, mu, T, box) -> list[_Piece]:
+    """The discopt models whose minima together give P_φ(μ) on ``box``.
+
+    A smooth phase is one model. A magnetic phase is one model per branch that
+    an interval evaluation over the box cannot rule out (see
+    :mod:`discopt.calphad.models.magnetic`). Each holds y on its branch, with an
+    auxiliary variable s = T_c'/T bounded to that branch's side of 1. The
+    branches are closed sets that cover the box, and Ψ is continuous across
+    their edges, so the smallest of their minima is the minimum over the box.
     """
-    res = price_phase_local(phase, mu, T=T, domain_floor=domain_floor)
-    res.lb = res.solver_lb = None
-    res.boundary_lb = -math.inf
-    res.gap_certified = False
-    res.bound_source = "none"
-    res.status = "no global bound: magnetic phases have no interval extension yet"
-    return res
+
+    def model(name):
+        m = dm.Model(name)
+        return m, [m.continuous(f"y{i}", lb=lo, ub=hi) for i, (lo, hi) in enumerate(box)]
+
+    if getattr(phase, "magnetic", None) is None:
+        m, y = model(f"price_{phase.name}")
+        m.minimize(tangent_distance(phase, y, mu, EXPR, T))
+        return [_Piece(m)]
+    out = []
+    for k, (branch, (s_lo, s_hi)) in enumerate(phase.magnetic_pieces(box, T)):
+        m, y = model(f"price_{phase.name}_{k}")
+        s = m.continuous("s", lb=s_lo, ub=s_hi) if phase.magnetic.tc and s_hi > s_lo else None
+        eqs, ineqs = phase.pricing_constraints(y, T, branch, s)
+        for i, g in enumerate(eqs):
+            m.subject_to(g == 0, name=f"s_def{i}")
+        for i, g in enumerate(ineqs):
+            m.subject_to(g >= 0, name=f"branch{i}")
+        m.minimize(tangent_distance(phase, y, mu, EXPR.with_branch(branch, s), T))
+        out.append(_Piece(m))
+    return out
 
 
 def _psi_many(phase, pts, mu, T) -> np.ndarray:

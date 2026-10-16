@@ -23,18 +23,35 @@ expression is smooth only within one piece, so the ``EXPR`` backend needs the
 branch (``EXPR.with_branch``). The local restricted solve holds each
 composition set inside its branch with :func:`branch_constraints`, and switches
 branch when a constraint becomes active. The numeric backend picks the branch
-per point. Interval bounds, and with them global pricing, are not implemented
-yet (issue #6).
+per point.
+
+**Bounds.** f is continuous and strictly decreasing in s on all of s ≥ 0: on
+the paramagnetic side every term falls, the two branches have the same slope at
+s = 1, and on the ordered side the slope only grows more negative, since the
+τ-series shrinks as s grows. So the range of f over an s-interval is
+[f(s_hi), f(s_lo)], whichever branches the interval meets, and f ≤ f(0) = 0.
+The primed values T_c' and β' are nonnegative, piecewise-linear images of T_c
+and β, so their ranges follow from the endpoints and from 0 when the interval
+contains it. ln(1 + β') is increasing. The ``INTERVAL`` backend uses these
+rules, so an s-interval that straddles 1 needs no special treatment.
+
+**Global pricing** splits the domain into the branches an interval evaluation
+cannot rule out. Each branch is solved with its sign constraints, and with an
+auxiliary variable s = T_c'/T bounded to [0, 1] or [1, s_max]
+(``EXPR.with_branch(branch, s=...)``), so the negative powers on the ordered
+side never see s near 0. The pieces are closed and the model is continuous
+across their edges, so the smallest of their bounds bounds the phase.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import NamedTuple
 
 import numpy as np
 
-__all__ = ["Branch", "Magnetic", "branch_constraints", "branch_of", "ihj"]
+__all__ = ["Branch", "Magnetic", "branch_constraints", "branch_of", "branch_ranges", "ihj"]
 
 
 class Branch(NamedTuple):
@@ -94,11 +111,82 @@ def _ordered(s, p, A):
     return 1 - ((79 / (140 * p)) * s + (474 / 497) * (1 / p - 1) * series) * (1 / A)
 
 
+def _f(s: float, mag: Magnetic) -> float:
+    """f at one numeric s ≥ 0."""
+    return _ordered(s, mag.p, mag.A) if s > 1 else _paramagnetic(s, mag.A)
+
+
+def _inv(v: float):
+    """An interval holding 1 / v exactly."""
+    from discopt.calphad.ops import Interval
+
+    q = 1 / v
+    return Interval(math.nextafter(q, -math.inf), math.nextafter(q, math.inf))
+
+
+def _afm_image(x, afm: float):
+    """The range of x' (x, or x / afm where x ≤ 0) over the interval x. It is always ≥ 0."""
+    from discopt.calphad.ops import Interval
+
+    x = Interval._coerce(x)
+    if x.lo > 0:
+        return x
+    neg = Interval(x.lo, min(x.hi, 0.0)) * _inv(afm)
+    return Interval(max(neg.lo, 0.0), max(neg.hi, x.hi))
+
+
+def _ihj_interval(mag: Magnetic, tc, beta, T: float):
+    """An enclosure of G_mag / RT over the intervals T_c and β (see the module docstring)."""
+    from discopt.calphad.ops import Interval
+
+    s = _afm_image(tc, mag.afm) * _inv(T)
+    b = _afm_image(beta, mag.afm)
+    s_lo = max(s.lo, 0.0)
+    f_lo, f_hi = _f(s.hi, mag), _f(s_lo, mag)
+    l_lo, l_hi = math.log1p(b.lo), math.log1p(b.hi)
+    # libm's pow and log1p are not correctly rounded: pad by a few ulps of the value
+    pad = 1e-14
+    f = Interval(f_lo - pad * max(1.0, abs(f_lo)), min(f_hi + pad * max(1.0, abs(f_hi)), 0.0))
+    ln = Interval(max(l_lo - pad * max(1.0, l_lo), 0.0), l_hi + pad * max(1.0, l_hi))
+    return ln * f
+
+
+def branch_ranges(mag: Magnetic, tc, beta, T: float) -> list[tuple[Branch, tuple[float, float]]]:
+    """The branches that intervals T_c and β may reach, each with an enclosure of s = T_c'/T on it.
+
+    A branch left out cannot occur anywhere the intervals hold. The s-range of
+    a kept branch is already cut to its side of 1.
+    """
+    from discopt.calphad.ops import Interval
+
+    tc, beta = Interval._coerce(tc), Interval._coerce(beta)
+    signs = []
+    if tc.lo <= 0:
+        signs.append((True, _afm_image(Interval(tc.lo, min(tc.hi, 0.0)), mag.afm)))
+    if tc.hi > 0:
+        signs.append((False, Interval(max(tc.lo, 0.0), tc.hi)))
+    betas = [neg for neg, ok in ((True, beta.lo <= 0), (False, beta.hi > 0)) if ok]
+    out = []
+    for tc_neg, eff in signs:
+        s = eff * _inv(T)
+        s_lo = max(s.lo, 0.0)
+        for ordered in (False, True):
+            if ordered and s.hi <= 1:
+                continue
+            if not ordered and s_lo > 1:
+                continue
+            rng = (max(s_lo, 1.0), s.hi) if ordered else (s_lo, min(s.hi, 1.0))
+            out += [(Branch(tc_neg, b_neg, ordered), rng) for b_neg in betas]
+    return out
+
+
 def ihj(mag: Magnetic, tc, beta, T: float, ops, branch: Branch | None = None):
     """G_mag / RT for the given T_c and β, on backend ``ops``.
 
     ``NUM`` chooses the branch per element (array inputs broadcast). ``EXPR``
-    uses ``branch``, or ``ops.branch`` if ``branch`` is None.
+    uses ``branch``, or ``ops.branch`` if ``branch`` is None, and the auxiliary
+    variable ``ops.s`` for T_c'/T when it is set. ``INTERVAL`` encloses every
+    branch at once.
     """
     if ops.name == "num":
         tc = np.asarray(tc, dtype=float)
@@ -122,13 +210,14 @@ def ihj(mag: Magnetic, tc, beta, T: float, ops, branch: Branch | None = None):
             )
         tc_eff = tc * (1 / mag.afm) if branch.tc_negative else tc
         beta_eff = beta * (1 / mag.afm) if branch.beta_negative else beta
-        s = tc_eff * (1 / T)
+        s = getattr(ops, "s", None)
+        if s is None:
+            s = tc_eff * (1 / T)
         f = _ordered(s, mag.p, mag.A) if branch.ordered else _paramagnetic(s, mag.A)
         return dm.log(1 + beta_eff) * f
-    raise NotImplementedError(
-        "interval bounds for the magnetic contribution are not implemented yet (issue #6), "
-        "so a magnetic phase cannot be priced globally"
-    )
+    if ops.name == "interval":
+        return _ihj_interval(mag, tc, beta, T)
+    raise NotImplementedError(f"no magnetic contribution for backend {ops.name!r}")
 
 
 def branch_constraints(mag: Magnetic, tc, beta, T: float, branch: Branch) -> list:

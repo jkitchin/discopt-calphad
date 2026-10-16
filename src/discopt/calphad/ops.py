@@ -40,13 +40,15 @@ class _Num:
 class _Expr:
     name = "expr"
 
-    def __init__(self, branch=None):
+    def __init__(self, branch=None, s=None):
         #: the piece of a piecewise model to lower (see :mod:`discopt.calphad.models.magnetic`)
         self.branch = branch
+        #: an auxiliary discopt variable standing for T_c'/T on that piece, or None
+        self.s = s
 
-    def with_branch(self, branch) -> _Expr:
-        """This backend, lowering a piecewise model on ``branch``."""
-        return _Expr(branch)
+    def with_branch(self, branch, s=None) -> _Expr:
+        """This backend, lowering a piecewise model on ``branch`` (with ``s`` for T_c'/T if given)."""
+        return _Expr(branch, s)
 
     @staticmethod
     def xlogx(x):

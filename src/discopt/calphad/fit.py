@@ -1310,8 +1310,7 @@ def fit(
     phase falls below −ε, for at most ``max_cut_rounds`` rounds. The result's
     :attr:`FitResult.consistency` then says ``CERTIFIED``: every certified lower
     bound is ≥ −ε. It says ``INCOMPLETE`` when a bound could not be raised that
-    far (magnetic phases have none yet, and ``consistency_time_limit`` bounds
-    each pricing), and ``NOT_CERTIFIED`` when rounds ran out. Phases listed in
+    far within ``consistency_time_limit``, which bounds each pricing, and ``NOT_CERTIFIED`` when rounds ran out. Phases listed in
     an observation are not checked there: their deviation from the tangent is
     that observation's own residual.
 

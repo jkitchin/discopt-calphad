@@ -30,7 +30,7 @@ A file whose hash differs from the registry's is never used.
 "Complete" lists the binaries in which every phase can be modeled. The browser
 app offers exactly these. "Incomplete" lists binaries with at least one phase that
 uses a model not supported yet, in practice order–disorder (DISORDERED_PART).
-Magnetic phases are supported, but without a global certificate yet.
+Magnetic phases (Inden–Hillert–Jarl) are supported and certified globally.
 
 | name | system | complete | incomplete | reference |
 |---|---|---|---|---|

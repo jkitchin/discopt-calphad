@@ -439,8 +439,7 @@ building the prototype. The upstream requests are tracked in discopt#1249.
     `applicability(elements)` lists the reason for each one, and should be
     checked before trusting a diagram. In Al–Fe, for example, B2_BCC is
     skipped because it is an order–disorder phase.
-18. **Magnetic ordering.** *Issue #6, first step; measured against pycalphad
-    0.11.2.* `models/magnetic.py` implements the Inden–Hillert–Jarl term
+18. **Magnetic ordering.** *Issue #6; measured against pycalphad 0.11.2.* `models/magnetic.py` implements the Inden–Hillert–Jarl term
     RT ln(β' + 1) f(T/T_c') per formula unit, and a magnetic phase is always a
     `CEFPhase`.
     - **Conventions, as pycalphad applies them.**
@@ -473,14 +472,52 @@ building the prototype. The upstream requests are tracked in discopt#1249.
       case where the solution sits on the edge itself. In the Cr–Fe gap at
       700 K, the Cr-rich set starts with T_c > 0, stops on T_c = 0, and
       converges on the antiferromagnetic branch in the second solve.
-    - **Pricing, and what is not done.** No interval extension is implemented
-      for the magnetic term yet. So a magnetic phase is priced by the local
-      search, without a lower bound, and its certificate is at most
-      `GLOBAL_SEARCH_INCOMPLETE` (a destabilizing point still gives
-      `LOCAL_EQUILIBRIUM`). The message names the reason.
-    - **Next.** Interval rules for ln(1 + β) and for f on s-intervals that may
-      straddle 1. Then global pricing split into the branch regions, each
-      solved with its branch constraints and taking the smaller bound.
+    - **Interval extension.** f is continuous and strictly decreasing in s on
+      all of s ≥ 0. On the paramagnetic side every term falls. The slopes of
+      the two branches agree at s = 1. On the ordered side, the slope
+      −(79/(140p) − c(s⁻⁴/2 + s⁻¹⁰/15 + s⁻¹⁶/40))/A only grows more negative
+      with s, because the subtracted series shrinks. So f over [s_lo, s_hi]
+      is [f(s_hi), f(s_lo)], whether or not the interval straddles 1, and
+      f ≤ f(0) = 0. T_c' and β' are nonnegative piecewise-linear images of
+      T_c and β: x for x > 0 and x/afm for x ≤ 0. Their range is the image of
+      the endpoints, with 0 added when the interval contains 0. ln(1 + β') is
+      increasing. libm's `pow` and `log1p` are not correctly rounded, so the
+      endpoint values are padded by 1e-14 relative. With these rules, the
+      boundary-slab bound and every `INTERVAL` evaluation cover magnetic
+      phases. Random boxes in five oracle phases at 300–1500 K give no
+      enclosure violations.
+    - **Global pricing by branch.** An interval evaluation of T_c and β over
+      the site-fraction box tells which branches the box can reach
+      (`magnetic_pieces`). Usually there are three to six of the eight. Each one
+      becomes its own discopt model, with:
+      - the sign constraints of its branch;
+      - an auxiliary variable s = T_c'/T, tied to y by the equality
+        s − T_c'(y)/T = 0, and bounded to [s_lo, 1] or [1, s_hi].
+
+      Bounding s keeps the negative powers on the ordered side away from
+      s = 0 in the relaxation. Without it they would have no finite bound.
+      The branches are closed sets that cover the box. Ψ is continuous across
+      their edges: f is C¹ at s = 1, and T_c' and β' are 0 from both sides
+      at a sign change. So the smallest of the branch minima is the minimum
+      over the box, and the smallest of their certified bounds bounds it.
+      A branch that discopt proves infeasible contributes +∞. The staged ε
+      loop runs over all open branches in each stage, stops as soon as one
+      gives UB < −ε, and otherwise stops once every branch bound is ≥ −ε.
+    - **Measured.**
+      - Cr–Fe BCC at 700 K (six branches): every branch closes in 0.5–4 s. The
+        bound matches a 20 001-point grid minimum to 3e-7.
+      - Ni–Fe FCC (COST 507, 600 K), Al–Fe BCC (800 K) and Cr–V BCC (300 K)
+        also close and match their grids.
+      - Certified with every phase, σ and Laves included, all at 13–19 s per
+        point:
+        - the Cr–Fe BCC gap at 700 K (ferromagnetic Fe-rich + antiferromagnetic
+          Cr-rich);
+        - σ + BCC at 800 and 1000 K;
+        - σ at 900 K;
+        - FCC inside the γ loop at 1200 K.
+      - See `examples/crfe_magnetic.py` and `examples/fe_magnetic.py`.
+    - **Still open.** The Xiong model (AFM factor 0), and TC/BMAGN as free
+      parameters in `fit`.
     - **Fitting.** G is not linear in TC and BMAGN, so `fit` cannot free
       them. It does fit the G and L parameters of a magnetic phase, and data
       referenced to one (a formation enthalpy against magnetic FCC Ni): the

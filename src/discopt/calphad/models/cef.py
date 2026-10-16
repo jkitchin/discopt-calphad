@@ -45,7 +45,7 @@ from itertools import product
 import numpy as np
 
 from discopt.calphad.equilibrium.common import R_GAS
-from discopt.calphad.models.magnetic import Branch, Magnetic, branch_constraints, branch_of, ihj
+from discopt.calphad.models.magnetic import Branch, Magnetic, branch_constraints, branch_of, branch_ranges, ihj
 from discopt.calphad.models.tfunc import coef
 from discopt.calphad.ops import NUM
 
@@ -231,6 +231,32 @@ class CEFPhase:
         """
         tc, beta = self._magnetic_sums(self._Y(y), T)
         return branch_constraints(self.magnetic, tc, beta, T, branch)
+
+    def magnetic_pieces(self, box, T: float) -> list[tuple[Branch, tuple[float, float]]]:
+        """The magnetic branches the site-fraction ``box`` may reach, each with its range of s = T_c'/T.
+
+        An interval evaluation of T_c and β over the box rules out the others.
+        See :func:`discopt.calphad.models.magnetic.branch_ranges`.
+        """
+        from discopt.calphad.ops import Interval
+
+        tc, beta = self._magnetic_sums(self._Y([Interval(lo, hi) for lo, hi in box]), T)
+        return branch_ranges(self.magnetic, tc, beta, T)
+
+    def pricing_constraints(self, y, T: float, branch: Branch, s=None) -> tuple[list, list]:
+        """``(equalities, inequalities)`` in discopt variables ``y`` that hold ``y`` on ``branch``.
+
+        With an auxiliary variable ``s`` for T_c'/T, the equality s = T_c'/T
+        ties it to ``y`` (scaled by 1/T), and the bounds of ``s`` take the place
+        of the ordered-side constraint. Without ``s``, the result is
+        :meth:`branch_constraints` as inequalities.
+        """
+        tc, beta = self._magnetic_sums(self._Y(y), T)
+        rows = branch_constraints(self.magnetic, tc, beta, T, branch)
+        if s is None:
+            return [], [g for g in rows if g is not None]
+        tc_eff = tc * (1 / self.magnetic.afm) if branch.tc_negative else tc
+        return [s - tc_eff * (1 / T)], [g for g in rows[:2] if g is not None]
 
     def _term_factor(self, t: CEFTerm, Y):
         mixing = [s for s, c in enumerate(t.constituents) if len(c) > 1]

@@ -30,8 +30,9 @@ the tangent-plane distance Ψ(y) = G(y) − μ·A(y):
 - **MVP 3:** TDB import and export into a symbolic `ThermoDatabase` (SymPy
   expressions with named functions kept), and binary phase models built from
   it. Unsupported models (order–disorder, ionic) raise with the reason.
-  Magnetic phases (Inden–Hillert–Jarl) are solved, but not yet certified
-  globally.
+  Magnetic phases (Inden–Hillert–Jarl, issue #6) are solved and globally
+  certified: the magnetic term has interval bounds, and pricing splits a
+  magnetic phase into the branches of T_c, β and T/T_c it can reach.
 - **MVP 4:** compound-energy-formalism phases (`CEFPhase`: several sublattices,
   endmembers, binary/reciprocal/ternary interactions, vacancies) in any number
   of elements, checked against pycalphad. Pricing stops as soon as its answer

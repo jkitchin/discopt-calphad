@@ -31,8 +31,10 @@ Know the limits before you promise a result:
 - **Unsupported phases:** order–disorder phases (B2, L1₂ in Ni–Al and Fe–Al)
   cannot be modelled directly, but `ordering.stand_in` turns each into a plain
   phase (see section 1). Ionic liquids cannot be modelled.
-- **Magnetism:** any equilibrium containing a magnetic phase (FCC Ni, BCC Fe,
-  Co) certifies at most to `GLOBAL_SEARCH_INCOMPLETE`.
+- **Magnetism:** Inden–Hillert–Jarl magnetic phases (FCC Ni, BCC Fe, Co)
+  certify like any other phase. Global pricing solves one model per magnetic
+  branch, so it costs a few times more than for a plain phase. The Xiong model
+  is not supported.
 - **Calculators:** a calculator (MLIP, EAM, EMT) gives data for a fit, never a
   phase model. For a phase diagram from one, follow
   [reference/mlip-phase-diagram.md](reference/mlip-phase-diagram.md).
@@ -132,7 +134,7 @@ strongest:
 | `FAILED` | the restricted (local) solve did not converge. Nothing. |
 | `LOCAL_EQUILIBRIUM` | a local minimum. Either no pricing ran, or a phase still destabilizes (the result is not the equilibrium). |
 | `STABILITY_SEARCHED` | a local search over every phase found nothing destabilizing. This is what `certify="none"` and the browser app reach. A search is not a proof. |
-| `GLOBAL_SEARCH_INCOMPLETE` | global pricing ran, but some phase has no valid lower bound, or its bound is below −ε. Read `certificate.messages` for which phase and why. Magnetic phases are always here for now. |
+| `GLOBAL_SEARCH_INCOMPLETE` | global pricing ran, but some phase has no valid lower bound, or its bound is below −ε. Read `certificate.messages` for which phase and why. |
 | `CERTIFIED_TO_TOLERANCE` | every phase is proven to have Ψ ≥ −ε. No missing phase or set can lower G by more than `gap_bound` (in RT). |
 | `GLOBALLY_CERTIFIED` | as above, with ε at 1e-9 and a KKT residual ≤ 1e-8. |
 
@@ -221,8 +223,8 @@ its internal equilibrium.
 that a phase-equilibrium observation does not list, with certified global
 pricing at that observation's μ. A phase more than `consistency_eps` (J/mol,
 default 10) below the tangent becomes a cut, and the fit is solved again.
-`res.consistency["status"]` is then `CERTIFIED`, `INCOMPLETE` (magnetic
-phases have no bound yet), or `NOT_CERTIFIED`. Each round costs one global
+`res.consistency["status"]` is then `CERTIFIED`, `INCOMPLETE` (a bound could
+not be raised to −ε in the time limit), or `NOT_CERTIFIED`. Each round costs one global
 pricing per phase per observation, from seconds upward.
 
 **Which measurement next?** `discopt.calphad.design.rank_candidates(res,
@@ -439,8 +441,7 @@ fitted_alcu = fit(alcu, result.dataset, ("AL", "CU"), {"G(ALCU_THETA,AL:CU;0)": 
   - some high-order CEF interactions.
 
   `phase_models()` skips such phases silently, so check `applicability()`.
-  Inden–Hillert–Jarl magnetic phases are supported, but certify at most to
-  `GLOBAL_SEARCH_INCOMPLETE` (no interval bounds for that term yet).
+  Inden–Hillert–Jarl magnetic phases are supported and certified.
 - **Speed.**
   - A local (`certify="none"`) solve takes tens of milliseconds with simple
     phases, and 0.5–30 s when several multi-sublattice (CEF) phases compete.
