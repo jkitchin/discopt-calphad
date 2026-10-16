@@ -27,6 +27,9 @@ the tangent-plane distance Ψ(y) = G(y) − μ·A(y):
 - **Fitting:** weighted least squares of TDB parameters to thermochemical,
   activity and phase-equilibrium data (one-sided boundary points included),
   with an ESPEI JSON reader and a real Cu–Mg example.
+- **Ionic models (issue #6):** charged species, charge-neutral oxide CEF
+  phases, and the two-sublattice ionic liquid, matching pycalphad's Gibbs
+  energies to round-off.
 - **Order–disorder phases (issue #6):** DISORDERED_PART and NEVER_DISORDER
   phases (L1₂, B2, four-sublattice FCC/BCC with the F and B options) are
   modeled natively as G_dis(x) + G_ord(y) − G_ord(x). G matches pycalphad to

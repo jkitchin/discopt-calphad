@@ -53,6 +53,13 @@ the tangent-plane distance Ψ(y) = G(y) − μ·A(y):
   NIMS assessment, and the diagram follows the liquidus and eutectic data.
   The FCC interaction differs: the DFT mixing enthalpies pull the Cu-rich
   solvus wider than the measured one (`examples/cumg_espei_fit.py`).
+- **Ionic models (issue #6):** charged species, charge-neutral oxide CEF
+  phases (fluorite, pyrochlore), and the two-sublattice ionic liquid (Sundman
+  1991), all matching pycalphad's Gibbs energies to round-off. In Cu–O, the
+  solver finds the liquid miscibility gap where pycalphad's grid misses it,
+  with a lower G. Certification works for inactive ionic phases. An active
+  ionic liquid, or a charged four-sublattice phase near the tangent, ends
+  `GLOBAL_SEARCH_INCOMPLETE`.
 - **Order–disorder phases (issue #6):** DISORDERED_PART and NEVER_DISORDER
   phases (L1₂, B2, four-sublattice FCC/BCC with the F and B options) are
   modeled natively as G_dis(x) + G_ord(y) − G_ord(x). G matches pycalphad to

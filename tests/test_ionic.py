@@ -8,7 +8,7 @@ import pytest
 from discopt.calphad import ThermoDatabase, equilibrium
 from discopt.calphad.database import Species
 from discopt.calphad.equilibrium.common import R_GAS
-from discopt.calphad.equilibrium.restricted import CompositionSet, _implied_neutrality
+from discopt.calphad.equilibrium.restricted import CompositionSet, _implied_neutrality, _valence, v_neutral
 from discopt.calphad.models import CEFPhase
 from discopt.calphad.models.ionic import IonicLiquidPhase
 from discopt.calphad.ops import NUM
@@ -146,9 +146,22 @@ def test_redundant_neutrality_is_detected():
     y_p = pyro.initial_y(np.array([0.5, 0.5, 1.75]))
     sets = [CompositionSet(fluo, y_f, 0.5), CompositionSet(pyro, y_p, 0.1)]
     els = ("ND", "ZR", "O")
-    assert _implied_neutrality(sets, np.array([0.5, 0.5, 1.75]), els, [True, True]) == 0
-    assert _implied_neutrality(sets, np.array([0.5, 0.5, 1.75]), els, [False, True]) == 1  # held sets have no row
-    assert _implied_neutrality(sets, np.array([0.5, 0.5, 2.0]), els, [True, True]) is None  # b not neutral
+    v = _valence(sets, np.array([0.5, 0.5, 1.75]), els)
+    assert v / v[0] == pytest.approx([1.0, 4 / 3, -2 / 3])  # Nd3+, Zr4+, O2-
+    assert _implied_neutrality(sets, v, [True, True]) == 0
+    assert _implied_neutrality(sets, v, [False, True]) == 1  # a held set has no row
+    assert _valence(sets, np.array([0.5, 0.5, 2.0]), els) is None  # b not neutral
+    assert v_neutral(fluo, v, els) and v_neutral(pyro, v, els)
+
+
+def test_neutral_liquid_alone_solves():
+    """A lone ionic liquid with fixed valences: one balance row is redundant, and μ is free along v."""
+    db = ThermoDatabase.from_tdb(pycalphad_db("al2o3_nd2o3_zro2.tdb"))
+    models = db.phase_models(("ND", "ZR", "O"))
+    a = 0.5
+    res = equilibrium(list(models.values()), b=np.array([a, 1 - a, 1.5 * a + 2 * (1 - a)]), T=2800.0, certify="none")
+    assert [cs.phase.name for cs in res.composition_sets] == ["I_LIQUID"]
+    assert res.certificate.level.name == "STABILITY_SEARCHED"
 
 
 # ---------------------------------------------------------------------------- pycalphad oracle

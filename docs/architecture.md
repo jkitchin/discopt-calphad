@@ -669,6 +669,91 @@ building the prototype. The upstream requests are tracked in discopt#1249.
       constraints) stalls near −3 after 600 s. The bounds of the other
       active phases, Al₃Ni₂ and FCC_L12, stall at −4.8e-3 and −4.4e-5. This
       is the active-phase weakness of §9.17, with a larger problem.
+23. **Ionic models.** *Issue #6; measured against pycalphad 0.11.2.*
+    - **Species.** A constituent may be a SPECIES with a stoichiometry and a
+      charge (`CU+1` = `CU1/+1`, `O-2`, `O2`, `ALO3/2` = `AL1O1.5`). Formulas
+      are read against the database's elements, longest symbol first. A
+      species takes part in a system when all of its elements do. Amounts are
+      Σ_s a_s Σ_c y_s,c n_e(c), and atoms_min and atoms_max are the minimum
+      and maximum over endmembers. An undefined `R` in an expression is the gas
+      constant, as in pycalphad (cuo.tdb's gas writes `R*T*LN(1E-05*P)`).
+    - **Charged CEF phases** (oxide fluorite, pyrochlore, Nd₂O₃). The domain
+      is cut by charge neutrality, Σ_s a_s Σ_c q_c y_s,c = 0, which is
+      `CEFPhase.domain_equalities`. It applies in five places:
+      - it is a row in the restricted solve;
+      - it is an equality in every global pricing model;
+      - the boundary-slab and interval bounds drop a box whose charge
+        interval excludes 0;
+      - local pricing ranks samples by Ψ plus a penalty on the charge, then
+        refines under the equality with SLSQP;
+      - `initial_y` fits the composition and the charge.
+
+      A missing charged endmember is 0, as in pycalphad.
+    - **Fixed valences make a row redundant.** If every constituent has a
+      fixed valence, q_c = v·n(c), then each neutral phase has v·A(y) = 0, and
+      summed over the sets the balance rows give v·b. With v·b = 0, one row is
+      redundant and the Jacobian is singular, and the interior-point solve
+      errors. `_valence` detects this. The restricted solve then leaves out
+      one neutrality row, or, if no free set has one (a lone ionic liquid),
+      one balance row. In the second case μ_e = 0 for that element. μ is free
+      along v, and when every phase is v-neutral this is a gauge that changes
+      no tangent distance, so the loop does not try to centre μ.
+    - **Two-sublattice ionic liquid** (phase hint `Y`): (C)_P(A, Va, B)_Q,
+      `models/ionic.py`, following Sundman (Calphad 15 (1991) 109) as
+      pycalphad implements it.
+      - The site ratios are Q = Σ q_C y_C and P = Σ |q_A| y_A + Q y_Va, so the
+        liquid is neutral for every y.
+      - Anion-free parameters are multiplied by Q. Their cation fractions are
+        also multiplied by y_Va (the pair rule), except in a single endmember
+        with Va.
+      - Second-sublattice constituents are ordered charged, then Va, then
+        neutral, before the Redlich–Kister difference.
+      - A neutral-only parameter may be written on one sublattice.
+      - Amounts are polynomial in y. Their minimum is still at a vertex: along
+        any edge they are concave or monotone.
+    - **pycalphad cannot evaluate one case.** An ionic liquid with a neutral
+      species and no Va (`I_LIQUID` with ALO3/2) raises in pycalphad 0.11.2,
+      because its pair-rule code looks for a Va sublattice. We follow
+      Sundman's model there, with the neutral term multiplied by Q, and a test
+      checks the formula by hand.
+    - **Checked.**
+      - G matches `pycalphad.calculate` to round-off (≤ 1e-14 relative) for:
+        - the Cu–O, Fe–Mn–S and Nd–Zr–O liquids;
+        - fluorite, pyrochlore and Nd₂O₃-A (al2o3_nd2o3_zro2);
+        - zrlayalo's fluorite.
+      - Equilibria match `pycalphad.equilibrium`:
+        - Cu–O: liquid, Cu₂O + CuO, CuO + gas, Cu₂O + liquid, FCC + Cu₂O;
+        - ZrO₂–NdO₁.₅: fluorite + tetragonal, fluorite, pyrochlore,
+          fluorite + Nd₂O₃-A, monoclinic + pyrochlore.
+    - **Where pycalphad misses the minimum.** At Cu–O x(O) = 0.2, 1500 K,
+      pycalphad reports Cu₂O + liquid. We find two liquids, Cu-rich and
+      oxide-rich, 46 J/mol lower, with Cu₂O 0.010 RT above the tangent. Both
+      codes give the same G for every phase, so this is the better minimum of
+      the same model: pycalphad's grid starts missed the liquid miscibility
+      gap. `examples/cuo_ionic.py` maps where this happens.
+    - **Restricted-solve starts.** Starting amounts from a least-squares fit
+      can make the solve converge to a worse KKT point. In the oxide section,
+      a set that should stay then vanished, and the loop cycled until
+      `max_iter`. From the second iteration on, the loop also solves from the
+      previous solution's amounts (`warm=True`, with `mu_init = 1e-6`) and
+      keeps the better result.
+    - **Pricing.**
+      - The ionic liquid's P and Q are bounded auxiliary variables, tied to y
+        by equalities. This raised the 120 s bound on the Cu–O liquid from
+        −3.7 to −1.2.
+      - For phases with at most 4 variables, interval branch and bound over
+        the whole domain runs first (`interval_lower_bound`, 20 000 boxes).
+        It decides most inactive phases in under 1.3 s without a discopt
+        solve.
+      - The boundary-slab bound now gets 20 000 boxes per slab; with 2000 it
+        stopped at −0.64 where 20 000 reach +1e-4.
+      - Cu–O x(O) = 0.4, 1000 K (Cu₂O + CuO) is `GLOBALLY_CERTIFIED`.
+    - **Open.**
+      - An *active* ionic liquid (Cu–O liquid at 1500 K) does not certify:
+        its bound stalls near −0.6.
+      - A charged four-sublattice phase near the tangent (pyrochlore,
+        0.10 RT above it) does not certify either: discopt reaches −45 in
+        300 s, and a million interval boxes −25.
 
 ## 10. Roadmap after MVP 1
 

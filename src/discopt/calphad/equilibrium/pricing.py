@@ -34,7 +34,17 @@ from scipy.stats import qmc
 from discopt.calphad.equilibrium.common import DOMAIN_FLOOR, inner_bounds, tangent_distance
 from discopt.calphad.ops import EXPR, INTERVAL, NUM, Interval
 
-__all__ = ["PricingResult", "price_phase", "price_phase_local", "price_phases", "boundary_lower_bound"]
+__all__ = [
+    "PricingResult",
+    "price_phase",
+    "price_phase_local",
+    "price_phases",
+    "boundary_lower_bound",
+    "interval_lower_bound",
+]
+
+#: phases with at most this many site-fraction variables are first priced by interval branch and bound
+INTERVAL_MAX_VARS = 4
 
 
 @dataclass
@@ -57,7 +67,8 @@ class PricingResult:
     wall_time: float
     #: where ``solver_lb`` came from: "exact", "tree" (a closed gap), "callback" (a certified
     #: best bound read during the search), "none" (a global search that gave no bound), or
-    #: "local" (local pricing, which never gives a bound)
+    #: "local" (local pricing, which never gives a bound), or "interval" (interval branch and bound
+    #: over the whole domain decided the question before any discopt solve)
     bound_source: str = "none"
     #: number of discopt solves (stages) run
     stages: int = 1
@@ -69,27 +80,8 @@ class PricingResult:
         return self.lb is not None and self.lb >= -eps
 
 
-def boundary_lower_bound(
-    phase,
-    mu,
-    domain_floor: float = DOMAIN_FLOOR,
-    T: float | None = None,
-    *,
-    target: float | None = None,
-    max_boxes: int = 2000,
-) -> float:
-    """Interval lower bound on Ψ over the slabs within ``domain_floor`` of a bound.
-
-    With several site fractions, a slab is thin in one direction but spans the
-    full range of the others, so one interval evaluation is loose. Each slab is
-    therefore refined best-first: the box with the lowest bound is bisected along
-    its widest side. Refinement stops when that bound reaches ``target``, or when
-    ``max_boxes`` evaluations have been spent on the slab. The result is the
-    smallest bound among the remaining boxes, which is valid at any stopping
-    point.
-    """
-    outer = phase.y_bounds
-
+def _interval_bound_fn(phase, mu, T):
+    """Box -> an interval lower bound on Ψ over the box (+inf if no point of it is in the phase's domain)."""
     domain = getattr(phase, "domain_constraints", lambda y: [])
     equalities = getattr(phase, "domain_equalities", lambda y: [])
 
@@ -101,27 +93,69 @@ def boundary_lower_bound(
             return math.inf  # no point of the box is charge-neutral
         return tangent_distance(phase, iv, mu, INTERVAL, T).lo
 
+    return bound
+
+
+def _refine(bound, box, target: float | None, max_boxes: int) -> float:
+    """Best-first interval branch and bound on ``box``: bisect the lowest box along its widest side.
+
+    Stops when the lowest bound reaches ``target`` or after ``max_boxes``
+    evaluations. The smallest bound among the remaining boxes is valid at any
+    stopping point.
+    """
+    heap = [(bound(box), 0, box)]
+    count = 1
+    while heap[0][0] < (math.inf if target is None else target) and count < max_boxes:
+        _, _, b = heapq.heappop(heap)
+        j = max(range(len(b)), key=lambda k: b[k][1] - b[k][0])
+        a, c = b[j]
+        if c - a <= 1e-12:
+            heapq.heappush(heap, (bound(b), count, b))
+            break
+        for half in ((a, 0.5 * (a + c)), (0.5 * (a + c), c)):
+            nb = list(b)
+            nb[j] = half
+            count += 1
+            heapq.heappush(heap, (bound(nb), count, nb))
+    return heap[0][0]
+
+
+def boundary_lower_bound(
+    phase,
+    mu,
+    domain_floor: float = DOMAIN_FLOOR,
+    T: float | None = None,
+    *,
+    target: float | None = None,
+    max_boxes: int = 20000,
+) -> float:
+    """Interval lower bound on Ψ over the slabs within ``domain_floor`` of a bound.
+
+    With several site fractions, a slab is thin in one direction but spans the
+    full range of the others, so one interval evaluation is loose. Each slab is
+    therefore refined best-first (:func:`_refine`) until its bound reaches
+    ``target`` or ``max_boxes`` evaluations have been spent on it.
+    """
+    outer = phase.y_bounds
+    bound = _interval_bound_fn(phase, mu, T)
     lbs = []
     for i, (lo, hi) in enumerate(outer):
         for slab in ((lo, lo + domain_floor), (hi - domain_floor, hi)):
             box = list(outer)
             box[i] = slab
-            heap = [(bound(box), 0, box)]
-            count = 1
-            while heap[0][0] < (math.inf if target is None else target) and count < max_boxes:
-                _, _, b = heapq.heappop(heap)
-                j = max(range(len(b)), key=lambda k: b[k][1] - b[k][0])
-                a, c = b[j]
-                if c - a <= 1e-12:
-                    heapq.heappush(heap, (bound(b), count, b))
-                    break
-                for half in ((a, 0.5 * (a + c)), (0.5 * (a + c), c)):
-                    nb = list(b)
-                    nb[j] = half
-                    count += 1
-                    heapq.heappush(heap, (bound(nb), count, nb))
-            lbs.append(heap[0][0])
+            lbs.append(_refine(bound, box, target, max_boxes))
     return min(lbs) if lbs else math.inf
+
+
+def interval_lower_bound(phase, mu, T: float | None = None, *, target: float | None = None, max_boxes: int = 20000):
+    """Interval branch-and-bound lower bound on Ψ over the phase's whole domain.
+
+    The natural interval extension overestimates by O(box width), so this
+    closes quickly for a phase well above the tangent plane, and slowly for one
+    that touches it. :func:`price_phase` runs it first and skips the discopt
+    solve when it already decides the question.
+    """
+    return _refine(_interval_bound_fn(phase, mu, T), list(phase.y_bounds), target, max_boxes)
 
 
 def _price_fixed(phase, mu, T) -> PricingResult:
@@ -178,6 +212,16 @@ def price_phase(
     mu = np.asarray(mu, dtype=float)
     if phase.n_y == 0:
         return _price_fixed(phase, mu, T)  # exact, magnetic or not
+    if eps is not None and phase.n_y <= INTERVAL_MAX_VARS:
+        # cheap first: interval branch and bound over the whole domain decides a phase well above the tangent
+        t0 = time.perf_counter()
+        lb_int = interval_lower_bound(phase, mu, T, target=-eps)
+        if lb_int >= -eps:
+            res = price_phase_local(phase, mu, T=T, domain_floor=domain_floor)
+            res.lb, res.solver_lb, res.boundary_lb = lb_int, None, lb_int
+            res.status, res.gap_certified, res.bound_source = "interval", True, "interval"
+            res.wall_time = time.perf_counter() - t0
+            return res
     box = inner_bounds(phase, domain_floor)
     pieces = _pieces(phase, mu, T, box)
     boundary = boundary_lower_bound(phase, mu, domain_floor, T, target=None if eps is None else -eps)

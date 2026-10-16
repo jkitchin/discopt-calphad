@@ -10,7 +10,7 @@ from discopt.calphad.equilibrium.certificate import Certificate, CertificateLeve
 from discopt.calphad.equilibrium.certificate import certify as certify_state
 from discopt.calphad.equilibrium.common import DOMAIN_FLOOR, tangent_distance
 from discopt.calphad.equilibrium.pricing import PricingResult, price_phases
-from discopt.calphad.equilibrium.restricted import CompositionSet, RestrictedResult, solve_restricted
+from discopt.calphad.equilibrium.restricted import CompositionSet, RestrictedResult, solve_restricted, v_neutral
 from discopt.calphad.ops import NUM
 
 __all__ = ["CERTIFY_MODES", "IterationRecord", "EquilibriumResult", "equilibrium", "initial_set", "is_duplicate"]
@@ -327,6 +327,16 @@ def equilibrium(
                 # again at the next μ. The certificate does not depend on how sets are added.
                 sets, new = previous + new[:1], new[:1]
                 R = solve_restricted(sets, b, T=T, domain_floor=domain_floor, amount_tol=amount_tol)
+        if it > 0:
+            # The sets carry the previous solution's amounts (a new set at zero), which is feasible, but a
+            # cold start (amounts from a least-squares fit) can converge to a worse KKT point, for
+            # instance one where a set that should stay vanishes. Also solve from those amounts, with a
+            # small barrier, and keep the better converged solution.
+            Rw = solve_restricted(
+                sets, b, T=T, domain_floor=domain_floor, amount_tol=amount_tol, options=WARM_START, warm=True
+            )
+            if Rw.converged and (not R.converged or Rw.G < R.G - 1e-12):
+                R = Rw
         record = IterationRecord(it, R, [])
         history.append(record)
         if not R.converged:
@@ -349,7 +359,10 @@ def equilibrium(
         if record.removed:
             sets, new = active, []
             continue
-        if R.mu_directions is not None:
+        gauge_only = R.valence is not None and all(v_neutral(p, R.valence, phases[0].elements) for p in phases)
+        if R.mu_directions is not None and not gauge_only:
+            # With fixed valences and every phase neutral, μ is free along the valence vector, but no
+            # phase's tangent distance depends on that (a gauge), so there is nothing to choose.
             # Lone compounds that do not span every element leave μ free along mu_directions. Take
             # the μ there that keeps every other phase farthest above its tangent: the middle of the
             # compound's stability range. Any such μ gives a valid certificate; this one avoids

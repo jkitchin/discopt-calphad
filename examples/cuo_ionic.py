@@ -94,10 +94,13 @@ t = time.time()
 ref = pycalphad_map()
 print(f"pycalphad: {time.time() - t:.0f} s")
 
-same = differ_lower = differ_higher = 0
+same = differ_lower = differ_higher = py_failed = 0
 gap_missed = []
 for key, (sets, g) in mine.items():
     rsets, rg = ref[key]
+    if not rsets or not np.isfinite(rg):
+        py_failed += 1  # pycalphad returned no phases (NaN) at this point
+        continue
     names, rnames = [n for n, _ in sets], [n for n, _ in rsets]
     if names == rnames and np.allclose([x for _, x in sets], [x for _, x in rsets], atol=2e-3):
         same += 1
@@ -111,7 +114,10 @@ for key, (sets, g) in mine.items():
     else:
         differ_higher += 1
         print(f"  {key[0]:6.0f} K x(O)={key[1]:.3f}: ours {sets} vs pycalphad {rsets}, ΔG = {g - rg:+.2f} J/mol")
-print(f"\nsame state at {same} points; lower G than pycalphad at {differ_lower}; not lower at {differ_higher}")
+print(
+    f"\nsame state at {same} points; lower G than pycalphad at {differ_lower}; not lower at {differ_higher}; "
+    f"pycalphad found no state at {py_failed}"
+)
 print(f"pycalphad misses the liquid miscibility gap at {len(gap_missed)} points")
 
 
@@ -120,6 +126,10 @@ def bisect(xo, test, lo, hi, tol=0.05):
     while hi - lo > tol:
         mid = 0.5 * (lo + hi)
         sets, _ = ours(xo, mid)
+        if sets is None:  # a failed point: nudge it and try once more
+            sets, _ = ours(xo, mid + 0.01 * tol)
+        if sets is None:
+            raise RuntimeError(f"equilibrium failed at x(O) = {xo}, T = {mid}")
         if test([n for n, _ in sets]):
             hi = mid
         else:

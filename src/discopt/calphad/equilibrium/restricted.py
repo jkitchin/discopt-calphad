@@ -84,6 +84,8 @@ class RestrictedResult:
     #: E × d basis of the directions in which μ may move while every active set stays on the
     #: tangent plane (None when μ is unique); see the module docstring
     mu_directions: np.ndarray | None = None
+    #: the valence vector when every set is neutral with fixed valences (see ``_valence``), else None
+    valence: np.ndarray | None = None
 
     @property
     def converged(self) -> bool:
@@ -107,11 +109,14 @@ def solve_restricted(
     amount_tol: float = 1e-10,
     options: dict | None = None,
     fixed: Sequence[bool] | None = None,
+    warm: bool = False,
 ) -> RestrictedResult:
     """Solve R(S) locally, starting from the given composition sets.
 
     ``fixed[k]`` holds set k's site fractions at their starting values, so only
     its amount can change. The loop uses this for sets that were just added.
+    With ``warm``, the sets' own amounts are the starting amounts (kept off
+    zero); otherwise they come from a nonnegative least-squares fit.
     """
     if not sets:
         raise ValueError("at least one composition set is required")
@@ -135,7 +140,10 @@ def solve_restricted(
         boxes.append(box)
 
     # start amounts: nonnegative least squares at the starting compositions, kept off the bound
-    n0, _ = nnls(amount_matrix([CompositionSet(s.phase, yk) for s, yk in zip(sets, y0)]), b)
+    if warm:
+        n0 = np.array([s.amount for s in sets], dtype=float)
+    else:
+        n0, _ = nnls(amount_matrix([CompositionSet(s.phase, yk) for s, yk in zip(sets, y0)]), b)
     n0 = np.maximum(n0, 1e-3 * b.sum() / atoms_min / len(sets))
     x0 = np.concatenate([n0, *y0])
 
@@ -207,10 +215,15 @@ def solve_restricted(
     x = np.asarray(r.x, dtype=float)
     ys = np.split(x[K:], np.cumsum([s.phase.n_y for s in sets])[:-1])
     new = [CompositionSet(s.phase, yk, float(nk)) for s, yk, nk in zip(sets, ys, x[:K])]
+    drop, v = _DROPPED.pop(id(r), (None, None))
+    _DROPPED.clear()
     if r.multipliers is None:
         mu = np.full(len(els), np.nan)
     else:
-        mu = -np.asarray(r.multipliers, dtype=float)[: len(els)]  # the balance rows come first
+        n_bal = len(els) - (drop is not None)
+        mu = -np.asarray(r.multipliers, dtype=float)[:n_bal]  # the balance rows come first
+        if drop is not None:
+            mu = np.insert(mu, drop, 0.0)  # the gauge μ_drop = 0 (μ is free along v)
 
     G = float(sum(cs.amount * float(cs.phase.gibbs(cs.y, NUM, T)) for cs in new))
     amounts = np.array([cs.amount for cs in new])
@@ -229,6 +242,8 @@ def solve_restricted(
         tangency_residual=tangency,
         iterations=int(getattr(r, "iterations", -1) or -1),
         wall_time=wall,
+        mu_directions=None if v is None else (v / np.linalg.norm(v)).reshape(-1, 1),
+        valence=v,
     )
 
 
@@ -290,27 +305,32 @@ def _pin(boxes, ys, floor):
 BRANCH_TOL = 1e-7
 
 
-def _implied_neutrality(sets, b, els, free) -> int | None:
-    """The index of a set whose charge-neutrality row is redundant, or None.
+#: id(NLP result) -> (balance row left out or None, valence vector or None), from _solve_once
+_DROPPED: dict = {}
+
+
+def _valence(sets, b, els) -> np.ndarray | None:
+    """The valence vector v if every set is neutral with fixed valences and b is neutral, else None.
 
     If every constituent of every set has a fixed valence, q_c = Σ_e v_e n_e(c),
-    for one valence vector v, then each phase's charge is v·A(y). Summed over the
-    sets, the neutrality rows give Σ_k N_k v·A_k = v·b, which the balance rows
-    already fix. With b neutral (v·b = 0), one neutrality row is then redundant,
-    and keeping all of them makes the constraint Jacobian singular. Oxides with
-    fixed valences (Nd³⁺, Zr⁴⁺, O²⁻) are this case.
+    for one v, then each phase's charge is v·A(y). Its neutrality (an equality
+    for a charged CEF phase, automatic for an ionic liquid or a neutral
+    species) makes v·A(y) = 0, and summed over the sets the balance rows give
+    v·b. With v·b = 0, one row of the restricted problem is then redundant, and
+    keeping all of them makes the constraint Jacobian singular. μ is also free
+    along v: adding t·v to μ changes no neutral phase's tangent distance.
+    Oxides with fixed valences (Nd³⁺, Zr⁴⁺, O²⁻) are this case.
     """
-    charged = [
-        k
-        for k, s in enumerate(sets)
-        if free[k] and s.phase.n_y and getattr(s.phase, "domain_equalities", lambda y: [])(s.y)
-    ]
-    if not charged:
+    if not any(getattr(s.phase, "_stoich", None) for s in sets):
         return None
     rows, q = [], []
     for s in sets:
         stoich = getattr(s.phase, "_stoich", None)
-        if stoich is None:  # a phase of elements only (no species): every element has valence 0 there
+        if stoich is None:  # a phase without species: each element is a constituent of valence 0
+            if s.phase.n_y == 0:
+                rows.append([float(a) for a in s.phase.amounts(s.y)])
+                q.append(0.0)
+                continue
             for e in s.phase.elements:
                 rows.append([float(e == x) for x in els])
                 q.append(0.0)
@@ -323,9 +343,39 @@ def _implied_neutrality(sets, b, els, free) -> int | None:
                     q.append(charge)
     A, q = np.array(rows), np.array(q)
     v, *_ = np.linalg.lstsq(A, q, rcond=None)
-    if np.max(np.abs(A @ v - q)) > 1e-9 or abs(float(v @ np.asarray(b, float))) > 1e-9 * max(1.0, float(np.sum(b))):
+    if not np.any(np.abs(v) > 1e-12) or np.max(np.abs(A @ v - q)) > 1e-9:
         return None
-    return charged[0]
+    if abs(float(v @ np.asarray(b, float))) > 1e-9 * max(1.0, float(np.sum(b)) * float(np.max(np.abs(v)))):
+        return None
+    return v
+
+
+def _implied_neutrality(sets, v, free) -> int | None:
+    """With a valence vector v (see :func:`_valence`), the free charged set whose neutrality row is left out."""
+    if v is None:
+        return None
+    charged = [
+        k
+        for k, s in enumerate(sets)
+        if free[k] and s.phase.n_y and getattr(s.phase, "domain_equalities", lambda y: [])(s.y)
+    ]
+    return charged[0] if charged else None
+
+
+def v_neutral(phase, v, els) -> bool:
+    """True if every configuration of ``phase`` has v·A = 0, so that μ + t·v prices it the same."""
+    stoich = getattr(phase, "_stoich", None)
+    if stoich is None:
+        if phase.n_y:
+            return False
+        return abs(float(np.dot(v, [float(a) for a in phase.amounts(np.empty(0))]))) < 1e-9
+    idx = {e: i for i, e in enumerate(els)}
+    for cons in phase.constituents:
+        for c in cons:
+            comp, charge = stoich[c]
+            if comp and abs(sum(v[idx[e]] * n for e, n in comp.items()) - charge) > 1e-9:
+                return False
+    return True
 
 
 def _solve_once(sets, b, T, boxes, branches, held, n_max, x0, els, options):
@@ -340,17 +390,21 @@ def _solve_once(sets, b, T, boxes, branches, held, n_max, x0, els, options):
     Y = [[m.continuous(f"y{k}_{i}", lb=lo, ub=hi) for i, (lo, hi) in enumerate(box)] for k, box in enumerate(boxes)]
     ops = [EXPR.with_branch(branches[k]) if k in branches else EXPR for k in range(len(sets))]
     m.minimize(sum(N[k] * s.phase.gibbs(Y[k], ops[k], T) for k, s in enumerate(sets)))
+    # a held set (every y pinned) is feasible as it stands, and its rows would be constants
+    free = [bool(box) and any(lo < hi for lo, hi in box) for box in boxes]
+    v = _valence(sets, b, els)
+    implied = _implied_neutrality(sets, v, free)
+    drop = None if v is None or implied is not None else int(np.argmax(np.abs(v)))
     # the balance rows first: their multipliers are −μ
     for j, e in enumerate(els):
+        if j == drop:
+            continue  # implied by the others, since every set is neutral (see _valence)
         lhs = sum(N[k] * s.phase.amounts(Y[k])[j] for k, s in enumerate(sets))
         m.subject_to(lhs == float(b[j]), name=f"balance_{e}")
     for k in held:
         for i, g in enumerate(sets[k].phase.branch_constraints(Y[k], T, branches[k])):
             if g is not None:
                 m.subject_to(g >= 0, name=f"branch{k}_{i}")
-    # a held set (every y pinned) is feasible as it stands, and its rows would be constants
-    free = [bool(box) and any(lo < hi for lo, hi in box) for box in boxes]
-    implied = _implied_neutrality(sets, b, els, free)
     for k, s in enumerate(sets):
         if s.phase.n_y and free[k]:
             for i, g in enumerate(getattr(s.phase, "domain_constraints", lambda y: [])(Y[k])):
@@ -369,4 +423,5 @@ def _solve_once(sets, b, T, boxes, branches, held, n_max, x0, els, options):
             for i, g in enumerate(sets[k].phase.branch_constraints(ys[k], T, branches[k])):
                 if g is not None and float(g) <= BRANCH_TOL:
                     active.append((k, i))
+    _DROPPED[id(r)] = (drop, v)
     return r, active
