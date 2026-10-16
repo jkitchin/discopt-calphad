@@ -31,7 +31,7 @@ References
   and M. Jarl, *A model for alloying effects in ferromagnetic metals*, Calphad 2
   (1978) 227–238.
 
-Run with ``uv run python examples/crfe_magnetic.py``. It takes about 10 minutes
+Run with ``uv run python examples/crfe_magnetic.py``. It takes about 9 minutes
 and writes examples/crfe_magnetic.png.
 """
 
@@ -150,7 +150,7 @@ ax.set_xlabel("x(Cr)")
 ax.set_ylabel("T (K)")
 ax.set_xlim(0, 1)
 ax.set_title("Cr–Fe: tie-line ends (squares: globally certified)", fontsize=10)
-ax.legend(fontsize=7, loc="upper center", ncol=2)
+ax.legend(fontsize=7, loc="upper right", ncol=2)
 
 bcc = models["BCC_A2"]
 xg = np.linspace(0, 1, 401)

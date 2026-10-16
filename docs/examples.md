@@ -113,3 +113,47 @@ matter.
     --8<-- "examples/alni_stand_in.py"
     ```
 
+
+## Pure iron: the magnetic term against the SGTE data
+
+The Inden–Hillert–Jarl magnetic term (issue #6) on pure Fe, from the SGTE unary
+data (Dinsdale, Calphad 15 (1991) 317–425). The model is from Inden (1976) and
+Hillert and Jarl (Calphad 2 (1978) 227–238).
+
+- The crossings of G reproduce the tabulated transitions: α → γ at 1184.81 K
+  and γ → δ at 1667.47 K to 0.01 K, and melting at 1811 K to 0.05 K.
+- With the magnetic term removed, BCC is not stable anywhere from 300 to
+  1400 K.
+- C_p has its λ peak at 1042 K, against T_C = 1043 K.
+- G agrees with pycalphad to 6e-13 relative.
+
+![pure Fe](assets/examples/fe_magnetic.png)
+
+??? example "examples/fe_magnetic.py"
+    ```python
+    --8<-- "examples/fe_magnetic.py"
+    ```
+
+## Cr–Fe with magnetic BCC: a certified diagram
+
+The Cr–Fe diagram of the `crfenb_jacob` database. Its BCC magnetic parameters
+are from Andersson and Sundman, Calphad 11 (1987) 83–92. Fe is ferromagnetic
+and Cr antiferromagnetic. The magnetic term shapes:
+
+- the γ loop;
+- the low-temperature BCC miscibility gap, between a ferromagnetic and an
+  antiferromagnetic set;
+- the σ boundaries.
+
+The diagram is mapped with local pricing (325 points, none failed). Then one
+point per temperature from 600 to 1800 K is priced globally, splitting each
+magnetic phase into its branches, and all 13 are certified to ε. pycalphad,
+on the same database, finds the same two-phase regions, with every phase
+boundary equal to within 5e-5 in x(Cr).
+
+![Cr-Fe magnetic](assets/examples/crfe_magnetic.png)
+
+??? example "examples/crfe_magnetic.py"
+    ```python
+    --8<-- "examples/crfe_magnetic.py"
+    ```
