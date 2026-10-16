@@ -37,9 +37,10 @@ the tangent-plane distance Ψ(y) = G(y) − μ·A(y):
   minima of equivalent ordered variants with symmetry constraints.
   Constitutional vacancies (B2 NiAl) are supported. A phase that can hold a
   vacancy on every sublattice is certified over formula units at least half
-  occupied, because the model has no global minimum below that. Not yet:
-  magnetic parameters on the ordered part. `ordering.stand_in` (issue #14) still rewrites such a phase as
-  a plain one, dropping and listing what it cannot carry.
+  occupied, because the model has no global minimum below that. Magnetic
+  parameters on the ordered part are partitioned like the energy (Thermo-Calc's
+  convention; pycalphad differs there). `ordering.stand_in` (issue #14) still
+  rewrites a partitioned phase as a plain one, for refitting.
 - **Data from ASE calculators (issue #5, phase 1):** `discopt.calphad.mlip`
   turns any ASE calculator (a machine-learned potential such as UMA or MACE,
   EAM, EMT) into fitting data: formation enthalpies of compounds and CEF

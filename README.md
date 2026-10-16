@@ -29,8 +29,8 @@ the tangent-plane distance Ψ(y) = G(y) − μ·A(y):
   disappearance.
 - **MVP 3:** TDB import and export into a symbolic `ThermoDatabase` (SymPy
   expressions with named functions kept), and binary phase models built from
-  it. Unsupported models (the Xiong magnetic model, ordered-part magnetism) raise with the reason.
-  Magnetic phases (Inden–Hillert–Jarl, issue #6) are solved and globally
+  it. Unsupported models raise with the reason.
+  Magnetic phases (Inden–Hillert–Jarl and Xiong, issue #6) are solved and globally
   certified: the magnetic term has interval bounds, and pricing splits a
   magnetic phase into the branches of T_c, β and T/T_c it can reach.
 - **MVP 4:** compound-energy-formalism phases (`CEFPhase`: several sublattices,
@@ -67,9 +67,10 @@ the tangent-plane distance Ψ(y) = G(y) − μ·A(y):
   minima of equivalent ordered variants with symmetry constraints.
   Constitutional vacancies (B2 NiAl) are supported. A phase that can hold a
   vacancy on every sublattice is certified over formula units at least half
-  occupied, because the model has no global minimum below that. Not yet:
-  magnetic parameters on the ordered part. `ordering.stand_in` (issue #14) still rewrites such a phase as
-  a plain one, dropping and listing what it cannot carry.
+  occupied, because the model has no global minimum below that. Magnetic
+  parameters on the ordered part are partitioned like the energy (Thermo-Calc's
+  convention; pycalphad differs there). `ordering.stand_in` (issue #14) still
+  rewrites a partitioned phase as a plain one, for refitting.
 - **Data from ASE calculators (issue #5, phase 1):** `discopt.calphad.mlip`
   turns any ASE calculator (a machine-learned potential such as UMA or MACE,
   EAM, EMT) into fitting data: formation enthalpies of compounds and CEF

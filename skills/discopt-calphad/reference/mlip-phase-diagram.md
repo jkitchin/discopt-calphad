@@ -177,10 +177,9 @@ The fitted database also has `fitted.to_tdb()`, with a provenance header.
   print(si.summary())                                 # parameters, largest G error, what was dropped
   alni_si = si.database                               # FCC_L12_SI is now a supported phase
   ```
-- **Magnetic phases** (FCC Ni, BCC Fe, Co) fit normally; only TC and BMAGN
-  cannot be freed. Any equilibrium that contains them certifies at most to
-  `GLOBAL_SEARCH_INCOMPLETE`. So Ni-, Fe- and Co-based systems cannot be fully
-  certified yet.
+- **Magnetic phases** (FCC Ni, BCC Fe, Co) fit normally, and TC and BMAGN
+  can be freed (a local, iterated fit). Equilibria that contain them certify
+  like any other.
 
 ## Structures
 

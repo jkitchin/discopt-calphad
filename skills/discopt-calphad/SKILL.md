@@ -32,8 +32,9 @@ Know the limits before you promise a result:
   Constitutional vacancies (Dupin's Al–Ni BCC_B2) are supported; such a phase
   is certified over formula units at least half occupied (`min_occupancy`,
   stated in `certificate.messages`). Magnetic parameters on the ordered part
-  (Sundman's Al–Fe) are not supported yet; for those, `ordering.stand_in`
-  turns the phase into a plain one (see section 1).
+  (Sundman's Al–Fe) are partitioned like the energy, as in Thermo-Calc;
+  pycalphad 0.11.2 uses a different convention there, so its numbers differ.
+  `ordering.stand_in` turns a partitioned phase into a plain one (section 1).
 - **Ionic models:** charged species (SPECIES with a charge, such as `O-2`, and
   molecules such as `ALO3/2`) are supported. Charged sublattice phases
   (oxide fluorite, pyrochlore) are held charge-neutral. The two-sublattice
@@ -42,8 +43,11 @@ Know the limits before you promise a result:
   automatically.
 - **Magnetism:** Inden–Hillert–Jarl magnetic phases (FCC Ni, BCC Fe, Co)
   certify like any other phase. Global pricing solves one model per magnetic
-  branch, so it costs a few times more than for a plain phase. The Xiong model
-  is not supported.
+  branch, so it costs a few times more than for a plain phase. The Xiong
+  model (AFM factor 0, with NT) is supported too. Certifying an equilibrium in
+  which a multi-sublattice ordered phase or an ionic liquid is *active* is
+  slow (γ′: minutes) or ends `GLOBAL_SEARCH_INCOMPLETE` (β, ionic liquid,
+  pyrochlore); report the certificate level as it is.
 - **Calculators:** a calculator (MLIP, EAM, EMT) gives data for a fit, never a
   phase model. For a phase diagram from one, follow
   [reference/mlip-phase-diagram.md](reference/mlip-phase-diagram.md).
@@ -278,8 +282,9 @@ equilibrium at each tie-line datum.
 
 - **Magnetic phases.** G and L parameters of a magnetic phase fit normally,
   and so does data referenced to one, such as a formation enthalpy against
-  magnetic FCC Ni. TC and BMAGN cannot be freed, because G is not linear in
-  them.
+  magnetic FCC Ni. TC, BMAGN and NT can be freed too: they enter
+  nonlinearly, so the fit linearizes them and iterates, and it is local, so
+  start TC near the measured λ peak.
 - **Partly fitted phases.** Fit every parameter of a phase that the data
   cover. An endmember or interaction you leave out keeps its old value, and
   can make the phase stable or unstable for reasons the data never saw.
@@ -443,9 +448,7 @@ fitted_alcu = fit(alcu, result.dataset, ("AL", "CU"), {"G(ALCU_THETA,AL:CU;0)": 
   - A T outside the ranges raises `ValueError`. Set
     `ThermoDatabase.extrapolate = True` to use the nearest range instead.
 - **Unsupported models raise with the reason.** `UnsupportedModelError` covers:
-  - order–disorder phases with magnetic parameters on the ordered part,
-    unless replaced by `ordering.stand_in`;
-  - the Xiong magnetic model;
+  - the Einstein (THETA) and two-state (GD) unary models;
   - some high-order CEF interactions.
 
   `phase_models()` skips such phases silently, so check `applicability()`.

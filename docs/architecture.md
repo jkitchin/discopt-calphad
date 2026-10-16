@@ -373,10 +373,8 @@ building the prototype. The upstream requests are tracked in discopt#1249.
     reason:
     - a missing endmember G parameter;
     - interaction structures pycalphad also rejects (§9.16);
-    - the Xiong magnetic model (AFM factor 0; the IHJ model is supported, §9.18);
-    - DISORDERED_PART with vacancies on a substitutional sublattice, with
-      magnetic parameters on the ordered part, or with mismatched interstitial
-      sublattices (§9.21);
+    - DISORDERED_PART with mismatched interstitial sublattices (§9.21);
+    - the Einstein (THETA) and two-state liquid (GD) parameter kinds;
     - an ionic liquid with more than two sublattices (§9.23);
     - parameter kinds or orders the binary model cannot represent.
 
@@ -454,7 +452,7 @@ building the prototype. The upstream requests are tracked in discopt#1249.
       - TC or BMAGN parameters with no MAGNETIC type are ignored.
       - `BM` abbreviates `BMAGN`.
       - T_c ≤ 0 and β ≤ 0 are divided by the AFM factor.
-      - AFM factor 0 selects the Xiong model, which raises for now.
+      - AFM factor 0 selects the Xiong model (below).
     - **Checked.** G matches `pycalphad.calculate` to 1e-9 relative for 8
       magnetic phases in 7 databases, at 300–1800 K. Four equilibria match
       `pycalphad.equilibrium` in phases and compositions: the Cr–Fe BCC gap,
@@ -521,14 +519,35 @@ building the prototype. The upstream requests are tracked in discopt#1249.
         - σ at 900 K;
         - FCC inside the γ loop at 1200 K.
       - See `examples/crfe_magnetic.py` and `examples/fe_magnetic.py`.
-    - **Still open.** The Xiong model (AFM factor 0), and TC/BMAGN as free
-      parameters in `fit`.
-    - **Fitting.** G is not linear in TC and BMAGN, so `fit` cannot free
-      them. It does fit the G and L parameters of a magnetic phase, and data
-      referenced to one (a formation enthalpy against magnetic FCC Ni): the
-      probes run with TC and BMAGN at zero, which removes the magnetic term
-      exactly, and the fixed magnetic term is added back, with its
-      T-derivatives for H, S and Cp taken by finite differences.
+    - **The Xiong model** (AFM factor 0; Xiong et al., Calphad 39 (2012)):
+      G_mag/RT = ln(β + 1)[g(T_C/T) + g(T_N/T)], with no AFM division. g is
+      0 where its temperature is ≤ 0.
+      - **The τ²¹ term.** In the τ ≤ 1 branch, τ²¹/1617 is the fourth term
+        of the series inside the (1/p − 1) bracket. Then g and its slope are
+        continuous at τ = 1 for every p (slope −0.38438/D on both sides).
+        pycalphad 0.11.2 adds that term outside the bracket, which makes g
+        discontinuous unless 1/p − 1 = 1/0.6357. The tests compare with
+        pycalphad after correcting for that term alone (1e-9).
+      - **Bounds.** g is decreasing on s ≥ 0 on both branches, so the
+        interval rule is the same as for IHJ.
+      - **Branches.** Each of T_C and T_N has three states (≤ 0, (0, T], > T).
+        `Magnetic` therefore carries a small protocol used by the phase
+        models and the solver: `quantities`, `term`, `branch_at`,
+        `constraints`, `neighbor`, `ranges` and `pricing_rows`. Global
+        pricing gets one auxiliary s per positive state. The restricted
+        solve moves across branch edges with `neighbor`.
+      - **Checked.** A synthetic Xiong database: G against pycalphad
+        (corrected), interval enclosure, global pricing against a grid, and
+        equilibria. femn.tdb itself also needs the Einstein (THETA) and
+        two-state (GD) unary models, which are not implemented.
+    - **Fitting.** G and L parameters of a magnetic phase fit linearly. The
+      probes run with TC and BMAGN at zero, and the magnetic term is added
+      back, with its T-derivatives by finite differences. Free TC, BMAGN and
+      NT enter nonlinearly. Their rows are linearized at the current θ
+      (central differences), and the fit's Gauss–Newton iteration solves the
+      nonlinear least squares. That fit is local: C_p jumps at T_c. FCC Ni's
+      TC and BMAGN are recovered from C_p data from 33 K away, but from 120 K
+      away the fit settles in another minimum.
 
 19. **Site fractions on the domain floor** (issue #13). A terminal phase can
     have an equilibrium solubility far below `DOMAIN_FLOOR` (about 1e-14 Al in
@@ -577,10 +596,16 @@ building the prototype. The upstream requests are tracked in discopt#1249.
         and {2, 3} and swaps the pairs. The images are added even when the
         file lists them too, as pycalphad does. They are added when the model
         is built, so TDB export writes the file's own parameters.
-      - The magnetic term is the disordered part's, with T_c(x) and β(x). A
-        phase whose ordered part has its own TC or BMAGN is rejected:
-        pycalphad gives those a separate magnetic term, Thermo-Calc
-        partitions T_c instead, and the two disagree.
+      - **Magnetism.** The magnetic properties are partitioned like the
+        energy, as Thermo-Calc and Lukas–Fries–Sundman §5.8.6 do it:
+        T_c = T_c,dis(x) + T_c,ord(y) − T_c,ord(x), and the same for β (and
+        T_N). One magnetic term is evaluated with them, ×λ. When the ordered
+        part has magnetic parameters (Sundman's Al–Fe, alcfe_b2), pycalphad
+        0.11.2 instead adds λ·mag(T_c,dis(x)) + mag(T_c,ord(y)) −
+        mag(T_c,ord(x)), and warns that the result may be incorrect. The
+        tests compare everything else with pycalphad to 1e-9, evaluating both
+        conventions with the same verified functions. Without ordered
+        magnetic parameters, the two conventions agree.
     - **Entropy.** The ideal terms of λG_dis(x) and G_ord(x) cancel exactly.
       Both are (Σ_s a_s) Σ x ln x on the substitutional sites, and the
       interstitial terms agree because the interstitial-to-substitutional site
@@ -621,8 +646,6 @@ building the prototype. The upstream requests are tracked in discopt#1249.
       disordered basin, and the loop cycled. The free solve after the
       held-set solve therefore starts with `mu_init = 1e-6`.
     - **Not supported yet.**
-      - **Magnetic parameters on the ordered part** (Sundman's Al–Fe,
-        alcfe_b2).
       - **Mismatched interstitial sublattices.** COST 507's BCC_B2 in seven
         binaries, such as Al–N, which pycalphad rejects too.
     - **Registry.** COST 507 goes from 7 to 338 of 345 complete binaries, and
@@ -669,6 +692,20 @@ building the prototype. The upstream requests are tracked in discopt#1249.
       constraints) stalls near −3 after 600 s. The bounds of the other
       active phases, Al₃Ni₂ and FCC_L12, stall at −4.8e-3 and −4.4e-5. This
       is the active-phase weakness of §9.17, with a larger problem.
+    - **Where the weak bound comes from.** For active β at 1200 K, discopt's
+      bound on the inner box is −0.09, but the boundary-slab interval bound
+      is −0.53. A nearly perfectly ordered set has site fractions on their
+      bounds (y = (0.997, 1.000, 0.000, 0.993)), so the minimum, Ψ = 0, lies
+      inside a slab. Interval bisection overestimates by O(width) there, and
+      cannot close. Dropping the floor (`domain_floor = 0`, discopt on the
+      whole box) gives a discopt bound of −12.65 on discopt 0.9, so the
+      floor stays.
+
+      A remedy would price the faces themselves: fix a slab coordinate at its
+      bound and run discopt on the others. Covering the slab's width then
+      needs a Lipschitz correction from an interval gradient. Alternatively,
+      discopt could bound `entropy` with a lower bound of exactly 0
+      (discopt#1242). Both are open.
 23. **Ionic models.** *Issue #6; measured against pycalphad 0.11.2.*
     - **Species.** A constituent may be a SPECIES with a stoichiometry and a
       charge (`CU+1` = `CU1/+1`, `O-2`, `O2`, `ALO3/2` = `AL1O1.5`). Formulas
@@ -725,6 +762,11 @@ building the prototype. The upstream requests are tracked in discopt#1249.
         - Cu–O: liquid, Cu₂O + CuO, CuO + gas, Cu₂O + liquid, FCC + Cu₂O;
         - ZrO₂–NdO₁.₅: fluorite + tetragonal, fluorite, pyrochlore,
           fluorite + Nd₂O₃-A, monoclinic + pyrochlore.
+      - The ZrO₂–NdO₁.₅ map (`examples/zro2_nd2o3.py`, 425 points at
+        1200–2800 K) solves every point, and 423 match pycalphad. At the
+        other two, a trace of pyrochlore sits next to fluorite. The two
+        states differ by 0.03–0.04 J/mol, within the gas-constant
+        difference between the codes.
     - **Where pycalphad misses the minimum.** At Cu–O x(O) = 0.2, 1500 K,
       pycalphad reports Cu₂O + liquid. We find two liquids, Cu-rich and
       oxide-rich, 46 J/mol lower, with Cu₂O 0.010 RT above the tangent. Both

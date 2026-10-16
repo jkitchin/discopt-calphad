@@ -136,6 +136,8 @@ def boundary_lower_bound(
     therefore refined best-first (:func:`_refine`) until its bound reaches
     ``target`` or ``max_boxes`` evaluations have been spent on it.
     """
+    if domain_floor <= 0:
+        return math.inf  # no slabs: the discopt box is the whole domain
     outer = phase.y_bounds
     bound = _interval_bound_fn(phase, mu, T)
     lbs = []
