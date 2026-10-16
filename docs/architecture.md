@@ -663,6 +663,12 @@ building the prototype. The upstream requests are tracked in discopt#1249.
       - On a toy phase with G(VA:VA) = 0, global pricing matches a dense
         grid restricted to the domain, while a point with δ = 1e-8 lies more
         than 10 RT per atom below the tangent.
+    - **Open: certification with β active.** At 1200 K, β + Al₃Ni₂
+      (x = 0.58) and β + γ′ (x = 0.3) end `GLOBAL_SEARCH_INCOMPLETE`. The
+      bound of BCC_B2 (four variables, plus the occupancy and symmetry
+      constraints) stalls near −3 after 600 s. The bounds of the other
+      active phases, Al₃Ni₂ and FCC_L12, stall at −4.8e-3 and −4.4e-5. This
+      is the active-phase weakness of §9.17, with a larger problem.
 
 ## 10. Roadmap after MVP 1
 

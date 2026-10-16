@@ -97,24 +97,29 @@ The fitted diagram (red) is drawn over the NIMS assessment (gray) and the data.
     --8<-- "examples/cumg_espei_fit.py"
     ```
 
-## Ni-rich Al–Ni: γ and γ′ with the native order–disorder model
+## Al–Ni with its order–disorder phases: γ′ and β
 
-γ′ (Ni₃Al, L1₂) is a partitioned phase over γ (FCC_A1) in Dupin, Ansara and
-Sundman's assessment (Calphad 25 (2001) 279–298). Here it is modeled natively
-as G_dis(x) + G_ord(y) − G_ord(x) (issue #6). The ordered state is a second
-well in site-fraction space, and pricing finds it as a new composition set of
-FCC_L12.
+Dupin, Ansara and Sundman's assessment (Calphad 25 (2001) 279–298) describes
+γ′ (Ni₃Al, L1₂) and β (NiAl, B2) as partitioned phases, modeled natively as
+G_dis(x) + G_ord(y) − G_ord(x) (issue #6). Ordered states are second wells in
+site-fraction space, and pricing finds them as new composition sets. β also
+holds constitutional vacancies on both sublattices. It is modeled over formula
+units at least half occupied (`min_occupancy`), because the model has no
+global minimum below that.
 
-On the Ni-rich side (x(Al) ≤ 0.30, 900–1700 K, 261 points, none failed), the
-γ + γ′, γ′ + Al₃Ni₅ and L + γ boundaries agree with pycalphad on the same
-phases to five decimals. Dupin's β (B2) allows vacancies on its substitutional
-sublattices, which the native model does not support yet, so both maps leave
-it out. In the full assessment, β borders γ′ above x(Al) ≈ 0.27. Two points
-are also certified globally (`CERTIFIED_TO_TOLERANCE`): γ + γ′ at 1200 K and
-γ′ at 1000 K. Bounding the active FCC_L12 phase takes about 500 s each; every
-other phase takes seconds.
+The diagram covers 900–1700 K and 49 compositions (441 points, 4 failed). Every
+two-phase region is the same as pycalphad's on the same database, with
+boundaries equal to five decimals, including Al-rich β + Al₃Ni₂. At 1200 K, β's
+vacancy fraction rises from 2e-4 to 9e-2 across its range, x(Al) = 0.38 to 0.55.
 
-![Ni-rich Al-Ni](assets/examples/alni_order_disorder.png)
+Global certification:
+- γ + γ′ at 1200 K and γ′ at 1000 K are certified (`CERTIFIED_TO_TOLERANCE`).
+  Bounding the active FCC_L12 takes about 500 s.
+- With β active, certification does not close in the time limit
+  (`GLOBAL_SEARCH_INCOMPLETE`). The bound of the four-variable B2 stalls near
+  −3 after 600 s.
+
+![Al-Ni order-disorder](assets/examples/alni_order_disorder.png)
 
 ??? example "examples/alni_order_disorder.py"
     ```python
@@ -124,10 +129,10 @@ other phase takes seconds.
 ## Ni–Al with stand-ins for its order–disorder phases
 
 Dupin's Al–Ni assessment describes γ′ (L1₂) and β (B2) as partitioned phases.
-γ′ is modeled natively. β has vacancies on its substitutional sublattices,
-which the native model does not support yet, so `ordering.stand_in` rewrites it
-as a plain phase. The stand-in is exact (pycalphad agrees to 1e-10 J/mol),
-with magnetism and B2 vacancies dropped. The diagram matches pycalphad's full model to within 0.001
+Both are modeled natively now. This example replaces β with
+`ordering.stand_in`'s plain phase, which is exact (pycalphad agrees to 1e-10
+J/mol) except that it drops magnetism and B2 vacancies, to show what that
+costs. The diagram matches pycalphad's full model to within 0.001
 in x except on the Al-rich side of β (up to 0.046), where the dropped vacancies
 matter.
 
