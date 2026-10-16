@@ -374,7 +374,8 @@ building the prototype. The upstream requests are tracked in discopt#1249.
     - a missing endmember G parameter;
     - interaction structures pycalphad also rejects (§9.16);
     - DISORDERED_PART with mismatched interstitial sublattices (§9.21);
-    - the Einstein (THETA) and two-state liquid (GD) parameter kinds;
+    - Einstein (THETA) and two-state (GD) parameters in a partitioned phase
+      or an ionic liquid (§9.24);
     - an ionic liquid with more than two sublattices (§9.23);
     - parameter kinds or orders the binary model cannot represent.
 
@@ -538,8 +539,8 @@ building the prototype. The upstream requests are tracked in discopt#1249.
         solve moves across branch edges with `neighbor`.
       - **Checked.** A synthetic Xiong database: G against pycalphad
         (corrected), interval enclosure, global pricing against a grid, and
-        equilibria. femn.tdb itself also needs the Einstein (THETA) and
-        two-state (GD) unary models, which are not implemented.
+        equilibria. femn.tdb combines Xiong magnetism with the Einstein and
+        two-state terms of §9.24.
     - **Fitting.** G and L parameters of a magnetic phase fit linearly. The
       probes run with TC and BMAGN at zero, and the magnetic term is added
       back, with its T-derivatives by finite differences. Free TC, BMAGN and
@@ -823,6 +824,33 @@ building the prototype. The upstream requests are tracked in discopt#1249.
       - A charged four-sublattice phase near the tangent (pyrochlore,
         0.10 RT above it) does not certify either: discopt reaches −45 in
         300 s, and a million interval boxes −25.
+24. **Einstein and two-state contributions.** *Issue #6; measured against
+    pycalphad 0.11.2.* Third-generation unary descriptions (Ågren et al.,
+    Calphad 19 (1995) 449–480) give a CEF phase two more terms, per formula
+    unit as in pycalphad (`models/lattice.py`):
+    - **Einstein.** THETA parameters hold ln θ_E. Their Redlich–Kister sum L
+      gives θ = e^L, and G_E = 1.5 R θ + 3 R T ln(1 − e^(−θ/T)).
+    - **Two-state** (Ågren 1988). GD parameters hold ΔG_d, with sum g, and
+      G_2st = −R T ln(1 + e^(−g/RT)).
+    - **As in pycalphad,** a contribution with no parameters is 0. It is not
+      the model's value at L = 0 or g = 0. Only a phase that lists the
+      parameters gets the term, so femn's Mn-rich liquid sees ln θ = y_Fe
+      ln 245 + y_Mn ln θ_Mn.
+    - **Bounding.** Both terms are increasing in their argument:
+      dG_E/dL = 1.5 R θ coth(θ/2T), and dG_2st/dg = 1/(1 + e^(g/RT)). Their
+      derivatives are monotone too. The interval rule is therefore exact (the
+      endpoints, padded for libm), and so is the `DUAL` gradient rule of
+      §9.22. discopt gets the expressions through `exp`, `log` and `log1p`.
+    - **Scope.** CEF phases only. Partitioned phases and ionic liquids with
+      THETA or GD raise `UnsupportedModelError`, and no database in the
+      registry or pycalphad's tests has one.
+    - **Checked** (`tests/test_lattice.py`, `examples/femn_two_state.py`):
+      - G of femn.tdb's Fe–Mn liquid (Xiong magnetism, Einstein, two-state)
+        matches pycalphad.calculate to 1e-9 at 300–2500 K, with pycalphad's
+        R in the terms that carry it;
+      - interval and Taylor-model enclosures on random intervals;
+      - the discopt expression against NUM, and the SymPy view;
+      - 15 Fe–Mn liquid equilibria, certified, with pycalphad's assemblage.
 
 ## 10. Roadmap after MVP 1
 

@@ -17,12 +17,14 @@ Supported phase structures, for any system of two or more elements:
   becomes a :class:`~discopt.calphad.models.cef.CEFPhase`, one term per parameter.
 
 A phase whose type code has a ``MAGNETIC`` TYPE_DEFINITION, and that has
-TC/BMAGN parameters, always becomes a :class:`CEFPhase` with the
-Inden–Hillert–Jarl term (see :mod:`discopt.calphad.models.magnetic`).
+TC/BMAGN parameters, always becomes a :class:`CEFPhase` with its magnetic term
+(Inden–Hillert–Jarl or Xiong; see :mod:`discopt.calphad.models.magnetic`), and so
+does a phase with Einstein (THETA) or two-state (GD) parameters (see
+:mod:`discopt.calphad.models.lattice`). Order–disorder descriptions become a
+:class:`PartitionedPhase`, and ``:Y`` ionic liquids an :class:`IonicLiquidPhase`.
 
-Everything else raises :class:`UnsupportedModelError` with the reason: the
-Xiong magnetic model, order–disorder descriptions, ionic phases, other parameter
-kinds, or CEF structures pycalphad also rejects.
+Everything else raises :class:`UnsupportedModelError` with the reason: other
+parameter kinds, or CEF structures pycalphad also rejects.
 """
 
 from __future__ import annotations
@@ -57,6 +59,8 @@ __all__ = [
 
 #: parameter kinds of the magnetic contribution; ``BM`` is the TDB abbreviation of ``BMAGN``
 MAGNETIC_KINDS = ("TC", "BMAGN", "BM", "NT")
+#: Einstein (ln θ_E) and two-state (ΔG_d) parameters; see :mod:`discopt.calphad.models.lattice`
+LATTICE_KINDS = ("THETA", "GD")
 
 
 #: sublattice symmetry implied by the phase options F and B of a 4-sublattice ordered phase, as in
@@ -348,13 +352,14 @@ class ThermoDatabase:
         for p in params:
             if len(p.constituents) != len(subl):
                 raise ValueError(f"{p.label}: {len(p.constituents)} sublattices, but {key} has {len(subl)}")
-        kinds = {p.kind for p in params} - {"G"} - set(MAGNETIC_KINDS)
+        kinds = {p.kind for p in params} - {"G"} - set(MAGNETIC_KINDS) - set(LATTICE_KINDS)
         if kinds:
             raise UnsupportedModelError(f"{key}: parameter kinds {sorted(kinds)} are not supported yet")
         part = self.disordered_part(key)
         if part is not None:
             return self._partitioned_phase(key, ph, elements, *part)
         magnetic = self._magnetic(key, ph, [p for p in params if p.kind in MAGNETIC_KINDS])
+        lattice = {k: tuple(self._terms([p for p in params if p.kind == k])) for k in LATTICE_KINDS}
         params = [p for p in params if p.kind == "G"]
 
         mixing = [i for i, s in enumerate(subl) if len(s) > 1]
@@ -373,8 +378,8 @@ class ThermoDatabase:
                 # ValueError, had already reported the phase unusable. An explicit
                 # `phases=` list still raises, so asking for one by name still fails.
                 raise PhaseNotApplicable(f"{key}: no G parameter for endmember {':'.join(arr)}")
-        if magnetic is not None:
-            return self._cef_phase(key, ph, subl, params, elements, magnetic)
+        if magnetic is not None or any(lattice.values()):
+            return self._cef_phase(key, ph, subl, params, elements, magnetic, lattice)
         if plain and len(elements) == 2 and len(mixing) == 1 and "VA" not in subl[mixing[0]]:
             model = self._binary_solution(key, ph, subl, params, elements, mixing[0])
             if model is not None:
@@ -564,8 +569,14 @@ class ThermoDatabase:
         nt = terms(("NT",)) if afm == 0 else ()  # pycalphad reads NT only in the Xiong model
         return Magnetic(afm=afm, p=p, tc=terms(("TC",)), beta=terms(("BMAGN", "BM")), nt=nt)
 
-    def _cef_phase(self, key, ph, subl, params, elements, magnetic: Magnetic | None = None) -> CEFPhase:
+    def _terms(self, params) -> list[CEFTerm]:
+        return [CEFTerm(p.constituents, p.order, DatabaseValue(self, ((1.0, p),))) for p in params]
+
+    def _cef_phase(
+        self, key, ph, subl, params, elements, magnetic: Magnetic | None = None, lattice: dict | None = None
+    ) -> CEFPhase:
         """Every parameter becomes one CEF term (see :mod:`discopt.calphad.models.cef`)."""
+        lattice = lattice or {}
         terms = [CEFTerm(p.constituents, p.order, DatabaseValue(self, ((1.0, p),))) for p in params]
         # pycalphad/Thermo-Calc convention: a lone ternary L0 implies L1 = L2 = L0
         for p in params:
@@ -582,6 +593,8 @@ class ThermoDatabase:
                 magnetic,
                 self.min_occupancy,
                 self._species_of(subl, elements),
+                lattice.get("THETA", ()),
+                lattice.get("GD", ()),
             )
         except NotImplementedError as err:
             raise UnsupportedModelError(str(err)) from err

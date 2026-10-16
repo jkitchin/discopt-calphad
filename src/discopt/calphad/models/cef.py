@@ -117,6 +117,10 @@ class CEFPhase:
     min_occupancy: float = 0.5
     #: constituents that are not elements: ``(name, ((element, amount), ...), charge)`` each
     species: tuple = ()
+    #: THETA terms (ln θ_E) of the Einstein contribution, and GD terms of the two-state contribution
+    #: (see :mod:`discopt.calphad.models.lattice`)
+    einstein: tuple[CEFTerm, ...] = ()
+    two_state: tuple[CEFTerm, ...] = ()
     _layout: tuple = field(init=False, repr=False, compare=False)
     #: constituent -> ({element: amount}, charge), for elements, VA and ``species``
     _stoich: dict = field(init=False, repr=False, compare=False)
@@ -139,6 +143,8 @@ class CEFPhase:
             if tuple(sorted(cons)) != tuple(cons):
                 raise ValueError(f"{self.name}: constituents on sublattice {s} must be sorted")
         for t in self.terms + (self.magnetic.tc + self.magnetic.beta if self.magnetic else ()):
+            self._check_term(t)
+        for t in self.einstein + self.two_state:
             self._check_term(t)
         layout, i = [], 0
         for cons in self.constituents:
@@ -267,6 +273,23 @@ class CEFPhase:
         G = self.energy_at(Y, T) + self._ideal(F, ops)
         if self.magnetic is not None:
             G = G + self.magnetic_at(Y, T, ops)
+        if self.einstein or self.two_state:
+            G = G + self.lattice_at(Y, T, ops)
+        return G
+
+    def lattice_at(self, Y, T: float, ops):
+        """G_E/RT + G_2st/RT at site fractions ``Y``: the Einstein and two-state contributions.
+
+        As in pycalphad, a contribution whose parameters all vanish is 0, not
+        the model's value at a zero argument.
+        """
+        from discopt.calphad.models.lattice import einstein, two_state
+
+        G = 0.0
+        for terms, f in ((self.einstein, einstein), (self.two_state, two_state)):
+            q = self._sum(terms, Y, T)
+            if not (isinstance(q, float) and q == 0.0):
+                G = G + f(q, T, ops)
         return G
 
     def energy_at(self, Y, T: float):
@@ -490,6 +513,16 @@ class CEFPhase:
             G += sp.nsimplify(a) * R * T_ * sum(yc * sp.log(yc) for yc in d.values() if yc != 1)
         if self.magnetic is not None:
             G += R * T_ * self._magnetic_expr(Y)
+
+        def total(terms):
+            vals = (t.value.expr() if hasattr(t.value, "expr") else sp.sympify(t.value) for t in terms)
+            return sum((self._term_factor(t, Y) * v for t, v in zip(terms, vals)), sp.Integer(0))
+
+        if self.einstein:
+            theta = sp.exp(total(self.einstein))
+            G += sp.Rational(3, 2) * R * theta + 3 * R * T_ * sp.log(1 - sp.exp(-theta / T_))
+        if self.two_state:
+            G += -R * T_ * sp.log(1 + sp.exp(-total(self.two_state) / (R * T_)))
         return G
 
     def _magnetic_expr(self, Y):

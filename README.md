@@ -33,6 +33,8 @@ the tangent-plane distance Ψ(y) = G(y) − μ·A(y):
   Magnetic phases (Inden–Hillert–Jarl and Xiong, issue #6) are solved and globally
   certified: the magnetic term has interval bounds, and pricing splits a
   magnetic phase into the branches of T_c, β and T/T_c it can reach.
+  The third-generation Einstein (THETA) and two-state liquid (GD) terms are
+  supported too, with exact interval rules (Fe–Mn liquid example).
 - **MVP 4:** compound-energy-formalism phases (`CEFPhase`: several sublattices,
   endmembers, binary/reciprocal/ternary interactions, vacancies) in any number
   of elements, checked against pycalphad. Pricing stops as soon as its answer

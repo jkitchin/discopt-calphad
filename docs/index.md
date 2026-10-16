@@ -27,6 +27,8 @@ the tangent-plane distance Ψ(y) = G(y) − μ·A(y):
 - **Fitting:** weighted least squares of TDB parameters to thermochemical,
   activity and phase-equilibrium data (one-sided boundary points included),
   with an ESPEI JSON reader and a real Cu–Mg example.
+- **Third-generation unary terms (issue #6):** the Einstein (THETA) and
+  two-state liquid (GD) contributions, matching pycalphad to round-off.
 - **Ionic models (issue #6):** charged species, charge-neutral oxide CEF
   phases, and the two-sublattice ionic liquid, matching pycalphad's Gibbs
   energies to round-off.

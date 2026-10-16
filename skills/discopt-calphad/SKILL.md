@@ -448,7 +448,8 @@ fitted_alcu = fit(alcu, result.dataset, ("AL", "CU"), {"G(ALCU_THETA,AL:CU;0)": 
   - A T outside the ranges raises `ValueError`. Set
     `ThermoDatabase.extrapolate = True` to use the nearest range instead.
 - **Unsupported models raise with the reason.** `UnsupportedModelError` covers:
-  - the Einstein (THETA) and two-state (GD) unary models;
+  - Einstein (THETA) and two-state (GD) terms in a partitioned phase or an
+    ionic liquid (in a plain CEF phase they are supported);
   - some high-order CEF interactions.
 
   `phase_models()` skips such phases silently, so check `applicability()`.

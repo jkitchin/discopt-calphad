@@ -164,6 +164,32 @@ Hillert and Jarl (Calphad 2 (1978) 227–238).
     --8<-- "examples/fe_magnetic.py"
     ```
 
+## Fe–Mn liquid: the Einstein and two-state contributions
+
+Third-generation unary descriptions model a liquid down to 0 K. They add an
+Einstein solid for the vibrations (THETA holds ln θ_E) and the two-state model
+for the liquid–amorphous transition (GD), from Ågren (Phys. Chem. Liq. 18
+(1988) 123–139) and the Ringberg workshop (Ågren et al., Calphad 19 (1995)
+449–480). Chen and Sundman (J. Phase Equilib. 22 (2001) 631–644) describe Fe in
+this form. The script uses pycalphad's test database femn.tdb: one liquid with
+Xiong magnetism, Einstein and two-state terms, and no interactions.
+
+- G agrees with pycalphad to 1e-15 relative over 28 compositions and
+  temperatures.
+- In pure liquid Fe, 0.035 of the atoms are liquid-like at 1000 K and 0.28 at
+  the melting point. C_p rises to about 3R as the Einstein vibrations switch
+  on, then climbs through a broad two-state hump. The peak at 200 K is the
+  magnetic transition of this test file.
+- All 15 Fe–Mn liquid equilibria (600–1800 K) are certified, with the same
+  assemblage as pycalphad.
+
+![Fe-Mn liquid](assets/examples/femn_two_state.png)
+
+??? example "examples/femn_two_state.py"
+    ```python
+    --8<-- "examples/femn_two_state.py"
+    ```
+
 ## Cr–Fe with magnetic BCC: a certified diagram
 
 The Cr–Fe diagram of the `crfenb_jacob` database. Its BCC magnetic parameters

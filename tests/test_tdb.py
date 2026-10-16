@@ -339,6 +339,7 @@ def test_gibbs_matches_pycalphad(fname, elements, phases, t):
         "crtiv_ghosh.tdb",
         "COST507.tdb",
         "cumg_parameters.tdb",
+        "femn.tdb",
     ],
 )
 def test_round_trip_real_databases(fname):

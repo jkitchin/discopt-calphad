@@ -29,10 +29,10 @@ A file whose hash differs from the registry's is never used.
 
 "Complete" lists the binaries in which every phase can be modeled. The browser
 app offers exactly these. "Incomplete" lists binaries with at least one phase that
-uses a model not supported yet: in practice the third-generation unary models
-(Einstein THETA, two-state liquid GD) and a few COST 507 B2 descriptions whose
+uses a model not supported yet: in practice a few COST 507 B2 descriptions whose
 interstitial sublattices do not match their parent (pycalphad rejects them too).
-Magnetic phases (Inden–Hillert–Jarl and Xiong) are supported and certified globally.
+Magnetic phases (Inden–Hillert–Jarl and Xiong) and the third-generation Einstein
+(THETA) and two-state (GD) terms are supported and certified globally.
 
 | name | system | complete | incomplete | reference |
 |---|---|---|---|---|
