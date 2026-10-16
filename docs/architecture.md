@@ -686,26 +686,50 @@ building the prototype. The upstream requests are tracked in discopt#1249.
       - On a toy phase with G(VA:VA) = 0, global pricing matches a dense
         grid restricted to the domain, while a point with δ = 1e-8 lies more
         than 10 RT per atom below the tangent.
+    - **Mean-value form for the interval bounds.** The boundary-slab and
+      whole-domain interval bounds use the better of the natural interval
+      form and a mean-value form, Ψ(y) ∈ Ψ(c) + Σ_j ∂_jΨ(box)·(y_j − c_j).
+      Both come from one pass over a first-order Taylor model
+      (`ops.Dual`, the `DUAL` backend): an enclosure over the box, one at
+      c, and interval gradients, with exact zeros for directions a term
+      does not depend on. The natural form overestimates by O(width), the
+      mean-value form by O(width²).
+      - Next to y = 0 or 1, ln y in the entropy's derivative is unbounded
+        on one side only. Those sides expand about the far corner, so y − c
+        has one sign and the term stays finite (with 0·∞ = 0 at interval
+        endpoints). That is exactly where an ordered phase's minimizer sits.
+      - Thin sides (a slab's own coordinate) and sides spanning the whole
+        range stay intervals. Magnetism enters as its interval over the box,
+        unexpanded: a constant is a valid Taylor model, and the term is small.
+      - Checked on random boxes, many touching the domain's edge, in five
+        phases (partitioned and magnetic BCC_B2, FCC_L12, magnetic BCC_A2,
+        the Cu–O ionic liquid, charged fluorite): no sampled Ψ lies below the
+        bound (`tests/test_interval_bounds.py`).
+      - Effect: with BCC_B2 modeled, Al–Ni γ + γ′ (x = 0.22, 1200 K) had
+        lost its certificate. BCC_B2's minimum there (Ψ = 0.175) lies
+        1.5e-8 from a slab, and the natural form stalled at −0.46 after
+        20 000 boxes per slab. The mean-value form closes the slab in 5 s,
+        and the equilibrium is `CERTIFIED_TO_TOLERANCE` in 16 s (it took
+        9 minutes before B2 was modeled).
     - **Open: certification with β active.** At 1200 K, β + Al₃Ni₂
-      (x = 0.58) and β + γ′ (x = 0.3) end `GLOBAL_SEARCH_INCOMPLETE`. The
-      bound of BCC_B2 (four variables, plus the occupancy and symmetry
-      constraints) stalls near −3 after 600 s. The bounds of the other
-      active phases, Al₃Ni₂ and FCC_L12, stall at −4.8e-3 and −4.4e-5. This
-      is the active-phase weakness of §9.17, with a larger problem.
-    - **Where the weak bound comes from.** For active β at 1200 K, discopt's
-      bound on the inner box is −0.09, but the boundary-slab interval bound
-      is −0.53. A nearly perfectly ordered set has site fractions on their
-      bounds (y = (0.997, 1.000, 0.000, 0.993)), so the minimum, Ψ = 0, lies
-      inside a slab. Interval bisection overestimates by O(width) there, and
-      cannot close. Dropping the floor (`domain_floor = 0`, discopt on the
-      whole box) gives a discopt bound of −12.65 on discopt 0.9, so the
-      floor stays.
-
-      A remedy would price the faces themselves: fix a slab coordinate at its
-      bound and run discopt on the others. Covering the slab's width then
-      needs a Lipschitz correction from an interval gradient. Alternatively,
-      discopt could bound `entropy` with a lower bound of exactly 0
-      (discopt#1242). Both are open.
+      (x = 0.58) and β + γ′ (x = 0.3) end `GLOBAL_SEARCH_INCOMPLETE`, with
+      the mean-value form:
+      - β + γ′: BCC_B2 −1.4e-4 and FCC_L12 −1.0e-5, against ε = 1e-5.
+        Without the form, these were about −3 and −4.4e-5.
+      - β + Al₃Ni₂: BCC_B2 −0.22 and Al₃Ni₂ −1.0e-5. Without the form,
+        about −3 and −4.8e-3.
+    - **Where the weak bound comes from.** An active, nearly perfectly
+      ordered set has its minimum, Ψ = 0, on a corner of the domain:
+      y = (0.0027, 0.804, 0.99999969, 1.0) for β in β + Al₃Ni₂. So the
+      minimum lies inside a slab, and every box around it bounds slightly
+      below 0. The mean-value form shrinks that deficit as O(width²), but
+      the entropy's curvature (1/y, with y = 0.0027) is large. The slab
+      bound goes from −0.22 at 20 000 boxes per slab to −0.023 at 200 000
+      (21 minutes). discopt's bound on the inner box is −0.065 after 300 s.
+      Dropping the floor (`domain_floor = 0`, discopt on the whole box)
+      gives −12.65 on discopt 0.9, so the floor stays. A second-order form,
+      or discopt bounding `entropy` from exactly 0 (discopt#1242), would be
+      the next step.
 23. **Ionic models.** *Issue #6; measured against pycalphad 0.11.2.*
     - **Species.** A constituent may be a SPECIES with a stoichiometry and a
       charge (`CU+1` = `CU1/+1`, `O-2`, `O2`, `ALO3/2` = `AL1O1.5`). Formulas
@@ -793,8 +817,9 @@ building the prototype. The upstream requests are tracked in discopt#1249.
         stopped at −0.64 where 20 000 reach +1e-4.
       - Cu–O x(O) = 0.4, 1000 K (Cu₂O + CuO) is `GLOBALLY_CERTIFIED`.
     - **Open.**
-      - An *active* ionic liquid (Cu–O liquid at 1500 K) does not certify:
-        its bound stalls near −0.6.
+      - An *active* ionic liquid (Cu–O liquid at 1500 K, both liquids
+        stable at x(O) = 0.2) does not certify: its bound stalls at −0.20
+        with the mean-value form of §9.22 (−0.6 before).
       - A charged four-sublattice phase near the tangent (pyrochlore,
         0.10 RT above it) does not certify either: discopt reaches −45 in
         300 s, and a million interval boxes −25.
@@ -803,7 +828,7 @@ building the prototype. The upstream requests are tracked in discopt#1249.
 
 **MVP 1 status: done.**
 
-- **Package:** `src/discopt/calphad` with ops backends (NUM/EXPR/INTERVAL),
+- **Package:** `src/discopt/calphad` with ops backends (NUM/EXPR/INTERVAL, and DUAL for mean-value bounds),
   `RegularSolution`, the restricted solve, pricing, generation, certificate and
   plot.
 - **Tests:** `tests/test_regular_solution.py` has one test per §8 step plus a
