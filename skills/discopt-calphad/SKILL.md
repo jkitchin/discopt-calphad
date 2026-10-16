@@ -28,9 +28,11 @@ Know the limits before you promise a result:
   equilibria and for fits, including activities and phase equilibria; give a
   ternary composition as a dict, `{"AL": 0.7, "CU": 0.2, "Y": 0.1}`. Errors in
   variables, SQS mixing data and `x=` in `equilibrium` are binary only.
-- **Unsupported phases:** order–disorder phases (B2, L1₂ in Ni–Al and Fe–Al)
-  cannot be modelled directly, but `ordering.stand_in` turns each into a plain
-  phase (see section 1). Ionic liquids cannot be modelled.
+- **Order–disorder phases** (L1₂, B2, DISORDERED_PART) are modelled natively.
+  Two variants are not supported yet: vacancies on substitutional sublattices
+  (Dupin's Al–Ni BCC_B2) and magnetic parameters on the ordered part
+  (Sundman's Al–Fe). For those, `ordering.stand_in` turns the phase into a
+  plain one (see section 1). Ionic liquids cannot be modelled.
 - **Magnetism:** Inden–Hillert–Jarl magnetic phases (FCC Ni, BCC Fe, Co)
   certify like any other phase. Global pricing solves one model per magnetic
   branch, so it costs a few times more than for a plain phase. The Xiong model
@@ -76,8 +78,8 @@ up as "ok", through their pure-element endmembers. Prefer a file assessed for
 the system, and list which phases it actually has before using it.
 
 If a phase the user cares about is unsupported, say so before computing
-anything. An order–disorder (`DISORDERED_PART`) phase can be rewritten as a
-plain stand-in with `discopt.calphad.ordering.stand_in(db, "FCC_L12",
+anything. An order–disorder (`DISORDERED_PART`) phase that the native model
+rejects can be rewritten as a plain stand-in with `discopt.calphad.ordering.stand_in(db, "FCC_L12",
 elements)`. For Ni–Al the stand-in is exact, but it drops magnetism and
 vacancies on substitutional sublattices, so report its `dropped` list. The
 details are in [reference/mlip-phase-diagram.md](reference/mlip-phase-diagram.md),
@@ -434,7 +436,9 @@ fitted_alcu = fit(alcu, result.dataset, ("AL", "CU"), {"G(ALCU_THETA,AL:CU;0)": 
   - A T outside the ranges raises `ValueError`. Set
     `ThermoDatabase.extrapolate = True` to use the nearest range instead.
 - **Unsupported models raise with the reason.** `UnsupportedModelError` covers:
-  - order–disorder (`DISORDERED_PART`), unless replaced by `ordering.stand_in`;
+  - order–disorder phases with vacancies on substitutional sublattices or
+    magnetic parameters on the ordered part, unless replaced by
+    `ordering.stand_in`;
   - ionic liquids;
   - phases whose every sublattice can be empty (an all-vacancy configuration);
   - the Xiong magnetic model;

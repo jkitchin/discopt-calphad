@@ -116,9 +116,17 @@ class EquilibriumResult:
 
 
 def is_duplicate(sets, phase, y, tol: float) -> bool:
-    """True if some set of the same phase has ‖y − y_α‖∞ < tol (every set of a compound counts)."""
+    """True if some set of the same phase has ‖y − y_α‖∞ < tol (every set of a compound counts).
+
+    For a phase with sublattice symmetry (an ordered phase whose variants are
+    related by permuting equivalent sublattices), every variant of ``y`` is
+    compared: they are the same state.
+    """
     y = np.asarray(y, dtype=float)
-    return any(s.phase is phase and (y.size == 0 or float(np.max(np.abs(s.y - y))) < tol) for s in sets)
+    if y.size == 0:
+        return any(s.phase is phase for s in sets)
+    variants = phase.variants(y) if hasattr(phase, "variants") else [y]
+    return any(s.phase is phase and min(float(np.max(np.abs(s.y - v))) for v in variants) < tol for s in sets)
 
 
 def _merge_coincident(sets, tol: float) -> list[CompositionSet]:
@@ -153,6 +161,10 @@ def initial_set(phases, b, T=None) -> CompositionSet:
         raise ValueError("no phase can meet b with a single composition set; pass initial_sets=")
     best[1].amount = float(np.sum(b)) / best[1].atoms
     return best[1]
+
+
+#: interior-point options for a solve that starts from a converged point
+WARM_START = {"mu_init": 1e-6}
 
 
 def _is_active_compound(phase, active) -> bool:
@@ -281,7 +293,12 @@ def equilibrium(
             fixed = [any(s is n for n in new) for s in sets]
             R1 = solve_restricted(sets, b, T=T, domain_floor=domain_floor, amount_tol=amount_tol, fixed=fixed)
             if R1.converged:
-                R2 = solve_restricted(R1.sets, b, T=T, domain_floor=domain_floor, amount_tol=amount_tol)
+                # R1 is a converged point, so start the interior-point solve with a small barrier: with
+                # the default one, a set near a bound (an ordered set with one sublattice nearly pure) is
+                # pushed back into the interior and can slide into another basin (the disordered state)
+                R2 = solve_restricted(
+                    R1.sets, b, T=T, domain_floor=domain_floor, amount_tol=amount_tol, options=WARM_START
+                )
                 if R2.converged and (not R.converged or R2.G < R.G - 1e-12):
                     R = R2
             if not R.converged and len(new) > 1:

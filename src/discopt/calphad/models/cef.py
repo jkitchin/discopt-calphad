@@ -173,21 +173,50 @@ class CEFPhase:
     def gibbs(self, y, ops=NUM, T=None):
         if T is None:
             raise ValueError(f"{self.name}: temperature T is required")
-        RT = R_GAS * T
         F = self._factors(y)
         Y = [{c: _prod(f) for c, f in d.items()} for d in F]
+        G = self.energy_at(Y, T) + self._ideal(F, ops)
+        if self.magnetic is not None:
+            G = G + self.magnetic_at(Y, T, ops)
+        return G
+
+    def energy_at(self, Y, T: float):
+        """Σ_terms P(Y) V(T) / RT: G/RT without the ideal mixing and magnetic terms.
+
+        ``Y`` holds the site fractions per sublattice as dicts by constituent.
+        They may be any expressions: :class:`PartitionedPhase` evaluates this
+        at site-averaged fractions.
+        """
+        RT = R_GAS * T
         G = 0.0
         for t in self.terms:
             v = coef(t.value, T) / RT
             if v != 0.0:
                 G = G + v * self._term_factor(t, Y)
+        return G
+
+    def ideal_at(self, Y, ops):
+        """RT Σ_s a_s Σ_c y ln y, divided by RT, for site fractions ``Y`` given as expressions."""
+        G = 0.0
+        for a, d in zip(self.site_ratios, Y):
+            if len(d) > 1:
+                for v in d.values():
+                    G = G + a * ops.xlogx(v)
+        return G
+
+    def magnetic_at(self, Y, T: float, ops):
+        """G_mag/RT at site fractions ``Y`` (0 without magnetism)."""
+        if self.magnetic is None:
+            return 0.0
+        tc, beta = self._magnetic_sums(Y, T)
+        return ihj(self.magnetic, tc, beta, T, ops)
+
+    def _ideal(self, F, ops):
+        G = 0.0
         for a, d in zip(self.site_ratios, F):
             for f in d.values():
                 if f:
                     G = G + a * _xlogx_prod(f, ops)
-        if self.magnetic is not None:
-            tc, beta = self._magnetic_sums(Y, T)
-            G = G + ihj(self.magnetic, tc, beta, T, ops)
         return G
 
     # ------------------------------------------------------------------ magnetism

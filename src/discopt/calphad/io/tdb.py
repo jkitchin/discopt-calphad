@@ -55,7 +55,7 @@ def _split_name(name: str) -> tuple[str, tuple[str, ...]]:
 
 
 def _constituent_list(text: str) -> tuple[str, ...]:
-    return tuple(c.strip().rstrip("%").upper() for c in text.split(",") if c.strip())
+    return tuple(c.strip().rstrip("%").upper() for c in text.replace(",", " ").split() if c.strip())
 
 
 def _num(text: str) -> float:

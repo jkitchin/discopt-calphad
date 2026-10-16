@@ -8,7 +8,10 @@ parts, joined by ``AMEND_PHASE_DESCRIPTION ... DISORDERED_PART``:
 ``y`` holds the ordered phase's site fractions. ``x`` is their site average
 over the substitutional sublattices, which is the disordered phase's
 composition. The configurational entropy is that of the ordered sublattices.
-The solver does not support this form yet (issue #6).
+The solver models this form natively
+(:class:`~discopt.calphad.models.partitioned.PartitionedPhase`), except with
+vacancies on substitutional sublattices or magnetic parameters on the ordered
+part. A stand-in covers those cases, and gives a plain phase to refit.
 
 :func:`stand_in` writes it as a plain CEF phase on the ordered sublattices. The
 G and L parameters enter linearly, each with a known factor in y:

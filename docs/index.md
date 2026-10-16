@@ -27,10 +27,14 @@ the tangent-plane distance Ψ(y) = G(y) − μ·A(y):
 - **Fitting:** weighted least squares of TDB parameters to thermochemical,
   activity and phase-equilibrium data (one-sided boundary points included),
   with an ESPEI JSON reader and a real Cu–Mg example.
-- **Order–disorder stand-ins (issue #14):** `ordering.stand_in` rewrites a
-  partitioned phase (L1₂, B2) as a plain phase the solver supports. For Ni–Al
-  both are exact (pycalphad agrees to 1e-10 J/mol); magnetism and vacancies on
-  substitutional sites are dropped and listed.
+- **Order–disorder phases (issue #6):** DISORDERED_PART and NEVER_DISORDER
+  phases (L1₂, B2, four-sublattice FCC/BCC with the F and B options) are
+  modeled natively as G_dis(x) + G_ord(y) − G_ord(x). G matches pycalphad to
+  1e-9, and Al–Ni γ + γ′ matches its equilibria. Pricing removes the duplicate
+  minima of equivalent ordered variants with symmetry constraints. Not yet:
+  vacancies on substitutional sublattices, and magnetic parameters on the
+  ordered part. `ordering.stand_in` (issue #14) still rewrites such a phase as
+  a plain one, dropping and listing what it cannot carry.
 - **Data from ASE calculators (issue #5, phase 1):** `discopt.calphad.mlip`
   turns any ASE calculator (a machine-learned potential such as UMA or MACE,
   EAM, EMT) into fitting data: formation enthalpies of compounds and CEF

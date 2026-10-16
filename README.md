@@ -29,7 +29,7 @@ the tangent-plane distance Ψ(y) = G(y) − μ·A(y):
   disappearance.
 - **MVP 3:** TDB import and export into a symbolic `ThermoDatabase` (SymPy
   expressions with named functions kept), and binary phase models built from
-  it. Unsupported models (order–disorder, ionic) raise with the reason.
+  it. Unsupported models (ionic, some order–disorder variants) raise with the reason.
   Magnetic phases (Inden–Hillert–Jarl, issue #6) are solved and globally
   certified: the magnetic term has interval bounds, and pricing splits a
   magnetic phase into the branches of T_c, β and T/T_c it can reach.
@@ -53,10 +53,14 @@ the tangent-plane distance Ψ(y) = G(y) − μ·A(y):
   NIMS assessment, and the diagram follows the liquidus and eutectic data.
   The FCC interaction differs: the DFT mixing enthalpies pull the Cu-rich
   solvus wider than the measured one (`examples/cumg_espei_fit.py`).
-- **Order–disorder stand-ins (issue #14):** `ordering.stand_in` rewrites a
-  partitioned phase (L1₂, B2) as a plain phase the solver supports. For Ni–Al
-  both are exact (pycalphad agrees to 1e-10 J/mol); magnetism and vacancies on
-  substitutional sites are dropped and listed.
+- **Order–disorder phases (issue #6):** DISORDERED_PART and NEVER_DISORDER
+  phases (L1₂, B2, four-sublattice FCC/BCC with the F and B options) are
+  modeled natively as G_dis(x) + G_ord(y) − G_ord(x). G matches pycalphad to
+  1e-9, and Al–Ni γ + γ′ matches its equilibria. Pricing removes the duplicate
+  minima of equivalent ordered variants with symmetry constraints. Not yet:
+  vacancies on substitutional sublattices, and magnetic parameters on the
+  ordered part. `ordering.stand_in` (issue #14) still rewrites such a phase as
+  a plain one, dropping and listing what it cannot carry.
 - **Data from ASE calculators (issue #5, phase 1):** `discopt.calphad.mlip`
   turns any ASE calculator (a machine-learned potential such as UMA or MACE,
   EAM, EMT) into fitting data: formation enthalpies of compounds and CEF
@@ -218,7 +222,7 @@ hash. A copy that pycalphad installs is used without downloading.
 from discopt.calphad import databases
 
 [e.name for e in databases.find(["AL", "FE"])]       # files that form Al–Fe
-databases.find(["AL", "FE"], complete=True)          # [] -- every one has an order–disorder phase
+databases.find(["AL", "FE"], complete=True)          # COST 507 files; Sundman's 2009 file is incomplete
 databases.get("alzn_mey").reference                  # 'S. an Mey, Z. Metallkd. 84 (1993) 451–455; ...'
 ```
 

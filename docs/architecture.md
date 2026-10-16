@@ -374,7 +374,9 @@ building the prototype. The upstream requests are tracked in discopt#1249.
     - a missing endmember G parameter;
     - interaction structures pycalphad also rejects (§9.16);
     - the Xiong magnetic model (AFM factor 0; the IHJ model is supported, §9.18);
-    - DISORDERED_PART;
+    - DISORDERED_PART with vacancies on a substitutional sublattice, with
+      magnetic parameters on the ordered part, or with mismatched interstitial
+      sublattices (§9.21);
     - ionic liquids;
     - parameter kinds or orders the binary model cannot represent.
 
@@ -437,8 +439,9 @@ building the prototype. The upstream requests are tracked in discopt#1249.
     `DOMAIN_FLOOR` to 1e-6 did not help. This is the measured case for the
     simplex structure request (discopt-feature-requests P2-2).
     `applicability(elements)` lists the reason for each one, and should be
-    checked before trusting a diagram. In Al–Fe, for example, B2_BCC is
-    skipped because it is an order–disorder phase.
+    checked before trusting a diagram. In Dupin's Al–Ni, for example, BCC_B2 is
+    skipped because it has vacancies on its substitutional sublattices
+    (§9.21).
 18. **Magnetic ordering.** *Issue #6; measured against pycalphad 0.11.2.* `models/magnetic.py` implements the Inden–Hillert–Jarl term
     RT ln(β' + 1) f(T/T_c') per formula unit, and a magnetic phase is always a
     `CEFPhase`.
@@ -547,7 +550,84 @@ building the prototype. The upstream requests are tracked in discopt#1249.
     Each stand-in parameter is then a fixed linear combination of the source
     parameters' functions. For Dupin's Ni–Al, L1₂ and B2 are exact, matching
     pycalphad to 1e-10 J/mol, apart from what is dropped: magnetism, and
-    vacancies on substitutional sublattices.
+    vacancies on substitutional sublattices. Since issue #6, partitioned phases
+    are modeled natively (§9.21). A stand-in remains useful for refitting, or
+    for a phase the native model rejects.
+21. **Order–disorder (partitioned) phases.** *Issue #6; measured against
+    pycalphad 0.11.2.* `models/partitioned.py`. A DISORDERED_PART amendment
+    builds a `PartitionedPhase`:
+
+    G = λ G_dis(x) + G_ord(y) − G_ord(x)
+
+    per ordered formula unit. x is the site average over the substitutional
+    sublattices, and λ = Σ_s a_s / a_dis. NEVER_DISORDER gives
+    G = λ G_dis(x) + G_ord(y).
+    - **Conventions, as pycalphad applies them.**
+      - The amendment applies to the phase named on its line, not through the
+        type code.
+      - Ordered sublattices other than the interstitial one are extended to
+        the disordered part's constituents. Those with exactly its
+        substitutional constituents take part in the ordering.
+      - Parameters missing from the ordered part are 0.
+      - Vacancies count as a species in x.
+      - The F and B phase options imply every symmetry image of each ordered
+        parameter: F permutes all four sublattices, B permutes within {0, 1}
+        and {2, 3} and swaps the pairs. The images are added even when the
+        file lists them too, as pycalphad does. They are added when the model
+        is built, so TDB export writes the file's own parameters.
+      - The magnetic term is the disordered part's, with T_c(x) and β(x). A
+        phase whose ordered part has its own TC or BMAGN is rejected:
+        pycalphad gives those a separate magnetic term, Thermo-Calc
+        partitions T_c instead, and the two disagree.
+    - **Entropy.** The ideal terms of λG_dis(x) and G_ord(x) cancel exactly.
+      Both are (Σ_s a_s) Σ x ln x on the substitutional sites, and the
+      interstitial terms agree because the interstitial-to-substitutional site
+      ratios must be equal. Only the ordered sublattices' entropy is left, on
+      single stick-breaking variables. Every other term is a polynomial in y.
+    - **Checked.** G matches `pycalphad.calculate` to 1e-9 relative at
+      500–1500 K, at random and disordered points, for:
+      - FCC_L12 (Dupin's Al–Ni and alcrni);
+      - B2 (alfe.tdb, COST 507 Al–Ni and Fe–Ni);
+      - CoV's FCC_4SL, four sublattices with the F option;
+      - CoV's σ, NEVER_DISORDER.
+
+      In Al–Ni, γ, γ′ and γ + γ′ match `pycalphad.equilibrium` in phases and
+      compositions. Both sides use the same phase list, without BCC_A2 and
+      BCC_B2 (below). pycalphad names a disordered L1₂ set FCC_L12, and it
+      has exactly FCC_A1's G.
+    - **Pricing.** The site averages are auxiliary variables, tied to y by
+      linear equalities, so G_dis(x) and G_ord(x) are written in a few
+      variables. Without them, a non-magnetic L1₂ pricing problem took 55 s
+      to close; with them, 15 s. Magnetic branches are branches of T_c(x(y)).
+      Each is solved with its constraints in x, as in §9.18.
+    - **Symmetry.** Substitutional sublattices with the same site ratio and
+      constituents form a class. The permutations that leave G unchanged are
+      found numerically when the model is built, at three temperatures and
+      four random points:
+      - B2: 2;
+      - CoV's FCC_4SL: 24;
+      - L1₂: none, since its two sublattices have different ratios.
+
+      When a class is invariant under all its permutations, pricing requires
+      the first constituent's fraction to descend along the class. Each point
+      has a sorted image with the same G, so this removes duplicate minima and
+      never the minimum. `is_duplicate` compares composition sets up to the
+      same symmetry.
+    - **Restricted solve.** A new ordered set has one sublattice nearly pure
+      and a small amount. Freed from its pricing point with the default
+      interior-point barrier, it was pushed back from the bound, slid into the
+      disordered basin, and the loop cycled. The free solve after the
+      held-set solve therefore starts with `mu_init = 1e-6`.
+    - **Not supported yet.**
+      - **Vacancies on substitutional sublattices** (Dupin's BCC_A2 and
+        BCC_B2, alcrni's B2). An all-vacancy configuration has no atoms, so
+        the certificate's amount bound N_tot,max = Σb/atoms_min is unbounded.
+      - **Magnetic parameters on the ordered part** (Sundman's Al–Fe,
+        alcfe_b2).
+      - **Mismatched interstitial sublattices.** COST 507's BCC_B2 in seven
+        binaries, such as Al–N, which pycalphad rejects too.
+    - **Registry.** COST 507 goes from 7 to 338 of 345 complete binaries, and
+      the COST 507 Al–Fe file is complete.
 
 ## 10. Roadmap after MVP 1
 

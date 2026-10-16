@@ -97,6 +97,30 @@ The fitted diagram (red) is drawn over the NIMS assessment (gray) and the data.
     --8<-- "examples/cumg_espei_fit.py"
     ```
 
+## Ni-rich Al–Ni: γ and γ′ with the native order–disorder model
+
+γ′ (Ni₃Al, L1₂) is a partitioned phase over γ (FCC_A1) in Dupin, Ansara and
+Sundman's assessment (Calphad 25 (2001) 279–298). Here it is modeled natively
+as G_dis(x) + G_ord(y) − G_ord(x) (issue #6). The ordered state is a second
+well in site-fraction space, and pricing finds it as a new composition set of
+FCC_L12.
+
+On the Ni-rich side (x(Al) ≤ 0.30, 900–1700 K, 261 points, none failed), the
+γ + γ′, γ′ + Al₃Ni₅ and L + γ boundaries agree with pycalphad on the same
+phases to five decimals. Dupin's β (B2) allows vacancies on its substitutional
+sublattices, which the native model does not support yet, so both maps leave
+it out. In the full assessment, β borders γ′ above x(Al) ≈ 0.27. Two points
+are also certified globally (`CERTIFIED_TO_TOLERANCE`): γ + γ′ at 1200 K and
+γ′ at 1000 K. Bounding the active FCC_L12 phase takes about 500 s each; every
+other phase takes seconds.
+
+![Ni-rich Al-Ni](assets/examples/alni_order_disorder.png)
+
+??? example "examples/alni_order_disorder.py"
+    ```python
+    --8<-- "examples/alni_order_disorder.py"
+    ```
+
 ## Ni–Al with stand-ins for its order–disorder phases
 
 Dupin's Al–Ni assessment describes γ′ (L1₂) and β (B2) as partitioned phases,

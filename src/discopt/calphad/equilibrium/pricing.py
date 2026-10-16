@@ -271,22 +271,41 @@ def _pieces(phase, mu, T, box) -> list[_Piece]:
 
     def model(name):
         m = dm.Model(name)
-        return m, [m.continuous(f"y{i}", lb=lo, ub=hi) for i, (lo, hi) in enumerate(box)]
+        y = [m.continuous(f"y{i}", lb=lo, ub=hi) for i, (lo, hi) in enumerate(box)]
+        for i, g in enumerate(getattr(phase, "symmetry_constraints", lambda y: [])(y)):
+            m.subject_to(g >= 0, name=f"symmetry{i}")
+        x = None
+        if hasattr(phase, "average_expressions"):
+            # a partitioned phase: the site averages as variables, so G_dis(x) and G_ord(x) are
+            # written in a few variables rather than as polynomials expanded in y
+            x = {}
+            for c, e in phase.average_expressions(y).items():
+                x[c] = m.continuous(f"x_{c}", lb=0.0, ub=1.0)
+                m.subject_to(x[c] - e == 0, name=f"average_{c}")
+        return m, y, x
+
+    def objective(y, x, ops):
+        if x is None:
+            return tangent_distance(phase, y, mu, ops, T)
+        return phase.gibbs(y, ops, T, x=x) - sum(float(m_) * a for m_, a in zip(mu, phase.amounts(y)))
 
     if getattr(phase, "magnetic", None) is None:
-        m, y = model(f"price_{phase.name}")
-        m.minimize(tangent_distance(phase, y, mu, EXPR, T))
+        m, y, x = model(f"price_{phase.name}")
+        m.minimize(objective(y, x, EXPR))
         return [_Piece(m)]
     out = []
     for k, (branch, (s_lo, s_hi)) in enumerate(phase.magnetic_pieces(box, T)):
-        m, y = model(f"price_{phase.name}_{k}")
+        m, y, x = model(f"price_{phase.name}_{k}")
         s = m.continuous("s", lb=s_lo, ub=s_hi) if phase.magnetic.tc and s_hi > s_lo else None
-        eqs, ineqs = phase.pricing_constraints(y, T, branch, s)
+        if x is None:
+            eqs, ineqs = phase.pricing_constraints(y, T, branch, s)
+        else:
+            eqs, ineqs = phase.pricing_constraints(y, T, branch, s, x=x)
         for i, g in enumerate(eqs):
             m.subject_to(g == 0, name=f"s_def{i}")
         for i, g in enumerate(ineqs):
             m.subject_to(g >= 0, name=f"branch{i}")
-        m.minimize(tangent_distance(phase, y, mu, EXPR.with_branch(branch, s), T))
+        m.minimize(objective(y, x, EXPR.with_branch(branch, s)))
         out.append(_Piece(m))
     return out
 
