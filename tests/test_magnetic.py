@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from discopt.calphad import CertificateLevel, ThermoDatabase, UnsupportedModelError, equilibrium
+from discopt.calphad import CertificateLevel, ThermoDatabase, equilibrium
 from discopt.calphad.equilibrium.common import R_GAS
 from discopt.calphad.equilibrium.pricing import price_phase
 from discopt.calphad.equilibrium.restricted import CompositionSet, solve_restricted
@@ -198,7 +198,9 @@ def test_xiong_function_is_continuous_and_decreasing():
     for p in (0.25, 0.28, 0.4):
         assert _x_para(1.0, p) == pytest.approx(_x_ord(1.0, p), abs=1e-7)
         h = 1e-6
-        assert (_x_para(1.0, p) - _x_para(1 - h, p)) / h == pytest.approx((_x_ord(1 + h, p) - _x_ord(1.0, p)) / h, rel=1e-4)
+        assert (_x_para(1.0, p) - _x_para(1 - h, p)) / h == pytest.approx(
+            (_x_ord(1 + h, p) - _x_ord(1.0, p)) / h, rel=1e-4
+        )
         assert np.all(np.diff(_x_para(np.linspace(0, 1, 5001), p)) <= 0)
         assert np.all(np.diff(_x_ord(np.geomspace(1, 1e3, 5001), p)) < 0)
 

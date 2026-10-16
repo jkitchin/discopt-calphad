@@ -443,7 +443,13 @@ class ThermoDatabase:
         terms = [CEFTerm(p.constituents, p.order, DatabaseValue(self, ((1.0, p),))) for p in fixed]
         try:
             return IonicLiquidPhase(
-                key, elements, (1.0, 1.0), tuple(subl), tuple(terms), None, self.min_occupancy,
+                key,
+                elements,
+                (1.0, 1.0),
+                tuple(subl),
+                tuple(terms),
+                None,
+                self.min_occupancy,
                 self._species_of(subl, elements),
             )
         except NotImplementedError as err:
@@ -498,8 +504,7 @@ class ThermoDatabase:
             return [
                 p
                 for p in self.phase_parameters(name)
-                if len(p.constituents) == len(cons)
-                and all(c == "*" or c in allowed for s in p.constituents for c in s)
+                if len(p.constituents) == len(cons) and all(c == "*" or c in allowed for s in p.constituents for c in s)
             ]
 
         dparams = params_of(dis_key, dsub)
@@ -569,7 +574,13 @@ class ThermoDatabase:
                     terms += [CEFTerm(p.constituents, k, DatabaseValue(self, ((1.0, p),))) for k in (1, 2)]
         try:
             return CEFPhase(
-                key, elements, tuple(ph.site_ratios), tuple(subl), tuple(terms), magnetic, self.min_occupancy,
+                key,
+                elements,
+                tuple(ph.site_ratios),
+                tuple(subl),
+                tuple(terms),
+                magnetic,
+                self.min_occupancy,
                 self._species_of(subl, elements),
             )
         except NotImplementedError as err:

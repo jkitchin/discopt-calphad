@@ -167,7 +167,7 @@ fig, ax = plt.subplots(figsize=(7.5, 5))
 colors = {"IONIC_LIQ": "C3", "FCC_A1": "C0", "CU2O": "C2", "CUO": "C1", "GAS": "C7"}
 for (T, _), (sets, _) in ref.items():
     if len(sets) == 2:
-        for n, x in sets:
+        for _name, x in sets:
             ax.plot([x], [T], "o", color="0.75", ms=7)
 for (T, _), (sets, _) in mine.items():
     if len(sets) == 2:

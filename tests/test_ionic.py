@@ -187,7 +187,9 @@ def test_ionic_gibbs_matches_pycalphad(fname, elements, name, t):
     rng = np.random.default_rng(5)
     fractions = [[dict(zip(c, rng.dirichlet(np.ones(len(c))))) for c in model.constituents] for _ in range(8)]
     points = [[d[c] for cons, d in zip(model.constituents, fr) for c in cons] for fr in fractions]
-    ref = calculate(Database(str(path)), [*elements, "VA"], name, T=t, P=101325, N=1, points=np.array(points), output="GM")
+    ref = calculate(
+        Database(str(path)), [*elements, "VA"], name, T=t, P=101325, N=1, points=np.array(points), output="GM"
+    )
     for fr, gm in zip(fractions, np.asarray(ref.GM).ravel()):
         u = model.variables_from_site_fractions(fr)
         atoms = float(np.sum(model.amounts(u)))
@@ -229,7 +231,12 @@ def test_cu_o_liquid_gap_below_pycalphad(cuo):
     T = 1500.0
     res = equilibrium(list(models.values()), x=0.8, T=T, certify="none")
     assert sorted(cs.phase.name for cs in res.composition_sets) == ["IONIC_LIQ", "IONIC_LIQ"]
-    eq = pyeq(Database(str(pycalphad_db("cuo.tdb"))), ["CU", "O", "VA"], sorted(models), {v.X("O"): 0.2, v.T: T, v.P: 101325, v.N: 1})
+    eq = pyeq(
+        Database(str(pycalphad_db("cuo.tdb"))),
+        ["CU", "O", "VA"],
+        sorted(models),
+        {v.X("O"): 0.2, v.T: T, v.P: 101325, v.N: 1},
+    )
     assert sorted(str(p) for p in np.squeeze(eq.Phase.values) if p) == ["CU2O", "IONIC_LIQ"]
     ours_j = res.G * R_GAS * T
     theirs_j = float(eq.GM.squeeze())
@@ -238,7 +245,9 @@ def test_cu_o_liquid_gap_below_pycalphad(cuo):
     assert float(cu2o.gibbs([], NUM, T)) - res.mu @ np.array(cu2o.amounts([])) > 1e-3
 
 
-@pytest.mark.parametrize("a,t", [(0.05, 2000.0), (0.1, 1500.0), (0.5, 1800.0), (0.3, 1800.0), (0.9, 1800.0), (0.02, 1200.0)])
+@pytest.mark.parametrize(
+    "a,t", [(0.05, 2000.0), (0.1, 1500.0), (0.5, 1800.0), (0.3, 1800.0), (0.9, 1800.0), (0.02, 1200.0)]
+)
 def test_zro2_nd2o3_matches_pycalphad(a, t):
     """The ZrO2–NdO1.5 section of Fabrichnaya and Seifert's assessment: charged CEF phases with neutrality."""
     from pycalphad import Database
@@ -251,10 +260,17 @@ def test_zro2_nd2o3_matches_pycalphad(a, t):
     b = np.array([a, 1 - a, 1.5 * a + 2 * (1 - a)])
     res = equilibrium(list(models.values()), b=b, T=t, certify="none")
     ours = sorted(
-        (cs.phase.name, round(float(cs.x[0] / (cs.x[0] + cs.x[1])), 3)) for cs in res.composition_sets if cs.amount > 1e-8
+        (cs.phase.name, round(float(cs.x[0] / (cs.x[0] + cs.x[1])), 3))
+        for cs in res.composition_sets
+        if cs.amount > 1e-8
     )
     x = b / b.sum()
-    eq = pyeq(Database(str(path)), [*els, "VA"], sorted(models), {v.X("ND"): x[0], v.X("ZR"): x[1], v.T: t, v.P: 101325, v.N: 1})
+    eq = pyeq(
+        Database(str(path)),
+        [*els, "VA"],
+        sorted(models),
+        {v.X("ND"): x[0], v.X("ZR"): x[1], v.T: t, v.P: 101325, v.N: 1},
+    )
     names = [str(p) for p in np.squeeze(eq.Phase.values) if p]
     X = np.atleast_2d(np.squeeze(eq.X.values))[: len(names)]  # components sorted: ND, O, ZR
     assert ours == sorted((n, round(float(c[0] / (c[0] + c[2])), 3)) for n, c in zip(names, X))

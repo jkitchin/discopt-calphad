@@ -113,7 +113,11 @@ def pycalphad_map():
                     continue
                 y = ys[i][k]
                 order = (
-                    abs(y[0] - y[2]) if name == "FCC_L12" else np.max(np.abs(y[0:3] - y[3:6])) if name == "BCC_B2" else 0.0
+                    abs(y[0] - y[2])
+                    if name == "FCC_L12"
+                    else np.max(np.abs(y[0:3] - y[3:6]))
+                    if name == "BCC_B2"
+                    else 0.0
                 )
                 sets.append((label(str(name), order), round(float(xs[i][k][0]), 6)))
             tp = two_phase(sets)

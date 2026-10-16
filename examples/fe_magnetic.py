@@ -62,15 +62,18 @@ def G(phase, T):
     return float(phase.gibbs(pure_fe(phase), NUM, T)) * R_GAS * T
 
 
-def crossings(b, f, l):
-    """The α→γ, γ→δ and melting temperatures for BCC ``b``, FCC ``f`` and liquid ``l`` (None if absent)."""
+def crossings(b, f, liquid):
+    """The α→γ, γ→δ and melting temperatures for BCC ``b``, FCC ``f`` and ``liquid`` (None if absent)."""
     out = {}
     for name, (p, q, lo, hi) in {
         "alpha -> gamma": (b, f, 900.0, 1400.0),
         "gamma -> delta": (b, f, 1400.0, 1780.0),
-        "melting": (b, l, 1700.0, 1900.0),
+        "melting": (b, liquid, 1700.0, 1900.0),
     }.items():
-        d = lambda T: G(p, T) - G(q, T)  # noqa: E731
+
+        def d(T, p=p, q=q):
+            return G(p, T) - G(q, T)
+
         out[name] = brentq(d, lo, hi, xtol=1e-6) if d(lo) * d(hi) < 0 else None
     return out
 
@@ -83,7 +86,9 @@ for name, ref in SGTE.items():
     n_s = "none in range" if n is None else f"{n:8.2f}"
     print(f"  {name:15s} SGTE {ref:8.2f}   with magnetism {m:8.2f} (Δ {m - ref:+.2f})   without: {n_s}")
 T_fine = np.linspace(300, 1400, 1101)
-dg = np.array([G(dataclasses.replace(bcc, magnetic=None), T) - G(dataclasses.replace(fcc, magnetic=None), T) for T in T_fine])
+dg = np.array(
+    [G(dataclasses.replace(bcc, magnetic=None), T) - G(dataclasses.replace(fcc, magnetic=None), T) for T in T_fine]
+)
 print(f"  without magnetism, FCC is below BCC from {T_fine[np.argmax(dg > 0)]:.0f} K up (G_bcc - G_fcc > 0)")
 
 
@@ -123,7 +128,7 @@ a1.plot(T, [(G(fcc, t) - G(bcc, t)) / 1000 for t in T], "C0-", label="G(FCC) −
 a1.plot(T, [(G(nf, t) - G(nb, t)) / 1000 for t in T], "C0--", label="the same, no magnetism")
 a1.plot(T, [(G(liq, t) - G(bcc, t)) / 1000 for t in T], "C3-", label="G(liquid) − G(BCC)")
 a1.axhline(0, color="k", lw=0.6)
-for name, ref in SGTE.items():
+for ref in SGTE.values():
     a1.axvline(ref, color="0.6", ls=":", lw=1)
 a1.set_xlabel("T (K)")
 a1.set_ylabel("ΔG (kJ/mol)")

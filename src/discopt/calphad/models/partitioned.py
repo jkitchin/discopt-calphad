@@ -151,7 +151,9 @@ class PartitionedPhase:
     def _averaged(self, Y):
         """x: the site average of ``Y`` over the substitutional sublattices, by constituent."""
         r = self.ordered.site_ratios
-        return {c: sum_(r[s] * Y[s][c] for s in self.substitutional) * (1.0 / self.a_ord) for c in Y[self.substitutional[0]]}
+        return {
+            c: sum_(r[s] * Y[s][c] for s in self.substitutional) * (1.0 / self.a_ord) for c in Y[self.substitutional[0]]
+        }
 
     def _at_x(self, Y, x=None):
         """(the ordered site fractions with x on every substitutional sublattice, the disordered part's)."""
@@ -339,7 +341,9 @@ class PartitionedPhase:
         def invariant(perm):
             for T, g0 in ref.items():
                 for p, g in zip(pts, g0):
-                    if not math.isclose(float(self.gibbs(self._permute(p, perm), NUM, T)), g, rel_tol=1e-9, abs_tol=1e-9):
+                    if not math.isclose(
+                        float(self.gibbs(self._permute(p, perm), NUM, T)), g, rel_tol=1e-9, abs_tol=1e-9
+                    ):
                         return False
             return True
 

@@ -53,7 +53,16 @@ db = ThermoDatabase.from_tdb(tdb_path())
 models = db.phase_models(EL)
 phases = list(models.values())
 print("phases:", sorted(models))
-NAMES = {"FLUO": "F", "TETR": "T", "MONO": "M", "PYRO": "P", "ND2O3_A": "A", "ND2O3_H": "H", "ND2O3_X": "X", "I_LIQUID": "L"}
+NAMES = {
+    "FLUO": "F",
+    "TETR": "T",
+    "MONO": "M",
+    "PYRO": "P",
+    "ND2O3_A": "A",
+    "ND2O3_H": "H",
+    "ND2O3_X": "X",
+    "I_LIQUID": "L",
+}
 
 
 def b_of(a):
@@ -91,7 +100,9 @@ ref = {}
 for T in TEMPS:
     for a in AS:
         x = b_of(a) / b_of(a).sum()
-        eq = peq(pdb, [*EL, "VA"], sorted(models), {v.X("ND"): x[0], v.X("ZR"): x[1], v.T: float(T), v.P: 101325, v.N: 1})
+        eq = peq(
+            pdb, [*EL, "VA"], sorted(models), {v.X("ND"): x[0], v.X("ZR"): x[1], v.T: float(T), v.P: 101325, v.N: 1}
+        )
         names = [str(p) for p in np.squeeze(eq.Phase.values) if p]
         X = np.atleast_2d(np.squeeze(eq.X.values))[: len(names)]  # components sorted: ND, O, ZR
         ref[(float(T), float(a))] = sorted((NAMES[n], round(float(c[0] / (c[0] + c[2])), 4)) for n, c in zip(names, X))
@@ -116,8 +127,16 @@ for tl, style in [(ref, dict(color="0.75", ms=7)), (ours, dict(ms=3))]:
                 kw.setdefault("color", colors[n])
                 ax.plot([c], [T], "o", **kw)
 ax.plot([], [], "o", color="0.75", label="pycalphad")
-labels = {"F": "fluorite", "T": "tetragonal", "M": "monoclinic", "P": "pyrochlore", "A": "Nd2O3 A", "H": "Nd2O3 H",
-          "X": "Nd2O3 X", "L": "liquid"}
+labels = {
+    "F": "fluorite",
+    "T": "tetragonal",
+    "M": "monoclinic",
+    "P": "pyrochlore",
+    "A": "Nd2O3 A",
+    "H": "Nd2O3 H",
+    "X": "Nd2O3 X",
+    "L": "liquid",
+}
 for n, c in colors.items():
     ax.plot([], [], "o", color=c, ms=3, label=labels[n])
 ax.set_xlabel("Nd / (Nd + Zr)")

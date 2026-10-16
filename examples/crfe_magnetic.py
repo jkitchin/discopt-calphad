@@ -143,7 +143,9 @@ for tl, style, label in [(ref, dict(color="0.65", ms=7), "pycalphad"), (ours, di
                 label = None
 for T, xs, level in certified:
     ok = level >= CertificateLevel.CERTIFIED_TO_TOLERANCE
-    ax.plot(xs, [T] * len(xs), "s", mfc="none", mec="k" if ok else "r", ms=9, label="certified" if T == TEMPS[0] else None)
+    ax.plot(
+        xs, [T] * len(xs), "s", mfc="none", mec="k" if ok else "r", ms=9, label="certified" if T == TEMPS[0] else None
+    )
 for name, c in colors.items():
     ax.plot([], [], "o", color=c, label=name)
 ax.set_xlabel("x(Cr)")

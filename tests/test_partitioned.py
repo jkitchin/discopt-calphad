@@ -171,9 +171,13 @@ def test_partitioned_gibbs_matches_pycalphad(fname, elements, name, t):
     # a disordered point: the same fractions on every substitutional sublattice
     cons0 = model.constituents[model.substitutional[0]]
     x = dict(zip(cons0, rng.dirichlet(np.ones(len(cons0)))))
-    fractions.append([dict(x) if s in model.substitutional else {c: 1.0 for c in cons} for s, cons in enumerate(model.constituents)])
+    fractions.append(
+        [dict(x) if s in model.substitutional else {c: 1.0 for c in cons} for s, cons in enumerate(model.constituents)]
+    )
     points = [[d[c] for cons, d in zip(model.constituents, fr) for c in cons] for fr in fractions]
-    ref = calculate(Database(str(path)), [*elements, "VA"], name, T=t, P=101325, N=1, points=np.array(points), output="GM")
+    ref = calculate(
+        Database(str(path)), [*elements, "VA"], name, T=t, P=101325, N=1, points=np.array(points), output="GM"
+    )
     for fr, gm in zip(fractions, np.asarray(ref.GM).ravel()):
         u = model.variables_from_site_fractions(fr)
         atoms = float(np.sum(model.amounts(u)))
@@ -364,7 +368,9 @@ def test_ordered_part_magnetism_matches_pycalphad_up_to_the_convention(fname, el
     rng = np.random.default_rng(11)
     fractions = [[dict(zip(c, rng.dirichlet(np.ones(len(c))))) for c in model.constituents] for _ in range(8)]
     points = [[d[c] for cons, d in zip(model.constituents, fr) for c in cons] for fr in fractions]
-    ref = calculate(Database(str(path)), [*elements, "VA"], name, T=t, P=101325, N=1, points=np.array(points), output="GM")
+    ref = calculate(
+        Database(str(path)), [*elements, "VA"], name, T=t, P=101325, N=1, points=np.array(points), output="GM"
+    )
     for fr, gm in zip(fractions, np.asarray(ref.GM).ravel()):
         u = model.variables_from_site_fractions(fr)
         atoms = float(np.sum(model.amounts(u)))
@@ -384,4 +390,6 @@ def test_partitioned_magnetism_vanishes_into_the_parent_when_disordered():
         u = model.variables_from_site_fractions([{"AL": x, "FE": 1 - x}] * 4 + [{"VA": 1.0}])
         up = parent.variables_from_site_fractions([{"AL": x, "FE": 1 - x}, {"VA": 1.0}])
         for T in (500.0, 900.0):
-            assert float(model.gibbs(u, NUM, T)) == pytest.approx(model.scale * float(parent.gibbs(up, NUM, T)), rel=1e-12)
+            assert float(model.gibbs(u, NUM, T)) == pytest.approx(
+                model.scale * float(parent.gibbs(up, NUM, T)), rel=1e-12
+            )
