@@ -231,7 +231,7 @@ hash. A copy that pycalphad installs is used without downloading.
 from discopt.calphad import databases
 
 [e.name for e in databases.find(["AL", "FE"])]       # files that form Al–Fe
-databases.find(["AL", "FE"], complete=True)          # COST 507 files; Sundman's 2009 file is incomplete
+databases.find(["AL", "FE"], complete=True)          # every Al–Fe file in the registry
 databases.get("alzn_mey").reference                  # 'S. an Mey, Z. Metallkd. 84 (1993) 451–455; ...'
 ```
 

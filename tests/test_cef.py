@@ -218,8 +218,17 @@ def test_pricing_cef_phase_bound_is_valid(cumg):
     assert r.stages == 1
 
 
-def test_staged_pricing_certifies_a_clearly_unstable_phase():
-    # min Ψ ≈ 2.743 here: a full gap closure takes minutes, but LB ≥ −eps is certified in the first stage
+def test_staged_pricing_certifies_a_clearly_unstable_phase(monkeypatch):
+    import importlib
+
+    pricing = importlib.import_module("discopt.calphad.equilibrium.pricing")
+
+    # min Ψ ≈ 2.743: interval branch and bound (run first for a phase this small) decides it alone
+    r = price_phase(_recip_phase(), np.array([-2.0, -1.5]), T=700.0, eps=1e-5)
+    assert r.certified(1e-5) and r.bound_source == "interval"
+    assert r.ub == pytest.approx(2.7433, abs=1e-3)
+    # without it, a full gap closure takes minutes, but LB ≥ −eps is certified in the first discopt stage
+    monkeypatch.setattr(pricing, "INTERVAL_MAX_VARS", 0)
     r = price_phase(_recip_phase(), np.array([-2.0, -1.5]), T=700.0, eps=1e-5)
     assert r.certified(1e-5) and r.bound_source == "callback" and r.stages == 1
     assert r.ub == pytest.approx(2.7433, abs=1e-3)

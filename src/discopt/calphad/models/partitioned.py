@@ -26,13 +26,20 @@ energy terms are evaluated at x, and they are polynomials in y.
 **NEVER_DISORDER** (Lukas–Fries–Sundman eq. 5.162): G = G_dis(x) + G_ord(y).
 The disordered part contributes no entropy, and nothing is subtracted.
 
-**Magnetism.** As in pycalphad 0.11, the magnetic term is the disordered
-part's, with its TC and BMAGN evaluated at x. A magnetic phase's branches
-(:mod:`discopt.calphad.models.magnetic`) are then branches of T_c(x(y)), and
-global pricing splits on them as for a plain magnetic phase. Thermo-Calc instead
-partitions TC and BMAGN themselves, T_c = T_c,dis(x) + T_c,ord(y) − T_c,ord(x).
-The two agree when the ordered part has no magnetic parameters. A phase whose
-ordered part has some is rejected for now.
+**Magnetism.** The magnetic properties are partitioned like the energy, as
+Thermo-Calc and the CALPHAD literature do it (Lukas, Fries and Sundman §5.8.6):
+
+    T_c = T_c,dis(x) + T_c,ord(y) − T_c,ord(x),   β likewise (and T_N for Xiong)
+
+and one magnetic term is evaluated with them, per disordered formula unit (×λ).
+Its branches are branches of these partitioned quantities, so global pricing
+splits on them as for a plain magnetic phase. When the ordered part has no
+magnetic parameters, this is pycalphad's result too. When it has some
+(Sundman's Al–Fe, alcfe_b2), pycalphad 0.11.2 instead adds a separate
+magnetic term for the ordered part, mag(T_c,ord(y)) − mag(T_c,ord(x)), next to
+λ·mag(T_c,dis(x)), and warns that the result may be incorrect. The tests compare
+everything else with pycalphad, and the magnetic terms under each convention
+with the same functions.
 
 **Symmetry.** Substitutional sublattices with the same site ratio and the same
 constituents may be equivalent: permuting them maps each ordered variant onto
@@ -56,6 +63,7 @@ from itertools import permutations
 import numpy as np
 
 from discopt.calphad.models.cef import CEFPhase, _prod
+from discopt.calphad.models.magnetic import Magnetic
 from discopt.calphad.ops import NUM
 
 __all__ = ["PartitionedPhase"]
@@ -82,14 +90,26 @@ class PartitionedPhase:
     symmetry: tuple[tuple[int, ...], ...] = field(init=False, compare=False)
     #: classes of equivalent sublattices whose every permutation leaves G unchanged
     _sorted_classes: tuple[tuple[int, ...], ...] = field(init=False, repr=False, compare=False)
+    #: the magnetic type with the quantities of both parts (see "Magnetism" in the module docstring)
+    _mag: Magnetic | None = field(init=False, repr=False, compare=False)
 
     def __post_init__(self):
         o, d = self.ordered, self.disordered
-        if o.magnetic is not None:
-            raise NotImplementedError(
-                f"{self.name}: magnetic parameters on the ordered part (pycalphad and Thermo-Calc combine them "
-                "with the disordered part's differently)"
+        if o.magnetic is not None and d.magnetic is not None:
+            if (o.magnetic.afm, o.magnetic.p) != (d.magnetic.afm, d.magnetic.p):
+                raise NotImplementedError(f"{self.name}: different magnetic types on the ordered and disordered parts")
+        mags = [m for m in (d.magnetic, o.magnetic) if m is not None]
+        combined = None
+        if mags:
+            # only the type and which quantities have terms matter here; the sums are partitioned in _magnetic_q
+            combined = Magnetic(
+                afm=mags[0].afm,
+                p=mags[0].p,
+                tc=sum((m.tc for m in mags), ()),
+                beta=sum((m.beta for m in mags), ()),
+                nt=sum((m.nt for m in mags), ()),
             )
+        object.__setattr__(self, "_mag", combined)
         if set(o.elements) != set(d.elements):
             raise ValueError(f"{self.name}: ordered and disordered parts have different elements")
         subst = self.substitutional
@@ -183,8 +203,8 @@ class PartitionedPhase:
 
     @property
     def magnetic(self):
-        """The disordered part's magnetic description, or None (see the module docstring)."""
-        return self.disordered.magnetic
+        """The phase's magnetic type, with the quantities of both parts, or None (see the module docstring)."""
+        return self._mag
 
     def amounts(self, y):
         return self.ordered.amounts(y)
@@ -219,8 +239,8 @@ class PartitionedPhase:
         G = o.energy_at(Y, T) + o._ideal(F, ops) + self.scale * d.energy_at(y_dis, T)
         if not self.never_disorder:
             G = G - o.energy_at(y_ord, T)
-        if d.magnetic is not None:
-            G = G + self.scale * d.magnetic.term(d._magnetic_q(y_dis, T), T, ops)
+        if self._mag is not None:
+            G = G + self.scale * self._mag.term(self._partitioned_q(Y, y_ord, y_dis, T), T, ops)
         return G
 
     def ordering_energy(self, y, T: float) -> float:
@@ -238,9 +258,26 @@ class PartitionedPhase:
 
     # ------------------------------------------------------------------ magnetism (the disordered part's, at x)
 
+    def _partitioned_q(self, Y, y_ord, y_dis, T):
+        """q = q_dis(x) + q_ord(y) − q_ord(x) for each magnetic quantity (Thermo-Calc's partitioned properties)."""
+        names = self._mag.quantities
+        out = []
+        for name in names:
+            v = 0.0
+            if self.disordered.magnetic is not None:
+                v = v + self.disordered._sum(getattr(self.disordered.magnetic, name), y_dis, T)
+            if self.ordered.magnetic is not None and not self.never_disorder:
+                terms = getattr(self.ordered.magnetic, name)
+                v = v + self.ordered._sum(terms, Y, T) - self.ordered._sum(terms, y_ord, T)
+            elif self.ordered.magnetic is not None:
+                v = v + self.ordered._sum(getattr(self.ordered.magnetic, name), Y, T)
+            out.append(v)
+        return tuple(out)
+
     def _magnetic_q(self, y, T, x=None):
-        _, y_dis = self._at_x(self.ordered._Y(y), x)
-        return self.disordered._magnetic_q(y_dis, T)
+        Y = self.ordered._Y(y)
+        y_ord, y_dis = self._at_x(Y, x)
+        return self._partitioned_q(Y, y_ord, y_dis, T)
 
     def _magnetic_value(self, name, y, T) -> float:
         if self.magnetic is None or name not in self.magnetic.quantities:

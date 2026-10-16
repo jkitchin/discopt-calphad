@@ -510,15 +510,10 @@ class ThermoDatabase:
         kinds = {p.kind for p in oparams + dparams} - {"G"} - set(MAGNETIC_KINDS)
         if kinds:
             raise UnsupportedModelError(f"{key}: parameter kinds {sorted(kinds)} are not supported yet")
-        omag = [p for p in oparams if p.kind in MAGNETIC_KINDS]
-        if omag and self.magnetic_type(key) is not None:
-            raise UnsupportedModelError(
-                f"{key}: magnetic parameters on the ordered part ({omag[0].label}); pycalphad and Thermo-Calc "
-                "combine them with the disordered part's differently, so they are not supported yet"
-            )
+        omag = self._magnetic(key, ph, [p for p in oparams if p.kind in MAGNETIC_KINDS])
         dmag = self._magnetic(dis_key, dph, [p for p in dparams if p.kind in MAGNETIC_KINDS])
         try:
-            ordered = self._cef_phase(key, ph, subl, [p for p in oparams if p.kind == "G"], elements)
+            ordered = self._cef_phase(key, ph, subl, [p for p in oparams if p.kind == "G"], elements, omag)
             disordered = self._cef_phase(dis_key, dph, dsub, [p for p in dparams if p.kind == "G"], elements, dmag)
             return PartitionedPhase(key, ordered, disordered, subst, never)
         except UnsupportedModelError:

@@ -178,7 +178,7 @@
       "notes": "Holds four alternative BCC descriptions of the same parameters; use one at a time.",
       "elements": ["AL", "FE"],
       "binaries": {
-        "AL-FE": ["B2_BCC", "BCC_4SL", "BCC_NOB", "BCC_VA"]
+        "AL-FE": []
       }
     },
     {
@@ -265,6 +265,7 @@
         "AR-MG": [],
         "AR-MN": [],
         "AR-MO": [],
+        "AR-N": [],
         "AR-NB": [],
         "AR-ND": [],
         "AR-NI": [],
@@ -410,6 +411,7 @@
         "HF-MG": [],
         "HF-MN": [],
         "HF-MO": [],
+        "HF-N": [],
         "HF-NB": [],
         "HF-ND": [],
         "HF-NI": [],
@@ -487,12 +489,15 @@
         "MO-ZR": [],
         "N-NB": [],
         "N-ND": [],
+        "N-NI": [],
+        "N-O": [],
         "N-SI": [],
         "N-SN": [],
         "N-TA": [],
         "N-TI": ["BCC_B2"],
         "N-V": ["BCC_B2"],
         "N-W": [],
+        "N-Y": [],
         "N-ZN": [],
         "N-ZR": [],
         "NB-ND": [],

@@ -64,7 +64,7 @@ def test_builds_a_partitioned_phase(db, l12):
     assert isinstance(l12, PartitionedPhase)
     assert l12.substitutional == (0, 1) and l12.interstitial == (2,)
     assert l12.scale == pytest.approx(1.0)
-    assert l12.magnetic is l12.disordered.magnetic and l12.magnetic.afm == -3.0
+    assert l12.magnetic == l12.disordered.magnetic and l12.magnetic.afm == -3.0  # no ordered magnetic parameters
     assert db.disordered_part("L12") == ("A1", False)
     assert db.disordered_part("A1") is None
 
@@ -137,9 +137,10 @@ def test_fcc_4sl_permutation_option():
 
 
 def test_unsupported_variants_say_why():
-    alfe = ThermoDatabase.from_tdb(pycalphad_db("Al-Fe_sundman2009.tdb"))
-    with pytest.raises(UnsupportedModelError, match="magnetic parameters on the ordered part"):
-        alfe.phase_model("BCC_4SL", ("AL", "FE"))
+    """COST 507's BCC_B2 in Al–N: the interstitial sublattices do not match (pycalphad rejects it too)."""
+    cost = ThermoDatabase.from_tdb(pycalphad_db("COST507.tdb"))
+    with pytest.raises(UnsupportedModelError, match="interstitial"):
+        cost.phase_model("BCC_B2", ("AL", "N"))
 
 
 # ---------------------------------------------------------------------------- pycalphad oracle
@@ -323,3 +324,64 @@ def test_alni_beta_with_vacancies_matches_pycalphad(x, t):
             n = "FCC_A1"
         ref.append((n, round(float(c), 3)))
     assert ours == sorted(ref)
+
+
+# ---------------------------------------------------------------------------- magnetic parameters on the ordered part
+
+
+def _magnetic_both_conventions(model, u, T):
+    """(ours, pycalphad's) magnetic G/RT per ordered formula unit, both from our verified IHJ functions.
+
+    Ours partitions the properties: q = q_dis(x) + q_ord(y) − q_ord(x), one term.
+    pycalphad 0.11.2 adds λ·mag(q_dis(x)) + mag(q_ord(y)) − mag(q_ord(x)).
+    """
+    o, d = model.ordered, model.disordered
+    Y = o._Y(u)
+    y_ord, y_dis = model._at_x(Y)
+    mag = model.magnetic
+    ours = model.scale * float(mag.term([float(v) for v in model._partitioned_q(Y, y_ord, y_dis, T)], T, NUM))
+    theirs = 0.0
+    if d.magnetic is not None:
+        theirs += model.scale * float(d.magnetic.term([float(v) for v in d._magnetic_q(y_dis, T)], T, NUM))
+    if o.magnetic is not None:
+        theirs += float(o.magnetic.term([float(v) for v in o._magnetic_q(Y, T)], T, NUM))
+        theirs -= float(o.magnetic.term([float(v) for v in o._magnetic_q(y_ord, T)], T, NUM))
+    return ours, theirs
+
+
+@pytest.mark.parametrize(
+    "fname,elements,name",
+    [("Al-Fe_sundman2009.tdb", ("AL", "FE"), "BCC_4SL"), ("alcfe_b2.tdb", ("AL", "FE"), "B2_BCC")],
+)
+@pytest.mark.parametrize("t", [600.0, 1000.0, 1400.0])
+def test_ordered_part_magnetism_matches_pycalphad_up_to_the_convention(fname, elements, name, t):
+    """Everything but the magnetic convention matches pycalphad to 1e-9; see _magnetic_both_conventions."""
+    path = pycalphad_db(fname)
+    from pycalphad import Database, calculate
+
+    model = ThermoDatabase.from_tdb(path).phase_model(name, elements)
+    assert model.ordered.magnetic is not None
+    rng = np.random.default_rng(11)
+    fractions = [[dict(zip(c, rng.dirichlet(np.ones(len(c))))) for c in model.constituents] for _ in range(8)]
+    points = [[d[c] for cons, d in zip(model.constituents, fr) for c in cons] for fr in fractions]
+    ref = calculate(Database(str(path)), [*elements, "VA"], name, T=t, P=101325, N=1, points=np.array(points), output="GM")
+    for fr, gm in zip(fractions, np.asarray(ref.GM).ravel()):
+        u = model.variables_from_site_fractions(fr)
+        atoms = float(np.sum(model.amounts(u)))
+        ours_mag, py_mag = _magnetic_both_conventions(model, u, t)
+        g = float(model.gibbs(u, NUM, t)) - ours_mag + py_mag  # ours, with pycalphad's magnetic convention
+        ideal = float(model.ordered.ideal_at(model.site_fractions(u), NUM))
+        g_j = (g * R_GAS * t + (PYCALPHAD_R - R_GAS) * t * (ideal + py_mag)) / atoms
+        assert g_j == pytest.approx(gm, rel=1e-9, abs=1e-6), fr
+
+
+def test_partitioned_magnetism_vanishes_into_the_parent_when_disordered():
+    """With the properties partitioned, a disordered configuration has the parent's magnetic term exactly."""
+    db = ThermoDatabase.from_tdb(pycalphad_db("Al-Fe_sundman2009.tdb"))
+    model = db.phase_model("BCC_4SL", ("AL", "FE"))
+    parent = model.disordered
+    for x in (0.1, 0.3, 0.6):
+        u = model.variables_from_site_fractions([{"AL": x, "FE": 1 - x}] * 4 + [{"VA": 1.0}])
+        up = parent.variables_from_site_fractions([{"AL": x, "FE": 1 - x}, {"VA": 1.0}])
+        for T in (500.0, 900.0):
+            assert float(model.gibbs(u, NUM, T)) == pytest.approx(model.scale * float(parent.gibbs(up, NUM, T)), rel=1e-12)
