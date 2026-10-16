@@ -104,6 +104,13 @@ class Magnetic:
 
     def term(self, q, T: float, ops, branch=None):
         """G_mag / RT for the quantities ``q`` (see :attr:`quantities`) on backend ``ops``."""
+        if ops.name == "dual":
+            # enclosed over the whole box, unexpanded: the term is small, and a constant is a valid Taylor model
+            from discopt.calphad.ops import INTERVAL, Dual
+
+            n = next((len(x.d) for x in q if isinstance(x, Dual)), None)
+            out = self.term([x.v if isinstance(x, Dual) else x for x in q], T, INTERVAL, branch)
+            return out if n is None else Dual.const(out, n)
         if self.xiong:
             return xiong(self, *q, T, ops, branch)
         return ihj(self, *q, T, ops, branch)

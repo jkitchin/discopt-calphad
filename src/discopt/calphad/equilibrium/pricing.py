@@ -32,7 +32,7 @@ from scipy.optimize import minimize
 from scipy.stats import qmc
 
 from discopt.calphad.equilibrium.common import DOMAIN_FLOOR, inner_bounds, tangent_distance
-from discopt.calphad.ops import EXPR, INTERVAL, NUM, Interval
+from discopt.calphad.ops import DUAL, EXPR, INTERVAL, NUM, Dual, Interval
 
 __all__ = [
     "PricingResult",
@@ -80,8 +80,72 @@ class PricingResult:
         return self.lb is not None and self.lb >= -eps
 
 
+#: a box side at most this wide is kept as an interval in the mean-value form, not expanded about its center
+THIN_SIDE = 1e-6
+
+
+def _taylor_lower(phase, mu, T, box) -> float:
+    """Interval lower bound on Ψ over ``box``: the better of the natural and the mean-value form.
+
+    One pass over a first-order Taylor model (:class:`~discopt.calphad.ops.Dual`)
+    gives both: the natural enclosure of Ψ(box), and
+
+        Ψ(y) ∈ Ψ(c) + Σ_j ∂_jΨ(box) · (y_j − c_j)
+
+    for an expansion point c, by the mean value theorem. The natural form
+    overestimates by O(width), the mean-value form by O(width²), so the latter
+    closes far faster near a minimum. Sides are expanded about their midpoint,
+    except next to the domain's edge: ln y in the entropy's derivative is
+    unbounded there on one side only, and expanding about the far corner keeps
+    the term finite (y_j − c_j has one sign). A minimizer of an ordered phase
+    sits exactly there. Thin sides (a boundary slab's coordinate among them)
+    and sides spanning the whole range stay intervals. A term the backend
+    cannot expand, such as magnetism, enters as its interval over the box.
+    """
+    outer = phase.y_bounds
+    expand = [
+        j for j, ((a, c), (lo, hi)) in enumerate(zip(box, outer)) if c - a > THIN_SIDE and not (a <= lo and c >= hi)
+    ]
+    n = len(expand)
+    point = {}
+    for j in expand:
+        (a, c), (lo, hi) = box[j], outer[j]
+        point[j] = c if a <= lo else a if c >= hi else 0.5 * (a + c)
+    ys = []
+    for j, (a, c) in enumerate(box):
+        if j in point:
+            k = expand.index(j)
+            ys.append(
+                Dual(Interval(a, c), Interval(point[j]), tuple(Interval(1.0) if i == k else None for i in range(n)))
+            )
+        else:
+            ys.append(Dual.const(Interval(a, c), n))
+    psi = tangent_distance(phase, ys, mu, DUAL, T)
+    if not isinstance(psi, Dual):
+        return Interval._coerce(psi).lo
+    acc = psi.c
+    for k, j in enumerate(expand):
+        if psi.d[k] is not None:
+            a, c = box[j]
+            x = point[j]
+            # y − x has an exact sign at a corner; rounding 0 outward would turn 0 · ∞ into −∞
+            if x == a:
+                off = Interval(0.0, math.nextafter(c - a, math.inf))
+            elif x == c:
+                off = Interval(math.nextafter(a - c, -math.inf), 0.0)
+            else:
+                off = Interval(a, c) - x
+            acc = acc + psi.d[k] * off
+    lbs = [v for v in (psi.v.lo, acc.lo) if not math.isnan(v)]
+    return max(lbs) if lbs else -math.inf
+
+
 def _interval_bound_fn(phase, mu, T):
-    """Box -> an interval lower bound on Ψ over the box (+inf if no point of it is in the phase's domain)."""
+    """Box -> an interval lower bound on Ψ over the box (+inf if no point of it is in the phase's domain).
+
+    The bound is the better of the natural interval form and the mean-value
+    form (:func:`_taylor_lower`).
+    """
     domain = getattr(phase, "domain_constraints", lambda y: [])
     equalities = getattr(phase, "domain_equalities", lambda y: [])
 
@@ -91,7 +155,7 @@ def _interval_bound_fn(phase, mu, T):
             return math.inf  # the box lies outside the phase's domain (see CEFPhase.domain_constraints)
         if any(not Interval._coerce(g).lo <= 0 <= Interval._coerce(g).hi for g in equalities(iv)):
             return math.inf  # no point of the box is charge-neutral
-        return tangent_distance(phase, iv, mu, INTERVAL, T).lo
+        return _taylor_lower(phase, mu, T, box)
 
     return bound
 
