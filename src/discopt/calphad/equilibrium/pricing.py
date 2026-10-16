@@ -91,11 +91,14 @@ def boundary_lower_bound(
     outer = phase.y_bounds
 
     domain = getattr(phase, "domain_constraints", lambda y: [])
+    equalities = getattr(phase, "domain_equalities", lambda y: [])
 
     def bound(box):
         iv = [Interval(a, c) for a, c in box]
         if any(Interval._coerce(g).hi < 0 for g in domain(iv)):
             return math.inf  # the box lies outside the phase's domain (see CEFPhase.domain_constraints)
+        if any(not Interval._coerce(g).lo <= 0 <= Interval._coerce(g).hi for g in equalities(iv)):
+            return math.inf  # no point of the box is charge-neutral
         return tangent_distance(phase, iv, mu, INTERVAL, T).lo
 
     lbs = []
@@ -281,7 +284,9 @@ def _pieces(phase, mu, T, box) -> list[_Piece]:
             m.subject_to(g >= 0, name=f"symmetry{i}")
         for i, g in enumerate(getattr(phase, "domain_constraints", lambda y: [])(y)):
             m.subject_to(g >= 0, name=f"domain{i}")
-        x = None
+        for i, g in enumerate(getattr(phase, "domain_equalities", lambda y: [])(y)):
+            m.subject_to(g == 0, name=f"neutral{i}")
+        kw = {}
         if hasattr(phase, "average_expressions"):
             # a partitioned phase: the site averages as variables, so G_dis(x) and G_ord(x) are
             # written in a few variables rather than as polynomials expanded in y
@@ -289,20 +294,32 @@ def _pieces(phase, mu, T, box) -> list[_Piece]:
             for c, e in phase.average_expressions(y).items():
                 x[c] = m.continuous(f"x_{c}", lb=0.0, ub=1.0)
                 m.subject_to(x[c] - e == 0, name=f"average_{c}")
-        return m, y, x
+            kw["x"] = x
+        if hasattr(phase, "ratio_expressions"):
+            # an ionic liquid: the site ratios P and Q as bounded variables, so the entropy terms are
+            # products of a variable and an entropy node rather than of a polynomial and one
+            (p_lo, p_hi), (q_lo, q_hi) = phase.ratio_bounds()
+            p_e, q_e = phase.ratio_expressions(y)
+            P = m.continuous("P", lb=p_lo, ub=p_hi)
+            Q = m.continuous("Q", lb=q_lo, ub=q_hi)
+            m.subject_to(P - p_e == 0, name="ratio_P")
+            m.subject_to(Q - q_e == 0, name="ratio_Q")
+            kw["ratios"] = (P, Q)
+        return m, y, kw
 
-    def objective(y, x, ops):
-        if x is None:
+    def objective(y, kw, ops):
+        if not kw:
             return tangent_distance(phase, y, mu, ops, T)
-        return phase.gibbs(y, ops, T, x=x) - sum(float(m_) * a for m_, a in zip(mu, phase.amounts(y)))
+        return phase.gibbs(y, ops, T, **kw) - sum(float(m_) * a for m_, a in zip(mu, phase.amounts(y)))
 
     if getattr(phase, "magnetic", None) is None:
-        m, y, x = model(f"price_{phase.name}")
-        m.minimize(objective(y, x, EXPR))
+        m, y, kw = model(f"price_{phase.name}")
+        m.minimize(objective(y, kw, EXPR))
         return [_Piece(m)]
     out = []
     for k, (branch, (s_lo, s_hi)) in enumerate(phase.magnetic_pieces(box, T)):
-        m, y, x = model(f"price_{phase.name}_{k}")
+        m, y, kw = model(f"price_{phase.name}_{k}")
+        x = kw.get("x")
         s = m.continuous("s", lb=s_lo, ub=s_hi) if phase.magnetic.tc and s_hi > s_lo else None
         if x is None:
             eqs, ineqs = phase.pricing_constraints(y, T, branch, s)
@@ -312,7 +329,7 @@ def _pieces(phase, mu, T, box) -> list[_Piece]:
             m.subject_to(g == 0, name=f"s_def{i}")
         for i, g in enumerate(ineqs):
             m.subject_to(g >= 0, name=f"branch{i}")
-        m.minimize(objective(y, x, EXPR.with_branch(branch, s)))
+        m.minimize(objective(y, kw, EXPR.with_branch(branch, s)))
         out.append(_Piece(m))
     return out
 
@@ -375,6 +392,12 @@ def price_phase_local(
     else:
         pts = lo + qmc.Halton(d=n, seed=seed).random(n_points) * (hi - lo)
     psi = _psi_many(phase, pts, mu, T)
+    eqs = getattr(phase, "domain_equalities", lambda y: [])
+    constrained = bool(eqs(pts[0]))
+    if constrained:
+        # Box samples are almost never charge-neutral: rank them by Ψ plus a penalty on the charge,
+        # then refine under the equality (SLSQP), and keep only neutral results.
+        psi = psi + 1e3 * np.array([sum(float(g) ** 2 for g in eqs(p)) for p in pts])
 
     starts, spread = [], 0.1 * (hi - lo)
     for i in np.argsort(psi):
@@ -390,10 +413,25 @@ def price_phase_local(
             v = float(tangent_distance(phase, z, mu, NUM, T))
         return v if math.isfinite(v) else 1e300
 
+    def neutral(z):
+        return all(abs(float(g)) < 1e-9 for g in eqs(z))
+
     best_y, best = None, math.inf
     for z0 in starts:
-        r = minimize(f, z0, method="L-BFGS-B", bounds=box)
-        for z in (np.clip(r.x, lo, hi), z0):
+        if constrained:
+            cons = [{"type": "eq", "fun": lambda z, i=i: float(eqs(z)[i])} for i in range(len(eqs(z0)))]
+            cons += [
+                {"type": "ineq", "fun": lambda z, i=i: float(phase.domain_constraints(z)[i])}
+                for i in range(len(getattr(phase, "domain_constraints", lambda y: [])(z0)))
+            ]
+            r = minimize(f, z0, method="SLSQP", bounds=box, constraints=cons, options={"maxiter": 300, "ftol": 1e-12})
+            cands = [np.clip(r.x, lo, hi)]
+        else:
+            r = minimize(f, z0, method="L-BFGS-B", bounds=box)
+            cands = [np.clip(r.x, lo, hi), z0]
+        for z in cands:
+            if constrained and not neutral(z):
+                continue
             v = f(z)
             if v < best:
                 best_y, best = np.array(z, dtype=float), v

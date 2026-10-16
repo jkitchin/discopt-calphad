@@ -377,7 +377,7 @@ building the prototype. The upstream requests are tracked in discopt#1249.
     - DISORDERED_PART with vacancies on a substitutional sublattice, with
       magnetic parameters on the ordered part, or with mismatched interstitial
       sublattices (§9.21);
-    - ionic liquids;
+    - an ionic liquid with more than two sublattices (§9.23);
     - parameter kinds or orders the binary model cannot represent.
 
     `phase_models(elements)` skips such phases silently.

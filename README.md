@@ -29,7 +29,7 @@ the tangent-plane distance Ψ(y) = G(y) − μ·A(y):
   disappearance.
 - **MVP 3:** TDB import and export into a symbolic `ThermoDatabase` (SymPy
   expressions with named functions kept), and binary phase models built from
-  it. Unsupported models (ionic, some order–disorder variants) raise with the reason.
+  it. Unsupported models (the Xiong magnetic model, ordered-part magnetism) raise with the reason.
   Magnetic phases (Inden–Hillert–Jarl, issue #6) are solved and globally
   certified: the magnetic term has interval bounds, and pricing splits a
   magnetic phase into the branches of T_c, β and T/T_c it can reach.

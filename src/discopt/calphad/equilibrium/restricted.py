@@ -290,6 +290,44 @@ def _pin(boxes, ys, floor):
 BRANCH_TOL = 1e-7
 
 
+def _implied_neutrality(sets, b, els, free) -> int | None:
+    """The index of a set whose charge-neutrality row is redundant, or None.
+
+    If every constituent of every set has a fixed valence, q_c = Σ_e v_e n_e(c),
+    for one valence vector v, then each phase's charge is v·A(y). Summed over the
+    sets, the neutrality rows give Σ_k N_k v·A_k = v·b, which the balance rows
+    already fix. With b neutral (v·b = 0), one neutrality row is then redundant,
+    and keeping all of them makes the constraint Jacobian singular. Oxides with
+    fixed valences (Nd³⁺, Zr⁴⁺, O²⁻) are this case.
+    """
+    charged = [
+        k
+        for k, s in enumerate(sets)
+        if free[k] and s.phase.n_y and getattr(s.phase, "domain_equalities", lambda y: [])(s.y)
+    ]
+    if not charged:
+        return None
+    rows, q = [], []
+    for s in sets:
+        stoich = getattr(s.phase, "_stoich", None)
+        if stoich is None:  # a phase of elements only (no species): every element has valence 0 there
+            for e in s.phase.elements:
+                rows.append([float(e == x) for x in els])
+                q.append(0.0)
+            continue
+        for cons in s.phase.constituents:
+            for c in cons:
+                comp, charge = stoich[c]
+                if comp:
+                    rows.append([comp.get(x, 0.0) for x in els])
+                    q.append(charge)
+    A, q = np.array(rows), np.array(q)
+    v, *_ = np.linalg.lstsq(A, q, rcond=None)
+    if np.max(np.abs(A @ v - q)) > 1e-9 or abs(float(v @ np.asarray(b, float))) > 1e-9 * max(1.0, float(np.sum(b))):
+        return None
+    return charged[0]
+
+
 def _solve_once(sets, b, T, boxes, branches, held, n_max, x0, els, options):
     """One local solve of R(S), with each magnetic set in ``held`` kept on its branch.
 
@@ -310,10 +348,17 @@ def _solve_once(sets, b, T, boxes, branches, held, n_max, x0, els, options):
         for i, g in enumerate(sets[k].phase.branch_constraints(Y[k], T, branches[k])):
             if g is not None:
                 m.subject_to(g >= 0, name=f"branch{k}_{i}")
+    # a held set (every y pinned) is feasible as it stands, and its rows would be constants
+    free = [bool(box) and any(lo < hi for lo, hi in box) for box in boxes]
+    implied = _implied_neutrality(sets, b, els, free)
     for k, s in enumerate(sets):
-        if s.phase.n_y:
+        if s.phase.n_y and free[k]:
             for i, g in enumerate(getattr(s.phase, "domain_constraints", lambda y: [])(Y[k])):
                 m.subject_to(g >= 0, name=f"domain{k}_{i}")
+            if k == implied:
+                continue  # implied by the balance rows and the other sets' neutrality
+            for i, g in enumerate(getattr(s.phase, "domain_equalities", lambda y: [])(Y[k])):
+                m.subject_to(g == 0, name=f"neutral{k}_{i}")
 
     r = local_nlp_solve(m, x0, options)
     active = []

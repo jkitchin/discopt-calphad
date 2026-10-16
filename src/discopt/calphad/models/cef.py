@@ -115,12 +115,24 @@ class CEFPhase:
     #: with a vacancy on every sublattice, the fewest atoms a formula unit may hold, as a fraction of
     #: :attr:`atoms_max` (see "Vacancies" in the module docstring)
     min_occupancy: float = 0.5
+    #: constituents that are not elements: ``(name, ((element, amount), ...), charge)`` each
+    species: tuple = ()
     _layout: tuple = field(init=False, repr=False, compare=False)
+    #: constituent -> ({element: amount}, charge), for elements, VA and ``species``
+    _stoich: dict = field(init=False, repr=False, compare=False)
 
     def __post_init__(self):
         if len(self.site_ratios) != len(self.constituents):
             raise ValueError(f"{self.name}: one site ratio per sublattice is required")
-        allowed = set(self.elements) | {VACANCY}
+        stoich = {e: ({e: 1.0}, 0.0) for e in self.elements}
+        stoich[VACANCY] = ({}, 0.0)
+        for name, comp, charge in self.species:
+            comp = dict(comp)
+            if not set(comp) <= set(self.elements):
+                raise ValueError(f"{self.name}: species {name} has elements outside {self.elements}")
+            stoich[name] = (comp, float(charge))
+        object.__setattr__(self, "_stoich", stoich)
+        allowed = set(stoich)
         for s, cons in enumerate(self.constituents):
             if not cons or len(set(cons)) != len(cons) or not set(cons) <= allowed:
                 raise ValueError(f"{self.name}: bad constituents {cons} on sublattice {s}")
@@ -165,15 +177,49 @@ class CEFPhase:
     def y_bounds(self) -> list[tuple[float, float]]:
         return [(0.0, 1.0)] * self.n_y
 
+    def _atoms_of(self, constituent) -> float:
+        return float(sum(self._stoich[constituent][0].values()))
+
+    def _endmember_atoms(self) -> list[float]:
+        """Atoms per formula unit of every endmember. Atoms are linear in y, so these bound them."""
+        per = [[self._atoms_of(c) for c in cons] for cons in self.constituents]
+        out = [0.0]
+        for a, opts in zip(self.site_ratios, per):
+            out = [t + a * n for t in out for n in sorted(set(opts))]
+        return out
+
     @property
     def atoms_max(self) -> float:
-        """Most atoms per formula unit: every sublattice with an element is full."""
-        return float(sum(a for a, cons in zip(self.site_ratios, self.constituents) if cons != (VACANCY,)))
+        """Most atoms per formula unit, over the endmembers."""
+        return max(self._endmember_atoms())
 
     @property
     def vacancy_limited(self) -> bool:
         """True if every sublattice can hold a vacancy, so that a formula unit could be empty."""
         return all(VACANCY in cons for cons in self.constituents)
+
+    @property
+    def charged(self) -> bool:
+        """True if some constituent carries a charge: the phase then needs charge neutrality."""
+        return any(self._stoich[c][1] != 0 for cons in self.constituents for c in cons)
+
+    def charge(self, y):
+        """Σ_s a_s Σ_c q_c y_s,c: the charge per formula unit (0 on the phase's domain if :attr:`charged`)."""
+        Y = self._Y(y)
+        total = 0.0
+        for a, d in zip(self.site_ratios, Y):
+            for c, v in d.items():
+                q = self._stoich[c][1]
+                if q:
+                    total = total + (a * q) * v
+        return total
+
+    def domain_equalities(self, y) -> list:
+        """Expressions in ``y`` that are 0 on the phase's domain: charge neutrality, scaled to order one."""
+        if not self.charged:
+            return []
+        scale = max(abs(self._stoich[c][1]) * a for a, cons in zip(self.site_ratios, self.constituents) for c in cons)
+        return [self.charge(y) * (1.0 / scale)]
 
     @property
     def atoms_min(self) -> float:
@@ -185,7 +231,7 @@ class CEFPhase:
         """
         if self.vacancy_limited:
             return self.min_occupancy * self.atoms_max
-        return float(sum(a for a, cons in zip(self.site_ratios, self.constituents) if VACANCY not in cons))
+        return min(self._endmember_atoms())
 
     def domain_constraints(self, y) -> list:
         """Expressions in ``y`` that are ≥ 0 on the phase's domain, beyond the box.
@@ -354,8 +400,10 @@ class CEFPhase:
         for e in self.elements:
             total = 0.0
             for a, d in zip(self.site_ratios, Y):
-                if e in d:
-                    total = total + a * d[e]
+                for c, v in d.items():
+                    n = self._stoich[c][0].get(e, 0.0)
+                    if n:
+                        total = total + (a * n) * v
             out.append(total)
         return tuple(out)
 
@@ -372,7 +420,7 @@ class CEFPhase:
 
         def xres(u):
             a = np.array([float(v) for v in self.amounts(u)])
-            return a / a.sum() - xb
+            return np.concatenate([a / a.sum() - xb, [float(g) for g in self.domain_equalities(u)]])
 
         if self.n_y == 0:
             return np.empty(0) if np.max(np.abs(xres(np.empty(0)))) < 1e-12 else None

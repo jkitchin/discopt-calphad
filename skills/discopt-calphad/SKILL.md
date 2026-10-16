@@ -33,7 +33,13 @@ Know the limits before you promise a result:
   is certified over formula units at least half occupied (`min_occupancy`,
   stated in `certificate.messages`). Magnetic parameters on the ordered part
   (Sundman's Al–Fe) are not supported yet; for those, `ordering.stand_in`
-  turns the phase into a plain one (see section 1). Ionic liquids cannot be modelled.
+  turns the phase into a plain one (see section 1).
+- **Ionic models:** charged species (SPECIES with a charge, such as `O-2`, and
+  molecules such as `ALO3/2`) are supported. Charged sublattice phases
+  (oxide fluorite, pyrochlore) are held charge-neutral. The two-sublattice
+  ionic liquid (phase hint `Y`) is neutral by its variable site ratios. Pass
+  the elements, for example `("CU", "O")`; species made of them are found
+  automatically.
 - **Magnetism:** Inden–Hillert–Jarl magnetic phases (FCC Ni, BCC Fe, Co)
   certify like any other phase. Global pricing solves one model per magnetic
   branch, so it costs a few times more than for a plain phase. The Xiong model
@@ -439,7 +445,6 @@ fitted_alcu = fit(alcu, result.dataset, ("AL", "CU"), {"G(ALCU_THETA,AL:CU;0)": 
 - **Unsupported models raise with the reason.** `UnsupportedModelError` covers:
   - order–disorder phases with magnetic parameters on the ordered part,
     unless replaced by `ordering.stand_in`;
-  - ionic liquids;
   - the Xiong magnetic model;
   - some high-order CEF interactions.
 
