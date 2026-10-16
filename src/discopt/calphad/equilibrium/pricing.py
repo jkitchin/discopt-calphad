@@ -32,7 +32,7 @@ from scipy.optimize import minimize
 from scipy.stats import qmc
 
 from discopt.calphad.equilibrium.common import DOMAIN_FLOOR, inner_bounds, tangent_distance
-from discopt.calphad.ops import DUAL, EXPR, INTERVAL, NUM, Dual, Interval
+from discopt.calphad.ops import DUAL, EXPR, NUM, Dual, Interval
 
 __all__ = [
     "PricingResult",
