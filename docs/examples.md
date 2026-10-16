@@ -187,3 +187,60 @@ boundary equal to within 5e-5 in x(Cr).
     ```python
     --8<-- "examples/crfe_magnetic.py"
     ```
+
+## Cu–O with the two-sublattice ionic liquid
+
+Schramm, Behr, Löser and Wetzig's assessment (J. Phase Equilib. Diffus. 26
+(2005) 605–612) describes liquid Cu–O as one ionic liquid,
+(Cu⁺, Cu²⁺, Cu³⁺)_P(O²⁻, Va)_Q (Sundman, Calphad 15 (1991) 109). Its site
+ratios follow from charge neutrality, so one phase spans metallic copper
+(Cu⁺:Va) and the oxide melt, with a miscibility gap between them.
+
+The map covers 1100–1700 K and x(O) ≤ 0.6:
+- **Agreement:** at 352 points we find the same state as pycalphad on the same
+  database.
+- **Lower G:** at 18 points our state is lower in G. Both codes compute the same
+  G for every phase, so ours is the better minimum. At 14 of them, pycalphad
+  misses the liquid miscibility gap (✕ in the figure).
+- **Missing state:** at 19 points pycalphad returns no state at all.
+- **One local miss:** at one point we differ without being lower. It's a
+  local-pricing miss of the second liquid near the invariant; global pricing
+  would find it.
+
+The eutectic L → FCC + Cu₂O comes out at 1339.4 K (1066.3 °C). The monotectic
+L₂ → L₁ + Cu₂O is at 1497.1 K, where Cu₂O touches the common tangent of the
+two liquids (x(O) = 0.093 and 0.309). Certification works for the solid
+assemblages: Cu₂O + CuO at 1000 K is `GLOBALLY_CERTIFIED`. With the liquid
+active it ends `GLOBAL_SEARCH_INCOMPLETE`.
+
+![Cu-O](assets/examples/cuo_ionic.png)
+
+??? example "examples/cuo_ionic.py"
+    ```python
+    --8<-- "examples/cuo_ionic.py"
+    ```
+
+## ZrO₂–Nd₂O₃: charged sublattice phases
+
+Fabrichnaya and Seifert's assessment (Calphad 32 (2008) 142–151) describes the
+oxide solid solutions with charged species, held neutral by an equality on
+their site fractions:
+- fluorite, tetragonal and monoclinic ZrO₂ (Nd³⁺, Zr⁴⁺)₂(O²⁻, Va)₄;
+- pyrochlore Nd₂Zr₂O₇;
+- the A, H and X forms of Nd₂O₃;
+- the ionic liquid.
+
+With fixed valences, one neutrality or balance row is redundant, and the
+restricted solve leaves it out.
+
+The section from ZrO₂ to NdO₁.₅ covers 1200–2800 K (425 points). Every point
+solves, and 423 have the same phases and compositions as pycalphad. At the
+other two, a trace of pyrochlore sits next to fluorite. The two states differ by
+0.03–0.04 J/mol, within the gas-constant difference between the codes.
+
+![ZrO2-Nd2O3](assets/examples/zro2_nd2o3.png)
+
+??? example "examples/zro2_nd2o3.py"
+    ```python
+    --8<-- "examples/zro2_nd2o3.py"
+    ```

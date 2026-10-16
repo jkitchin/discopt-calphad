@@ -772,7 +772,9 @@ building the prototype. The upstream requests are tracked in discopt#1249.
       oxide-rich, 46 J/mol lower, with Cu₂O 0.010 RT above the tangent. Both
       codes give the same G for every phase, so this is the better minimum of
       the same model: pycalphad's grid starts missed the liquid miscibility
-      gap. `examples/cuo_ionic.py` maps where this happens.
+      gap. `examples/cuo_ionic.py` maps where this happens: pycalphad misses the gap at
+      14 of 425 points and returns no state at 19. The map also finds the eutectic
+      at 1339.4 K (1066.3 °C) and the monotectic L₂ → L₁ + Cu₂O at 1497.1 K.
     - **Restricted-solve starts.** Starting amounts from a least-squares fit
       can make the solve converge to a worse KKT point. In the oxide section,
       a set that should stay then vanished, and the loop cycled until
