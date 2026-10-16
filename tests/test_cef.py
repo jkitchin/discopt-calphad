@@ -41,8 +41,9 @@ def test_stick_breaking_round_trip_and_amounts():
         a = ph.amounts(u)
         assert a[0] == pytest.approx(fr[0]["A"] + 3 * fr[1]["A"])
         assert a[1] == pytest.approx(fr[0]["B"] + 3 * fr[1]["B"])
-    with pytest.raises(NotImplementedError, match="no atoms"):
-        CEFPhase("V", ("A", "B"), (1.0, 1.0), (("A", "VA"), ("B", "VA")))
+    # a vacancy on every sublattice: restricted to min_occupancy of the most atoms (issue #6)
+    v = CEFPhase("V", ("A", "B"), (1.0, 1.0), (("A", "VA"), ("B", "VA")))
+    assert v.vacancy_limited and v.atoms_max == 2.0 and v.atoms_min == 1.0
 
 
 def _recip_phase():
