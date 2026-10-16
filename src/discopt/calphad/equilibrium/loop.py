@@ -132,6 +132,9 @@ def is_duplicate(sets, phase, y, tol: float) -> bool:
 def _merge_coincident(sets, tol: float) -> list[CompositionSet]:
     """Merge sets of the same phase whose site fractions agree within ``tol``, adding the amounts.
 
+    A disordered set of a partitioned phase is also merged into a set of its
+    parent phase at the same composition.
+
     Sets that need no merge are returned as the same objects, so a caller can
     tell, by identity, which sets were removed.
     """
@@ -143,7 +146,23 @@ def _merge_coincident(sets, tol: float) -> list[CompositionSet]:
         else:
             i = next(i for i, o in enumerate(out) if o is twin)
             out[i] = CompositionSet(twin.phase, twin.y, twin.amount + s.amount)
-    return out
+    # A disordered set of a partitioned phase is its parent phase: same G, same composition. Next to a
+    # set of the parent at the same composition, it is the same state split in two, so it is folded
+    # into the parent's set (amounts converted through atoms per formula unit).
+    merged = list(out)
+    for s in out:
+        parent = getattr(getattr(s.phase, "disordered", None), "name", None)
+        if parent is None or s.phase.degree_of_order(s.y) >= tol:
+            continue
+        j = next(
+            (j for j, o in enumerate(merged) if o.phase.name == parent and float(np.max(np.abs(o.x - s.x))) < tol),
+            None,
+        )
+        if j is not None:
+            o = merged[j]
+            merged[j] = CompositionSet(o.phase, o.y, o.amount + s.amount * s.atoms / o.atoms)
+            merged = [m for m in merged if m is not s]
+    return merged
 
 
 def initial_set(phases, b, T=None) -> CompositionSet:

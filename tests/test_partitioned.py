@@ -217,3 +217,34 @@ def test_alni_gamma_gamma_prime_matches_pycalphad(x, t):
             n = "FCC_A1"
         ref.append((n, round(float(c), 3)))
     assert ours == sorted(ref)
+
+
+def test_disordered_set_merges_into_its_parent():
+    """A disordered FCC_L12 set next to an FCC_A1 set at the same composition is one state."""
+    from discopt.calphad.equilibrium.loop import _merge_coincident
+
+    models = ThermoDatabase.from_tdb(pycalphad_db("alni_dupin_2001.tdb")).phase_models(("AL", "NI"))
+    a1, l12 = models["FCC_A1"], models["FCC_L12"]
+    for sets in (
+        [CompositionSet(l12, np.array([0.1, 0.1]), 0.2), CompositionSet(a1, np.array([0.1]), 0.5)],
+        [CompositionSet(a1, np.array([0.1]), 0.5), CompositionSet(l12, np.array([0.1, 0.1]), 0.2)],
+    ):
+        (merged,) = _merge_coincident(sets, 1e-4)
+        assert merged.phase is a1 and merged.amount == pytest.approx(0.7)  # one atom per formula unit in both
+    ordered = [CompositionSet(a1, np.array([0.1]), 0.5), CompositionSet(l12, np.array([0.0, 0.4]), 0.2)]
+    assert len(_merge_coincident(ordered, 1e-4)) == 2
+
+
+@pytest.mark.slow
+def test_alni_gamma_gamma_prime_is_certified():
+    """γ + γ′ at 1200 K, certified with global pricing of the partitioned FCC_L12 (about 9 minutes)."""
+    from discopt.calphad import CertificateLevel
+
+    models = ThermoDatabase.from_tdb(pycalphad_db("alni_dupin_2001.tdb")).phase_models(("AL", "NI"))
+    res = equilibrium(list(models.values()), x=0.22, T=1200.0, certify="none")
+    cert = res.certify()
+    assert cert.level in (CertificateLevel.GLOBALLY_CERTIFIED, CertificateLevel.CERTIFIED_TO_TOLERANCE)
+    assert sorted((_label(cs), round(float(cs.x[0]), 3)) for cs in res.composition_sets) == [
+        ("FCC_A1", 0.147),
+        ("FCC_L12", 0.23),
+    ]

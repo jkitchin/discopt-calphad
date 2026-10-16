@@ -123,10 +123,11 @@ other phase takes seconds.
 
 ## Ni–Al with stand-ins for its order–disorder phases
 
-Dupin's Al–Ni assessment describes γ′ (L1₂) and β (B2) as partitioned phases,
-which the solver cannot model yet. `ordering.stand_in` rewrites each as a plain
-phase; both are exact (pycalphad agrees to 1e-10 J/mol), with magnetism and B2
-vacancies dropped. The diagram matches pycalphad's full model to within 0.001
+Dupin's Al–Ni assessment describes γ′ (L1₂) and β (B2) as partitioned phases.
+γ′ is modeled natively. β has vacancies on its substitutional sublattices,
+which the native model does not support yet, so `ordering.stand_in` rewrites it
+as a plain phase. The stand-in is exact (pycalphad agrees to 1e-10 J/mol),
+with magnetism and B2 vacancies dropped. The diagram matches pycalphad's full model to within 0.001
 in x except on the Al-rich side of β (up to 0.046), where the dropped vacancies
 matter.
 
