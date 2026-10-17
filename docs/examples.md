@@ -110,7 +110,7 @@ holds constitutional vacancies on both sublattices. It is modeled over formula
 units at least half occupied (`min_occupancy`), because the model has no
 global minimum below that.
 
-The diagram covers 900–1700 K and 49 compositions (441 points, 4 failed). Every
+The diagram covers 900–1700 K and 49 compositions (441 points, none failed). Every
 two-phase region is the same as pycalphad's on the same database, with
 boundaries equal to five decimals, including Al-rich β + Al₃Ni₂. At 1200 K, β's
 vacancy fraction rises from 2e-4 to 9e-2 across its range, x(Al) = 0.38 to 0.55.
