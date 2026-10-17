@@ -36,7 +36,7 @@ Reference: N. Dupin, I. Ansara and B. Sundman, *Thermodynamic re-assessment of
 the ternary system Al–Cr–Ni*, Calphad 25 (2001) 279–298 (registry name
 ``alni_dupin``).
 
-Run with ``uv run python examples/alni_order_disorder.py``. It takes about 30
+Run with ``uv run python examples/alni_order_disorder.py``. It takes 15 to 30
 minutes and writes examples/alni_order_disorder.png.
 """
 
