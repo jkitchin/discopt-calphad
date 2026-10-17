@@ -2,6 +2,8 @@
 
 Each example is a script in `examples/`. Run it from the repository root with
 `uv run python examples/<name>.py`; the figures shown here are its stored output.
+For a guided tour of each feature, with literature comparisons, see the
+[notebooks](notebooks.md).
 
 ## Regular solution with a miscibility gap
 
@@ -40,8 +42,9 @@ A published assessment read from TDB into a symbolic `ThermoDatabase` (MVP 3).
 
 ## Cu–Mg with a compound-energy-formalism Laves phase
 
-CU2MG as a two-sublattice `CEFPhase` (MVP 4). With CU2MG active, the certificate
-is currently `GLOBAL_SEARCH_INCOMPLETE`; see the architecture notes.
+CU2MG as a two-sublattice `CEFPhase` (MVP 4). All three states are
+`CERTIFIED_TO_TOLERANCE`, including the two with CU2MG active (§9.22 of the
+architecture notes: the mean-value form of the interval bounds).
 
 ![Cu-Mg CEF](assets/examples/cumg_cef.png)
 
@@ -107,17 +110,18 @@ holds constitutional vacancies on both sublattices. It is modeled over formula
 units at least half occupied (`min_occupancy`), because the model has no
 global minimum below that.
 
-The diagram covers 900–1700 K and 49 compositions (441 points, 4 failed). Every
+The diagram covers 900–1700 K and 49 compositions (441 points, none failed). Every
 two-phase region is the same as pycalphad's on the same database, with
 boundaries equal to five decimals, including Al-rich β + Al₃Ni₂. At 1200 K, β's
 vacancy fraction rises from 2e-4 to 9e-2 across its range, x(Al) = 0.38 to 0.55.
 
 Global certification:
-- γ + γ′ at 1200 K and γ′ at 1000 K are certified (`CERTIFIED_TO_TOLERANCE`).
-  Bounding the active FCC_L12 takes about 500 s.
+- γ + γ′ at 1200 K is certified (`CERTIFIED_TO_TOLERANCE`) in about 16 s,
+  BCC_B2 included.
 - With β active, certification does not close in the time limit
-  (`GLOBAL_SEARCH_INCOMPLETE`). The bound of the four-variable B2 stalls near
-  −3 after 600 s.
+  (`GLOBAL_SEARCH_INCOMPLETE`): the bound of B2 reaches −1.4e-4 (β + γ′) and
+  −0.22 (β + Al₃Ni₂) against ε = 1e-5. β's minimizer sits on a corner of the
+  site-fraction box; see §9.22.
 
 ![Al-Ni order-disorder](assets/examples/alni_order_disorder.png)
 
@@ -225,10 +229,11 @@ ratios follow from charge neutrality, so one phase spans metallic copper
 The map covers 1100–1700 K and x(O) ≤ 0.6:
 - **Agreement:** at 352 points we find the same state as pycalphad on the same
   database.
-- **Lower G:** at 18 points our state is lower in G. Both codes compute the same
-  G for every phase, so ours is the better minimum. At 14 of them, pycalphad
+- **Lower G:** at 19 points our state is lower in G. Both codes compute the same
+  G for every phase, so ours is the better minimum. At 15 of them, pycalphad
   misses the liquid miscibility gap (✕ in the figure).
-- **Missing state:** at 19 points pycalphad returns no state at all.
+- **Missing state:** at 18 points pycalphad returns no state at all. (Its
+  sampling varies a little between runs.)
 - **One local miss:** at one point we differ without being lower. It's a
   local-pricing miss of the second liquid near the invariant; global pricing
   would find it.

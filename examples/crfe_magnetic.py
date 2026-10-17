@@ -31,7 +31,7 @@ References
   and M. Jarl, *A model for alloying effects in ferromagnetic metals*, Calphad 2
   (1978) 227–238.
 
-Run with ``uv run python examples/crfe_magnetic.py``. It takes about 9 minutes
+Run with ``uv run python examples/crfe_magnetic.py``. It takes about 4 minutes
 and writes examples/crfe_magnetic.png.
 """
 

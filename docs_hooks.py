@@ -1,4 +1,4 @@
-"""MkDocs hook: copy the logo and the stored example figures into the docs tree.
+"""MkDocs hook: copy the logo, the stored example figures and the notebooks into the docs tree.
 
 MkDocs only serves files under ``docs/``, but the logo lives in ``images/`` and
 the example figures beside their scripts in ``examples/``. Files are copied only
@@ -21,3 +21,5 @@ def on_pre_build(config, **kwargs):
     _sync(ROOT / "images" / "logo.png", ROOT / "docs" / "assets" / "logo.png")
     for png in sorted((ROOT / "examples").glob("*.png")):
         _sync(png, ROOT / "docs" / "assets" / "examples" / png.name)
+    for nb in sorted((ROOT / "notebooks").glob("*.ipynb")):
+        _sync(nb, ROOT / "docs" / "notebooks" / nb.name)

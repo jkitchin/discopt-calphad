@@ -38,9 +38,13 @@ dev = [
     "spglib>=2.0",
     "icet>=3.1,<5",
     "discopt-doe>=0.4",
+    "nbformat>=5.11.1",
+    "nbclient>=0.11.0",
+    "ipykernel>=7.4.0",
 ]
 docs = [
     "mkdocs>=1.6,<2",  # MkDocs 2 drops the plugin system that Material and mkdocstrings use
+    "mkdocs-jupyter>=0.26.3",
     "mkdocs-material>=9.7",
     "mkdocstrings[python]>=0.29",
 ]
@@ -48,7 +52,7 @@ docs = [
 [tool.ruff]
 line-length = 120
 target-version = "py312"
-extend-exclude = ["docs_hooks.py"]
+extend-exclude = ["docs_hooks.py", "notebooks/*.ipynb"]  # built from notebooks/src
 
 [tool.ruff.format]
 exclude = ["*.md"]  # code blocks in the docs are written by hand (and hold snippet directives)
@@ -63,6 +67,7 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "benchmarks/*" = ["E402"]
 "examples/*" = ["E402"]
+"notebooks/*" = ["E402"]
 
 [tool.pytest.ini_options]
 markers = ["slow: long-running solves (deselect with '-m \"not slow\"')"]

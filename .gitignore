@@ -18,6 +18,8 @@ _build/
 site/
 docs/assets/logo.png
 docs/assets/examples/
+docs/notebooks/
+.cache/
 
 # OS
 .DS_Store

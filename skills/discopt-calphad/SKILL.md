@@ -44,10 +44,11 @@ Know the limits before you promise a result:
 - **Magnetism:** Inden–Hillert–Jarl magnetic phases (FCC Ni, BCC Fe, Co)
   certify like any other phase. Global pricing solves one model per magnetic
   branch, so it costs a few times more than for a plain phase. The Xiong
-  model (AFM factor 0, with NT) is supported too. Certifying an equilibrium in
-  which a multi-sublattice ordered phase or an ionic liquid is *active* is
-  slow (γ′: minutes) or ends `GLOBAL_SEARCH_INCOMPLETE` (β, ionic liquid,
-  pyrochlore); report the certificate level as it is.
+  model (AFM factor 0, with NT) is supported too, and so are the Einstein
+  (THETA) and two-state (GD) terms. Active two-sublattice phases (CU2MG, γ′)
+  certify in seconds. An equilibrium in which a nearly perfectly ordered β,
+  an ionic liquid or pyrochlore is *active* ends `GLOBAL_SEARCH_INCOMPLETE`;
+  report the certificate level as it is.
 - **Calculators:** a calculator (MLIP, EAM, EMT) gives data for a fit, never a
   phase model. For a phase diagram from one, follow
   [reference/mlip-phase-diagram.md](reference/mlip-phase-diagram.md).

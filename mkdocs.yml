@@ -29,6 +29,14 @@ theme:
 
 nav:
   - Home: index.md
+  - Notebooks:
+      - Overview: notebooks.md
+      - Certified equilibrium: notebooks/01_certified_equilibrium.ipynb
+      - Magnetic ordering: notebooks/02_magnetic.ipynb
+      - Order–disorder: notebooks/03_order_disorder.ipynb
+      - Ionic models: notebooks/04_ionic.ipynb
+      - Einstein and two-state terms: notebooks/05_third_generation.ipynb
+      - Fitting to data: notebooks/06_fitting.ipynb
   - Examples: examples.md
   - Databases: databases.md
   - Data from ASE calculators: mlip.md
@@ -39,7 +47,7 @@ nav:
       - discopt feature requests: discopt-feature-requests.md
   - API reference: api.md
 
-# logo and example figures are copied into docs/assets/ at build time (see the hook)
+# the logo, example figures and notebooks are copied into docs/ at build time (see the hook)
 hooks:
   - docs_hooks.py
 
@@ -48,6 +56,12 @@ exclude_docs: |
 
 plugins:
   - search
+  - mkdocs-jupyter:
+      # only notebooks: pages are checked against `ignore` first, and otherwise read through jupytext/pandoc
+      include: ["*.ipynb"]
+      ignore: ["*.md", "*.py"]
+      execute: false  # the notebooks are stored with their outputs (notebooks/build.py runs them)
+      include_source: true
   - mkdocstrings:
       handlers:
         python:

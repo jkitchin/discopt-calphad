@@ -227,10 +227,11 @@ def test_staged_pricing_certifies_a_clearly_unstable_phase(monkeypatch):
     r = price_phase(_recip_phase(), np.array([-2.0, -1.5]), T=700.0, eps=1e-5)
     assert r.certified(1e-5) and r.bound_source == "interval"
     assert r.ub == pytest.approx(2.7433, abs=1e-3)
-    # without it, a full gap closure takes minutes, but LB ≥ −eps is certified in the first discopt stage
+    # without it, LB ≥ −eps is certified in the first discopt stage: from the node callback, or, on a
+    # fast machine, because the tree closes within that stage
     monkeypatch.setattr(pricing, "INTERVAL_MAX_VARS", 0)
     r = price_phase(_recip_phase(), np.array([-2.0, -1.5]), T=700.0, eps=1e-5)
-    assert r.certified(1e-5) and r.bound_source == "callback" and r.stages == 1
+    assert r.certified(1e-5) and r.bound_source in ("callback", "tree") and r.stages == 1
     assert r.ub == pytest.approx(2.7433, abs=1e-3)
 
 
