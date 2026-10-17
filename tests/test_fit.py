@@ -296,8 +296,29 @@ def test_fit_through_a_magnetic_reference_and_a_magnetic_phase(alni):
     assert res.parameters["G(AL3NI1,AL:NI;0).a"] == pytest.approx(-48483.73, abs=1e-3)
     assert res.parameters["L(FCC_A1,AL,NI:VA;0).a"] == pytest.approx(-162407.75, abs=1e-3)
     assert res.parameters["L(FCC_A1,AL,NI:VA;1).a"] == pytest.approx(73417.798, abs=1e-3)
-    with pytest.raises(NotImplementedError, match="TC and BMAGN cannot be fitted"):
-        fit(alni, ds, ALNI, {"TC(FCC_A1,NI:VA;0)": "a"})
+
+
+def test_fit_frees_curie_temperature_and_moment(alni):
+    """TC and BMAGN of FCC Ni are recovered from C_p across the Curie temperature (issue #6).
+
+    G is not linear in them, so their rows are linearized at the current θ and
+    the fit iterates (Gauss–Newton); it starts 33 K and 0.1 μB away. The fit is
+    local: C_p jumps at T_C, so from far away (120 K) it settles in another
+    minimum, and a starting value near the measured λ peak is needed.
+    """
+    from discopt.calphad.fit import _LinearModel
+
+    fcc = _LinearModel(alni, ALNI, []).phase("FCC_A1")
+    x = 1e-3  # nearly pure Ni; the fit does not take a composition on the edge
+    ds = Dataset()
+    for t in (450.0, 550.0, 600.0, 620.0, 640.0, 660.0, 700.0, 800.0):
+        ds.add_thermo("CPM", "FCC_A1", t, x, fcc.thermo("CPM", x, t)[0], 0.05)
+    for t in (500.0, 900.0):
+        ds.add_thermo("HM", "FCC_A1", t, x, fcc.thermo("HM", x, t)[0], 5.0)
+    free = {"TC(FCC_A1,NI:VA;0)": "a", "BMAGN(FCC_A1,NI:VA;0)": "a"}
+    res = fit(alni, ds, ALNI, free, initial={"TC(FCC_A1,NI:VA;0).a": 600.0, "BMAGN(FCC_A1,NI:VA;0).a": 0.42})
+    assert res.parameters["TC(FCC_A1,NI:VA;0).a"] == pytest.approx(633.0, abs=0.5)
+    assert res.parameters["BMAGN(FCC_A1,NI:VA;0).a"] == pytest.approx(0.52, abs=5e-3)
 
 
 def test_predict_and_enthalpy_form():

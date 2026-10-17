@@ -41,8 +41,9 @@ def test_stick_breaking_round_trip_and_amounts():
         a = ph.amounts(u)
         assert a[0] == pytest.approx(fr[0]["A"] + 3 * fr[1]["A"])
         assert a[1] == pytest.approx(fr[0]["B"] + 3 * fr[1]["B"])
-    with pytest.raises(NotImplementedError, match="no atoms"):
-        CEFPhase("V", ("A", "B"), (1.0, 1.0), (("A", "VA"), ("B", "VA")))
+    # a vacancy on every sublattice: restricted to min_occupancy of the most atoms (issue #6)
+    v = CEFPhase("V", ("A", "B"), (1.0, 1.0), (("A", "VA"), ("B", "VA")))
+    assert v.vacancy_limited and v.atoms_max == 2.0 and v.atoms_min == 1.0
 
 
 def _recip_phase():
@@ -217,8 +218,17 @@ def test_pricing_cef_phase_bound_is_valid(cumg):
     assert r.stages == 1
 
 
-def test_staged_pricing_certifies_a_clearly_unstable_phase():
-    # min Ψ ≈ 2.743 here: a full gap closure takes minutes, but LB ≥ −eps is certified in the first stage
+def test_staged_pricing_certifies_a_clearly_unstable_phase(monkeypatch):
+    import importlib
+
+    pricing = importlib.import_module("discopt.calphad.equilibrium.pricing")
+
+    # min Ψ ≈ 2.743: interval branch and bound (run first for a phase this small) decides it alone
+    r = price_phase(_recip_phase(), np.array([-2.0, -1.5]), T=700.0, eps=1e-5)
+    assert r.certified(1e-5) and r.bound_source == "interval"
+    assert r.ub == pytest.approx(2.7433, abs=1e-3)
+    # without it, a full gap closure takes minutes, but LB ≥ −eps is certified in the first discopt stage
+    monkeypatch.setattr(pricing, "INTERVAL_MAX_VARS", 0)
     r = price_phase(_recip_phase(), np.array([-2.0, -1.5]), T=700.0, eps=1e-5)
     assert r.certified(1e-5) and r.bound_source == "callback" and r.stages == 1
     assert r.ub == pytest.approx(2.7433, abs=1e-3)

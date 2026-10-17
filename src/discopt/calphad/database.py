@@ -17,24 +17,30 @@ Supported phase structures, for any system of two or more elements:
   becomes a :class:`~discopt.calphad.models.cef.CEFPhase`, one term per parameter.
 
 A phase whose type code has a ``MAGNETIC`` TYPE_DEFINITION, and that has
-TC/BMAGN parameters, always becomes a :class:`CEFPhase` with the
-Inden–Hillert–Jarl term (see :mod:`discopt.calphad.models.magnetic`).
+TC/BMAGN parameters, always becomes a :class:`CEFPhase` with its magnetic term
+(Inden–Hillert–Jarl or Xiong; see :mod:`discopt.calphad.models.magnetic`), and so
+does a phase with Einstein (THETA) or two-state (GD) parameters (see
+:mod:`discopt.calphad.models.lattice`). Order–disorder descriptions become a
+:class:`PartitionedPhase`, and ``:Y`` ionic liquids an :class:`IonicLiquidPhase`.
 
-Everything else raises :class:`UnsupportedModelError` with the reason: the
-Xiong magnetic model, order–disorder descriptions, ionic phases, other parameter
-kinds, or CEF structures pycalphad also rejects.
+Everything else raises :class:`UnsupportedModelError` with the reason: other
+parameter kinds, or CEF structures pycalphad also rejects.
 """
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass, field
 from itertools import product
 from pathlib import Path
 
 import sympy as sp
 
+from discopt.calphad.equilibrium.common import R_GAS
 from discopt.calphad.models.cef import CEFPhase, CEFTerm
+from discopt.calphad.models.ionic import IonicLiquidPhase
 from discopt.calphad.models.magnetic import Magnetic
+from discopt.calphad.models.partitioned import PartitionedPhase
 from discopt.calphad.models.solution import BinarySolution
 from discopt.calphad.models.stoichiometric import StoichiometricPhase
 from discopt.calphad.symbolic import P, PiecewiseT, T, function_ref, function_refs
@@ -52,7 +58,45 @@ __all__ = [
 
 
 #: parameter kinds of the magnetic contribution; ``BM`` is the TDB abbreviation of ``BMAGN``
-MAGNETIC_KINDS = ("TC", "BMAGN", "BM")
+MAGNETIC_KINDS = ("TC", "BMAGN", "BM", "NT")
+#: Einstein (ln θ_E) and two-state (ΔG_d) parameters; see :mod:`discopt.calphad.models.lattice`
+LATTICE_KINDS = ("THETA", "GD")
+
+
+#: sublattice symmetry implied by the phase options F and B of a 4-sublattice ordered phase, as in
+#: pycalphad: F permutes all four sublattices; B permutes within {0, 1} and within {2, 3}, and swaps the pairs
+SUBLATTICE_SYMMETRY = {"F": ((0, 1, 2, 3),), "B": ((0, 1), (2, 3))}
+
+
+def _symmetric_group(array, symmetry) -> set:
+    """Every constituent array equivalent to ``array`` under ``symmetry`` (pycalphad's ``generate_symmetric_group``)."""
+    from itertools import chain, permutations
+
+    n = len(array)
+    seen = sorted(i for cls in symmetry for i in cls)
+    out = set()
+    for inner in product(*(permutations(cls) for cls in symmetry)):
+        for outer in permutations(inner):
+            order = list(chain.from_iterable(outer))
+            new = list(array)
+            for dst, src in zip(seen, order):
+                new[dst] = array[src]
+            out.add(tuple(new[i] for i in range(n)))
+    return out
+
+
+def _symmetric_expansion(params, hints) -> list:
+    """``params`` plus, for each, its other symmetry images (the F and B phase options)."""
+    sym = [SUBLATTICE_SYMMETRY[h] for h in hints if h in SUBLATTICE_SYMMETRY]
+    if not sym:
+        return list(params)
+    out = list(params)
+    for p in params:
+        if len(p.constituents) <= max(max(c) for c in sym[0]):
+            continue
+        for arr in _symmetric_group(p.constituents, sym[0]) - {p.constituents}:
+            out.append(dataclasses.replace(p, constituents=arr))
+    return out
 
 
 class UnsupportedModelError(NotImplementedError):
@@ -74,8 +118,32 @@ class Element:
 
 @dataclass(frozen=True)
 class Species:
+    """A SPECIES: ``formula`` as written, e.g. ``CU1/+1``, ``O1/-2``, ``AL1O1.5``."""
+
     name: str
     formula: str
+
+    def composition(self, elements) -> tuple[dict[str, float], float]:
+        """``({element: amount}, charge)``, reading the formula against the known ``elements``.
+
+        Element symbols are matched longest first, so ``CU1O1`` is Cu and O,
+        not C, U and O. A missing count means 1.
+        """
+        body, _, charge = self.formula.upper().partition("/")
+        known = sorted({e.upper() for e in elements} - {"VA", "/-"}, key=len, reverse=True)
+        comp: dict[str, float] = {}
+        i = 0
+        while i < len(body):
+            sym = next((e for e in known if body.startswith(e, i)), None)
+            if sym is None:
+                raise ValueError(f"SPECIES {self.name}: cannot read {self.formula!r} at {body[i:]!r}")
+            i += len(sym)
+            j = i
+            while j < len(body) and (body[j].isdigit() or body[j] == "."):
+                j += 1
+            comp[sym] = comp.get(sym, 0.0) + (float(body[i:j]) if j > i else 1.0)
+            i = j
+        return comp, (float(charge) if charge else 0.0)
 
 
 @dataclass
@@ -150,6 +218,9 @@ class ThermoDatabase:
     extrapolate: bool = False
     #: pressure (Pa) at which pressure-dependent expressions are evaluated
     pressure: float = 101325.0
+    #: for a phase with a vacancy on every sublattice, the fewest atoms per formula unit, as a fraction of
+    #: the most (see :class:`~discopt.calphad.models.cef.CEFPhase`)
+    min_occupancy: float = 0.5
 
     def __post_init__(self):
         self._cache: dict = {}
@@ -200,6 +271,8 @@ class ThermoDatabase:
             if name in stack:
                 raise ValueError(f"recursive FUNCTION definition: {' -> '.join((*stack, name))}")
             if name not in self.functions:
+                if name == "R":  # the gas constant, as pycalphad and Thermo-Calc read an undefined R
+                    return R_GAS
                 raise KeyError(f"FUNCTION {name} is not defined" + (f" (used by {stack[-1]})" if stack else ""))
             pw, stack, key = self.functions[name], (*stack, name), (name, t, ext, self.pressure)
         else:
@@ -266,7 +339,7 @@ class ThermoDatabase:
         ph = self.phases[key]
         if ph.constituents is None:
             raise ValueError(f"PHASE {key} has no CONSTITUENT command")
-        allowed = set(elements) | {"VA"}
+        allowed = self._allowed(elements)
         subl = [tuple(sorted(c for c in s if c in allowed)) for s in ph.constituents]
         if any(not s for s in subl) or all(s == ("VA",) for s in subl):
             raise PhaseNotApplicable(f"{key}: no constituent set within {'-'.join(elements)}")
@@ -274,21 +347,27 @@ class ThermoDatabase:
         params = [
             p for p in self.phase_parameters(key) if all(c == "*" or c in allowed for s in p.constituents for c in s)
         ]
+        if "Y" in ph.hints:
+            return self._ionic_liquid(key, ph, subl, params, elements)
         for p in params:
             if len(p.constituents) != len(subl):
                 raise ValueError(f"{p.label}: {len(p.constituents)} sublattices, but {key} has {len(subl)}")
-        kinds = {p.kind for p in params} - {"G"} - set(MAGNETIC_KINDS)
+        kinds = {p.kind for p in params} - {"G"} - set(MAGNETIC_KINDS) - set(LATTICE_KINDS)
         if kinds:
             raise UnsupportedModelError(f"{key}: parameter kinds {sorted(kinds)} are not supported yet")
-        if any("DIS_PART" in a or "DISORDERED_PART" in a for a in self.amendments(key)):
-            raise UnsupportedModelError(f"{key}: order-disorder (DISORDERED_PART) models are not supported yet")
-        if "I" in ph.hints:
-            raise UnsupportedModelError(f"{key}: ionic liquid models are not supported yet")
+        part = self.disordered_part(key)
+        if part is not None:
+            return self._partitioned_phase(key, ph, elements, *part)
         magnetic = self._magnetic(key, ph, [p for p in params if p.kind in MAGNETIC_KINDS])
+        lattice = {k: tuple(self._terms([p for p in params if p.kind == k])) for k in LATTICE_KINDS}
         params = [p for p in params if p.kind == "G"]
 
         mixing = [i for i, s in enumerate(subl) if len(s) > 1]
+        charged = any(self._stoich(c, elements)[1] for s in subl for c in s)
+        plain = all(c in elements or c == "VA" for s in subl for c in s)
         for arr in product(*subl):
+            if charged:
+                break  # a charged endmember is a reference, not a state; a missing one is 0, as in pycalphad
             if not any(p.order == 0 and p.matches(tuple((c,) for c in arr)) for p in params):
                 # Not applicable, rather than a malformed database. A multicomponent
                 # file declares phases parameterized only for the subsystems they
@@ -299,9 +378,9 @@ class ThermoDatabase:
                 # ValueError, had already reported the phase unusable. An explicit
                 # `phases=` list still raises, so asking for one by name still fails.
                 raise PhaseNotApplicable(f"{key}: no G parameter for endmember {':'.join(arr)}")
-        if magnetic is not None:
-            return self._cef_phase(key, ph, subl, params, elements, magnetic)
-        if len(elements) == 2 and len(mixing) == 1 and "VA" not in subl[mixing[0]]:
+        if magnetic is not None or any(lattice.values()):
+            return self._cef_phase(key, ph, subl, params, elements, magnetic, lattice)
+        if plain and len(elements) == 2 and len(mixing) == 1 and "VA" not in subl[mixing[0]]:
             model = self._binary_solution(key, ph, subl, params, elements, mixing[0])
             if model is not None:
                 return model
@@ -309,13 +388,150 @@ class ThermoDatabase:
             return self._cef_phase(key, ph, subl, params, elements)
 
         fixed = [0.0] * len(elements)
+        charge = 0.0
         for i, s in enumerate(subl):
-            if s[0] != "VA":
-                fixed[elements.index(s[0])] += ph.site_ratios[i]
+            comp, q = self._stoich(s[0], elements)
+            charge += ph.site_ratios[i] * q
+            for e, n in comp.items():
+                fixed[elements.index(e)] += ph.site_ratios[i] * n
+        if abs(charge) > 1e-9:
+            raise PhaseNotApplicable(f"{key}: its only configuration has charge {charge:g}")
         unused = [p.label for p in params if not all(len(c) == 1 for c in p.constituents)]
         if unused:
             raise UnsupportedModelError(f"{key}: interaction parameters on a phase without mixing: {unused}")
         return StoichiometricPhase(key, elements, tuple(fixed), g=DatabaseValue(self, tuple((1.0, p) for p in params)))
+
+    def _stoich(self, constituent: str, elements) -> tuple[dict[str, float], float]:
+        """``({element: amount}, charge)`` of a constituent: an element, VA or a SPECIES."""
+        if constituent == "VA":
+            return {}, 0.0
+        if constituent in self.elements or constituent in elements:
+            return {constituent: 1.0}, 0.0
+        if constituent not in self.species:
+            raise ValueError(f"constituent {constituent} is neither an element nor a SPECIES")
+        return self.species[constituent].composition(self.elements)
+
+    def _allowed(self, elements) -> set[str]:
+        """Constituents possible in the system ``elements``: its elements, VA, and species made of them."""
+        out = set(elements) | {"VA"}
+        for name in self.species:
+            try:
+                comp, _ = self.species[name].composition(self.elements)
+            except ValueError:
+                continue
+            if comp and set(comp) <= set(elements):
+                out.add(name)
+        return out
+
+    def _species_of(self, subl, elements) -> tuple:
+        """The ``species`` argument of a CEF phase: every constituent that is not an element or VA."""
+        out = []
+        for c in sorted({c for s in subl for c in s} - set(elements) - {"VA"}):
+            comp, q = self._stoich(c, elements)
+            out.append((c, tuple(sorted(comp.items())), q))
+        return tuple(out)
+
+    def _ionic_liquid(self, key, ph, subl, params, elements) -> IonicLiquidPhase:
+        """The two-sublattice ionic liquid ``key`` (see :mod:`discopt.calphad.models.ionic`)."""
+        if len(subl) != 2:
+            raise UnsupportedModelError(f"{key}: an ionic liquid needs exactly two sublattices")
+        kinds = {p.kind for p in params} - {"G"}
+        if kinds:
+            raise UnsupportedModelError(f"{key}: parameter kinds {sorted(kinds)} in an ionic liquid")
+        fixed = []
+        for p in params:
+            if len(p.constituents) == 1:  # a neutral-only parameter written on the second sublattice
+                p = dataclasses.replace(p, constituents=(("*",), p.constituents[0]))
+            if len(p.constituents) != 2:
+                raise ValueError(f"{p.label}: {len(p.constituents)} sublattices, but {key} has 2")
+            fixed.append(p)
+        terms = [CEFTerm(p.constituents, p.order, DatabaseValue(self, ((1.0, p),))) for p in fixed]
+        try:
+            return IonicLiquidPhase(
+                key,
+                elements,
+                (1.0, 1.0),
+                tuple(subl),
+                tuple(terms),
+                None,
+                self.min_occupancy,
+                self._species_of(subl, elements),
+            )
+        except NotImplementedError as err:
+            raise UnsupportedModelError(str(err)) from err
+        except ValueError as err:
+            raise PhaseNotApplicable(f"{key}: {err}") from err
+
+    def disordered_part(self, phase: str) -> tuple[str, bool] | None:
+        """``(disordered phase, never_disorder)`` from a DISORDERED_PART or NEVER_DISORDER amendment, or None.
+
+        As in pycalphad, the amendment applies to the phase named on the line,
+        and keywords may be abbreviated per underscore-separated part
+        (``DIS_PART``, ``NEVER_DIS``).
+        """
+        for a in self.amendments(phase):
+            toks = a.replace(",", " ").split()
+            if len(toks) < 2:
+                continue
+            for word, never in (("DISORDERED_PART", False), ("NEVER_DISORDER", True)):
+                parts, full = toks[0].split("_"), word.split("_")
+                if len(parts) == len(full) and all(f.startswith(q) and q for q, f in zip(parts, full)):
+                    return toks[1].upper(), never
+        return None
+
+    def _partitioned_phase(self, key, ph, elements, dis_key, never) -> PartitionedPhase:
+        """The ordered phase ``key`` with disordered part ``dis_key`` (see :mod:`discopt.calphad.models.partitioned`).
+
+        Follows pycalphad: the ordered sublattices other than the interstitial
+        one are extended to the disordered part's substitutional constituents,
+        those with exactly these constituents order, and parameters missing from
+        the ordered part are zero (its endmember G are ordering energies).
+        """
+        if dis_key not in self.phases:
+            raise ValueError(f"{key}: disordered part {dis_key} is not defined")
+        dph = self.phases[dis_key]
+        allowed = self._allowed(elements)
+        dsub = [tuple(sorted(c for c in s if c in allowed)) for s in dph.constituents]
+        if any(not s for s in dsub):
+            raise PhaseNotApplicable(f"{key}: its disordered part {dis_key} has an empty sublattice")
+        inter = set(dsub[1]) if len(dsub) == 2 else None
+        if len(dsub) > 2:
+            raise UnsupportedModelError(f"{key}: a disordered part with more than one interstitial sublattice")
+        subl = []
+        for s in ph.constituents:
+            c = {x for x in s if x in allowed}
+            if inter is None or c != inter:
+                c |= set(dsub[0])
+            subl.append(tuple(sorted(c)))
+        subst = tuple(i for i, c in enumerate(subl) if c == dsub[0])
+
+        def params_of(name, cons):
+            return [
+                p
+                for p in self.phase_parameters(name)
+                if len(p.constituents) == len(cons) and all(c == "*" or c in allowed for s in p.constituents for c in s)
+            ]
+
+        dparams = params_of(dis_key, dsub)
+        for arr in product(*dsub):
+            if not any(p.order == 0 and p.kind == "G" and p.matches(tuple((c,) for c in arr)) for p in dparams):
+                raise PhaseNotApplicable(f"{key}: no G parameter for endmember {':'.join(arr)} of {dis_key}")
+        oparams = _symmetric_expansion(params_of(key, subl), ph.hints)
+        kinds = {p.kind for p in oparams + dparams} - {"G"} - set(MAGNETIC_KINDS)
+        if kinds:
+            raise UnsupportedModelError(f"{key}: parameter kinds {sorted(kinds)} are not supported yet")
+        omag = self._magnetic(key, ph, [p for p in oparams if p.kind in MAGNETIC_KINDS])
+        dmag = self._magnetic(dis_key, dph, [p for p in dparams if p.kind in MAGNETIC_KINDS])
+        try:
+            ordered = self._cef_phase(key, ph, subl, [p for p in oparams if p.kind == "G"], elements, omag)
+            disordered = self._cef_phase(dis_key, dph, dsub, [p for p in dparams if p.kind == "G"], elements, dmag)
+            return PartitionedPhase(key, ordered, disordered, subst, never)
+        except UnsupportedModelError:
+            raise
+        except NotImplementedError as err:
+            raise UnsupportedModelError(str(err)) from err
+        except ValueError as err:
+            raise UnsupportedModelError(f"{key}: {err}") from err
 
     def magnetic_type(self, phase: str) -> tuple[float, float] | None:
         """``(afm, p)`` from the MAGNETIC TYPE_DEFINITION that applies to the phase, or None.
@@ -344,18 +560,23 @@ class ThermoDatabase:
         if hint is None or not params:
             return None
         afm, p = hint
-        if afm == 0:
-            raise UnsupportedModelError(f"{key}: the Xiong magnetic model (AFM factor 0) is not supported yet")
 
         def terms(kinds):
             return tuple(
                 CEFTerm(q.constituents, q.order, DatabaseValue(self, ((1.0, q),))) for q in params if q.kind in kinds
             )
 
-        return Magnetic(afm=afm, p=p, tc=terms(("TC",)), beta=terms(("BMAGN", "BM")))
+        nt = terms(("NT",)) if afm == 0 else ()  # pycalphad reads NT only in the Xiong model
+        return Magnetic(afm=afm, p=p, tc=terms(("TC",)), beta=terms(("BMAGN", "BM")), nt=nt)
 
-    def _cef_phase(self, key, ph, subl, params, elements, magnetic: Magnetic | None = None) -> CEFPhase:
+    def _terms(self, params) -> list[CEFTerm]:
+        return [CEFTerm(p.constituents, p.order, DatabaseValue(self, ((1.0, p),))) for p in params]
+
+    def _cef_phase(
+        self, key, ph, subl, params, elements, magnetic: Magnetic | None = None, lattice: dict | None = None
+    ) -> CEFPhase:
         """Every parameter becomes one CEF term (see :mod:`discopt.calphad.models.cef`)."""
+        lattice = lattice or {}
         terms = [CEFTerm(p.constituents, p.order, DatabaseValue(self, ((1.0, p),))) for p in params]
         # pycalphad/Thermo-Calc convention: a lone ternary L0 implies L1 = L2 = L0
         for p in params:
@@ -363,7 +584,18 @@ class ThermoDatabase:
                 if not any(q is not p and q.constituents == p.constituents for q in params):
                     terms += [CEFTerm(p.constituents, k, DatabaseValue(self, ((1.0, p),))) for k in (1, 2)]
         try:
-            return CEFPhase(key, elements, tuple(ph.site_ratios), tuple(subl), tuple(terms), magnetic)
+            return CEFPhase(
+                key,
+                elements,
+                tuple(ph.site_ratios),
+                tuple(subl),
+                tuple(terms),
+                magnetic,
+                self.min_occupancy,
+                self._species_of(subl, elements),
+                lattice.get("THETA", ()),
+                lattice.get("GD", ()),
+            )
         except NotImplementedError as err:
             raise UnsupportedModelError(str(err)) from err
 

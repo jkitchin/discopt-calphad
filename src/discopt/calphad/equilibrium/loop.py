@@ -10,7 +10,7 @@ from discopt.calphad.equilibrium.certificate import Certificate, CertificateLeve
 from discopt.calphad.equilibrium.certificate import certify as certify_state
 from discopt.calphad.equilibrium.common import DOMAIN_FLOOR, tangent_distance
 from discopt.calphad.equilibrium.pricing import PricingResult, price_phases
-from discopt.calphad.equilibrium.restricted import CompositionSet, RestrictedResult, solve_restricted
+from discopt.calphad.equilibrium.restricted import CompositionSet, RestrictedResult, solve_restricted, v_neutral
 from discopt.calphad.ops import NUM
 
 __all__ = ["CERTIFY_MODES", "IterationRecord", "EquilibriumResult", "equilibrium", "initial_set", "is_duplicate"]
@@ -116,13 +116,24 @@ class EquilibriumResult:
 
 
 def is_duplicate(sets, phase, y, tol: float) -> bool:
-    """True if some set of the same phase has ‖y − y_α‖∞ < tol (every set of a compound counts)."""
+    """True if some set of the same phase has ‖y − y_α‖∞ < tol (every set of a compound counts).
+
+    For a phase with sublattice symmetry (an ordered phase whose variants are
+    related by permuting equivalent sublattices), every variant of ``y`` is
+    compared: they are the same state.
+    """
     y = np.asarray(y, dtype=float)
-    return any(s.phase is phase and (y.size == 0 or float(np.max(np.abs(s.y - y))) < tol) for s in sets)
+    if y.size == 0:
+        return any(s.phase is phase for s in sets)
+    variants = phase.variants(y) if hasattr(phase, "variants") else [y]
+    return any(s.phase is phase and min(float(np.max(np.abs(s.y - v))) for v in variants) < tol for s in sets)
 
 
 def _merge_coincident(sets, tol: float) -> list[CompositionSet]:
     """Merge sets of the same phase whose site fractions agree within ``tol``, adding the amounts.
+
+    A disordered set of a partitioned phase is also merged into a set of its
+    parent phase at the same composition.
 
     Sets that need no merge are returned as the same objects, so a caller can
     tell, by identity, which sets were removed.
@@ -135,7 +146,23 @@ def _merge_coincident(sets, tol: float) -> list[CompositionSet]:
         else:
             i = next(i for i, o in enumerate(out) if o is twin)
             out[i] = CompositionSet(twin.phase, twin.y, twin.amount + s.amount)
-    return out
+    # A disordered set of a partitioned phase is its parent phase: same G, same composition. Next to a
+    # set of the parent at the same composition, it is the same state split in two, so it is folded
+    # into the parent's set (amounts converted through atoms per formula unit).
+    merged = list(out)
+    for s in out:
+        parent = getattr(getattr(s.phase, "disordered", None), "name", None)
+        if parent is None or s.phase.degree_of_order(s.y) >= tol:
+            continue
+        j = next(
+            (j for j, o in enumerate(merged) if o.phase.name == parent and float(np.max(np.abs(o.x - s.x))) < tol),
+            None,
+        )
+        if j is not None:
+            o = merged[j]
+            merged[j] = CompositionSet(o.phase, o.y, o.amount + s.amount * s.atoms / o.atoms)
+            merged = [m for m in merged if m is not s]
+    return merged
 
 
 def initial_set(phases, b, T=None) -> CompositionSet:
@@ -153,6 +180,10 @@ def initial_set(phases, b, T=None) -> CompositionSet:
         raise ValueError("no phase can meet b with a single composition set; pass initial_sets=")
     best[1].amount = float(np.sum(b)) / best[1].atoms
     return best[1]
+
+
+#: interior-point options for a solve that starts from a converged point
+WARM_START = {"mu_init": 1e-6}
 
 
 def _is_active_compound(phase, active) -> bool:
@@ -281,7 +312,12 @@ def equilibrium(
             fixed = [any(s is n for n in new) for s in sets]
             R1 = solve_restricted(sets, b, T=T, domain_floor=domain_floor, amount_tol=amount_tol, fixed=fixed)
             if R1.converged:
-                R2 = solve_restricted(R1.sets, b, T=T, domain_floor=domain_floor, amount_tol=amount_tol)
+                # R1 is a converged point, so start the interior-point solve with a small barrier: with
+                # the default one, a set near a bound (an ordered set with one sublattice nearly pure) is
+                # pushed back into the interior and can slide into another basin (the disordered state)
+                R2 = solve_restricted(
+                    R1.sets, b, T=T, domain_floor=domain_floor, amount_tol=amount_tol, options=WARM_START
+                )
                 if R2.converged and (not R.converged or R2.G < R.G - 1e-12):
                     R = R2
             if not R.converged and len(new) > 1:
@@ -291,6 +327,16 @@ def equilibrium(
                 # again at the next μ. The certificate does not depend on how sets are added.
                 sets, new = previous + new[:1], new[:1]
                 R = solve_restricted(sets, b, T=T, domain_floor=domain_floor, amount_tol=amount_tol)
+        if it > 0:
+            # The sets carry the previous solution's amounts (a new set at zero), which is feasible, but a
+            # cold start (amounts from a least-squares fit) can converge to a worse KKT point, for
+            # instance one where a set that should stay vanishes. Also solve from those amounts, with a
+            # small barrier, and keep the better converged solution.
+            Rw = solve_restricted(
+                sets, b, T=T, domain_floor=domain_floor, amount_tol=amount_tol, options=WARM_START, warm=True
+            )
+            if Rw.converged and (not R.converged or Rw.G < R.G - 1e-12):
+                R = Rw
         record = IterationRecord(it, R, [])
         history.append(record)
         if not R.converged:
@@ -313,7 +359,10 @@ def equilibrium(
         if record.removed:
             sets, new = active, []
             continue
-        if R.mu_directions is not None:
+        gauge_only = R.valence is not None and all(v_neutral(p, R.valence, phases[0].elements) for p in phases)
+        if R.mu_directions is not None and not gauge_only:
+            # With fixed valences and every phase neutral, μ is free along the valence vector, but no
+            # phase's tangent distance depends on that (a gauge), so there is nothing to choose.
             # Lone compounds that do not span every element leave μ free along mu_directions. Take
             # the μ there that keeps every other phase farthest above its tangent: the middle of the
             # compound's stability range. Any such μ gives a valid certificate; this one avoids

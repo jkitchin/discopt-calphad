@@ -34,6 +34,12 @@ At the minimizer the row's θ-derivative is exact (envelope theorem). The fit
 then iterates linear solves (Gauss–Newton with step halving) until θ stops
 changing. With only linear rows, one solve is exact.
 
+Magnetic parameters (TC, BMAGN, NT) enter through ln(β + 1) f(T/T_c), not
+linearly. Free ones are linearized at the current θ (their derivatives by
+central differences), and the same iteration solves the nonlinear least
+squares. That fit is local: C_p jumps at T_c, so start TC near the measured
+λ peak.
+
 The fit is weighted least squares, optionally with bounds, and its covariance
 follows from the final linearization. The factors φ_p are read from the phase
 models by probing: every parameter of a phase is set to 0, then one at a time
@@ -578,10 +584,13 @@ class _PhaseBasis:
         self.model = db.phase_model(name, el)
         mine = [i for i, p in enumerate(db.parameters) if p.phase == name]
         magnetic = [i for i in mine if db.parameters[i].kind in MAGNETIC_KINDS]
-        if any(i in lm.free_index for i in magnetic):
-            # The probe below reads each parameter's coefficient in G, which works because G
-            # is linear in G and L parameters. TC and BMAGN enter through ln(β + 1) f(T/T_c).
-            raise NotImplementedError(f"{name}: TC and BMAGN cannot be fitted (G is not linear in them)")
+        # The probes below read each parameter's coefficient in G, which works because G is linear
+        # in G and L parameters. TC, BMAGN and NT enter through ln(β + 1) f(T/T_c), so free ones are
+        # linearized at the current θ instead (see _magnetic_row), and the fit iterates.
+        self._magnetic_ids = magnetic
+        self._magnetic_free = [i for i in magnetic if i in lm.free_index]
+        if self._magnetic_free:
+            lm.nonlinear = True
         allowed = set(el) | {"VA"}
         #: constituents per sublattice within the fitted elements, as the phase model sees them
         self.sublattices = [tuple(sorted(c for c in s if c in allowed)) for s in db.phases[name].constituents]
@@ -604,13 +613,63 @@ class _PhaseBasis:
             if phi != 0.0:
                 out += phi * self.lm.prop(i, prop, t)
         out[0] += {"G": R_GAS * t * g0, "S": -R_GAS * g0}.get(prop, 0.0)
-        if self._magnetic is not None:
+        if self._magnetic_free:
+            out += self._magnetic_row(prop, y, t)
+        elif self._magnetic is not None:
             out[0] += self._magnetic_part(prop, y, t)
         return out
 
-    def _magnetic_part(self, prop: str, y, t: float) -> float:
-        """The fixed magnetic contribution to ``prop`` per formula unit, with T-derivatives by differences."""
-        full, plain = self._magnetic
+    def _magnetic_models(self, theta):
+        """(the phase at ``theta``, the same with every magnetic parameter at 0), cached by ``theta``."""
+        key = tuple(np.round(theta, 12))
+        cache = self.__dict__.setdefault("_mag_cache", {})
+        if key not in cache:
+            if len(cache) > 64:
+                cache.clear()
+            funcs = self.lm.functions_at(theta)
+            db = self.lm.db
+            full = _replace(db, funcs).phase_model(self.name, self.lm.elements)
+            plain = _replace(db, {**funcs, **{i: _CONST0 for i in self._magnetic_ids}}).phase_model(
+                self.name, self.lm.elements
+            )
+            cache[key] = (full, plain)
+        return cache[key]
+
+    def _magnetic_row(self, prop: str, y, t: float) -> np.ndarray:
+        """The magnetic contribution to ``prop``, linearized in the free magnetic coefficients at θ.
+
+        Value at the current θ, and ∂/∂θ_c by central differences, so the row is
+        exact to first order and the fit's Gauss–Newton iteration converges to
+        the nonlinear least-squares solution.
+        """
+        lm = self.lm
+        theta = np.asarray(lm.theta, float)
+        row = np.zeros(lm.n + 1)
+        base = self._magnetic_part(prop, y, t, self._magnetic_models(theta))
+        row[0] = base
+        for i in self._magnetic_free:
+            fp = lm.free_index[i]
+            for c in fp.coefficients:
+                col = lm._col[(fp.label, c)]
+                j = col - 1
+                h = max(1e-6 * abs(theta[j]), 1e-3)
+                tp, tm = theta.copy(), theta.copy()
+                tp[j] += h
+                tm[j] -= h
+                d = (
+                    self._magnetic_part(prop, y, t, self._magnetic_models(tp))
+                    - self._magnetic_part(prop, y, t, self._magnetic_models(tm))
+                ) / (2 * h)
+                row[col] += d
+                row[0] -= d * theta[j]
+        return row
+
+    def _magnetic_part(self, prop: str, y, t: float, models=None) -> float:
+        """The magnetic contribution to ``prop`` per formula unit, with T-derivatives by differences.
+
+        ``models`` is (full, plain); by default the database's own magnetic parameters.
+        """
+        full, plain = self._magnetic if models is None else models
 
         def gm(tt):
             return (float(full.gibbs(y, NUM, tt)) - float(plain.gibbs(y, NUM, tt))) * R_GAS * tt
@@ -1310,10 +1369,10 @@ def fit(
     phase falls below −ε, for at most ``max_cut_rounds`` rounds. The result's
     :attr:`FitResult.consistency` then says ``CERTIFIED``: every certified lower
     bound is ≥ −ε. It says ``INCOMPLETE`` when a bound could not be raised that
-    far (magnetic phases have none yet, and ``consistency_time_limit`` bounds
-    each pricing), and ``NOT_CERTIFIED`` when rounds ran out. Phases listed in
-    an observation are not checked there: their deviation from the tangent is
-    that observation's own residual.
+    far within ``consistency_time_limit``, which bounds each pricing, and
+    ``NOT_CERTIFIED`` when rounds ran out. Phases listed in an observation are
+    not checked there: their deviation from the tangent is that observation's
+    own residual.
 
     **Per-source weighting.** Data from different sources (``Observation.source``:
     experiment, DFT, an MLIP) come with σ set by different people and methods,

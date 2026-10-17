@@ -27,10 +27,22 @@ the tangent-plane distance Ψ(y) = G(y) − μ·A(y):
 - **Fitting:** weighted least squares of TDB parameters to thermochemical,
   activity and phase-equilibrium data (one-sided boundary points included),
   with an ESPEI JSON reader and a real Cu–Mg example.
-- **Order–disorder stand-ins (issue #14):** `ordering.stand_in` rewrites a
-  partitioned phase (L1₂, B2) as a plain phase the solver supports. For Ni–Al
-  both are exact (pycalphad agrees to 1e-10 J/mol); magnetism and vacancies on
-  substitutional sites are dropped and listed.
+- **Third-generation unary terms (issue #6):** the Einstein (THETA) and
+  two-state liquid (GD) contributions, matching pycalphad to round-off.
+- **Ionic models (issue #6):** charged species, charge-neutral oxide CEF
+  phases, and the two-sublattice ionic liquid, matching pycalphad's Gibbs
+  energies to round-off.
+- **Order–disorder phases (issue #6):** DISORDERED_PART and NEVER_DISORDER
+  phases (L1₂, B2, four-sublattice FCC/BCC with the F and B options) are
+  modeled natively as G_dis(x) + G_ord(y) − G_ord(x). G matches pycalphad to
+  1e-9, and Al–Ni γ + γ′ matches its equilibria. Pricing removes the duplicate
+  minima of equivalent ordered variants with symmetry constraints.
+  Constitutional vacancies (B2 NiAl) are supported. A phase that can hold a
+  vacancy on every sublattice is certified over formula units at least half
+  occupied, because the model has no global minimum below that. Magnetic
+  parameters on the ordered part are partitioned like the energy (Thermo-Calc's
+  convention; pycalphad differs there). `ordering.stand_in` (issue #14) still
+  rewrites a partitioned phase as a plain one, for refitting.
 - **Data from ASE calculators (issue #5, phase 1):** `discopt.calphad.mlip`
   turns any ASE calculator (a machine-learned potential such as UMA or MACE,
   EAM, EMT) into fitting data: formation enthalpies of compounds and CEF

@@ -29,9 +29,12 @@ the tangent-plane distance Ψ(y) = G(y) − μ·A(y):
   disappearance.
 - **MVP 3:** TDB import and export into a symbolic `ThermoDatabase` (SymPy
   expressions with named functions kept), and binary phase models built from
-  it. Unsupported models (order–disorder, ionic) raise with the reason.
-  Magnetic phases (Inden–Hillert–Jarl) are solved, but not yet certified
-  globally.
+  it. Unsupported models raise with the reason.
+  Magnetic phases (Inden–Hillert–Jarl and Xiong, issue #6) are solved and globally
+  certified: the magnetic term has interval bounds, and pricing splits a
+  magnetic phase into the branches of T_c, β and T/T_c it can reach.
+  The third-generation Einstein (THETA) and two-state liquid (GD) terms are
+  supported too, with exact interval rules (Fe–Mn liquid example).
 - **MVP 4:** compound-energy-formalism phases (`CEFPhase`: several sublattices,
   endmembers, binary/reciprocal/ternary interactions, vacancies) in any number
   of elements, checked against pycalphad. Pricing stops as soon as its answer
@@ -52,10 +55,24 @@ the tangent-plane distance Ψ(y) = G(y) − μ·A(y):
   NIMS assessment, and the diagram follows the liquidus and eutectic data.
   The FCC interaction differs: the DFT mixing enthalpies pull the Cu-rich
   solvus wider than the measured one (`examples/cumg_espei_fit.py`).
-- **Order–disorder stand-ins (issue #14):** `ordering.stand_in` rewrites a
-  partitioned phase (L1₂, B2) as a plain phase the solver supports. For Ni–Al
-  both are exact (pycalphad agrees to 1e-10 J/mol); magnetism and vacancies on
-  substitutional sites are dropped and listed.
+- **Ionic models (issue #6):** charged species, charge-neutral oxide CEF
+  phases (fluorite, pyrochlore), and the two-sublattice ionic liquid (Sundman
+  1991), all matching pycalphad's Gibbs energies to round-off. In Cu–O, the
+  solver finds the liquid miscibility gap where pycalphad's grid misses it,
+  with a lower G. Certification works for inactive ionic phases. An active
+  ionic liquid, or a charged four-sublattice phase near the tangent, ends
+  `GLOBAL_SEARCH_INCOMPLETE`.
+- **Order–disorder phases (issue #6):** DISORDERED_PART and NEVER_DISORDER
+  phases (L1₂, B2, four-sublattice FCC/BCC with the F and B options) are
+  modeled natively as G_dis(x) + G_ord(y) − G_ord(x). G matches pycalphad to
+  1e-9, and Al–Ni γ + γ′ matches its equilibria. Pricing removes the duplicate
+  minima of equivalent ordered variants with symmetry constraints.
+  Constitutional vacancies (B2 NiAl) are supported. A phase that can hold a
+  vacancy on every sublattice is certified over formula units at least half
+  occupied, because the model has no global minimum below that. Magnetic
+  parameters on the ordered part are partitioned like the energy (Thermo-Calc's
+  convention; pycalphad differs there). `ordering.stand_in` (issue #14) still
+  rewrites a partitioned phase as a plain one, for refitting.
 - **Data from ASE calculators (issue #5, phase 1):** `discopt.calphad.mlip`
   turns any ASE calculator (a machine-learned potential such as UMA or MACE,
   EAM, EMT) into fitting data: formation enthalpies of compounds and CEF
@@ -217,7 +234,7 @@ hash. A copy that pycalphad installs is used without downloading.
 from discopt.calphad import databases
 
 [e.name for e in databases.find(["AL", "FE"])]       # files that form Al–Fe
-databases.find(["AL", "FE"], complete=True)          # [] -- every one has an order–disorder phase
+databases.find(["AL", "FE"], complete=True)          # every Al–Fe file in the registry
 databases.get("alzn_mey").reference                  # 'S. an Mey, Z. Metallkd. 84 (1993) 451–455; ...'
 ```
 

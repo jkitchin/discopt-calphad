@@ -205,7 +205,7 @@ def test_phase_model_kinds_and_errors(synth):
     # TC with no MAGNETIC type definition for the phase's type code: ignored, as pycalphad ignores it
     bcc = synth.phase_model("BCC_MAG", ("A", "B"))
     assert isinstance(bcc, BinarySolution)
-    with pytest.raises(UnsupportedModelError, match="order-disorder"):
+    with pytest.raises(UnsupportedModelError, match="interstitial"):  # FCC_A1 has a VA sublattice, ORD_PH none
         synth.phase_model("ORD_PH", ("A", "B"))
     with pytest.raises(PhaseNotApplicable):
         synth.phase_model("GRAPHITE", ("A", "B"))
@@ -339,6 +339,7 @@ def test_gibbs_matches_pycalphad(fname, elements, phases, t):
         "crtiv_ghosh.tdb",
         "COST507.tdb",
         "cumg_parameters.tdb",
+        "femn.tdb",
     ],
 )
 def test_round_trip_real_databases(fname):

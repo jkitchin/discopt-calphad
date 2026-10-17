@@ -28,11 +28,26 @@ Know the limits before you promise a result:
   equilibria and for fits, including activities and phase equilibria; give a
   ternary composition as a dict, `{"AL": 0.7, "CU": 0.2, "Y": 0.1}`. Errors in
   variables, SQS mixing data and `x=` in `equilibrium` are binary only.
-- **Unsupported phases:** order–disorder phases (B2, L1₂ in Ni–Al and Fe–Al)
-  cannot be modelled directly, but `ordering.stand_in` turns each into a plain
-  phase (see section 1). Ionic liquids cannot be modelled.
-- **Magnetism:** any equilibrium containing a magnetic phase (FCC Ni, BCC Fe,
-  Co) certifies at most to `GLOBAL_SEARCH_INCOMPLETE`.
+- **Order–disorder phases** (L1₂, B2, DISORDERED_PART) are modelled natively.
+  Constitutional vacancies (Dupin's Al–Ni BCC_B2) are supported; such a phase
+  is certified over formula units at least half occupied (`min_occupancy`,
+  stated in `certificate.messages`). Magnetic parameters on the ordered part
+  (Sundman's Al–Fe) are partitioned like the energy, as in Thermo-Calc;
+  pycalphad 0.11.2 uses a different convention there, so its numbers differ.
+  `ordering.stand_in` turns a partitioned phase into a plain one (section 1).
+- **Ionic models:** charged species (SPECIES with a charge, such as `O-2`, and
+  molecules such as `ALO3/2`) are supported. Charged sublattice phases
+  (oxide fluorite, pyrochlore) are held charge-neutral. The two-sublattice
+  ionic liquid (phase hint `Y`) is neutral by its variable site ratios. Pass
+  the elements, for example `("CU", "O")`; species made of them are found
+  automatically.
+- **Magnetism:** Inden–Hillert–Jarl magnetic phases (FCC Ni, BCC Fe, Co)
+  certify like any other phase. Global pricing solves one model per magnetic
+  branch, so it costs a few times more than for a plain phase. The Xiong
+  model (AFM factor 0, with NT) is supported too. Certifying an equilibrium in
+  which a multi-sublattice ordered phase or an ionic liquid is *active* is
+  slow (γ′: minutes) or ends `GLOBAL_SEARCH_INCOMPLETE` (β, ionic liquid,
+  pyrochlore); report the certificate level as it is.
 - **Calculators:** a calculator (MLIP, EAM, EMT) gives data for a fit, never a
   phase model. For a phase diagram from one, follow
   [reference/mlip-phase-diagram.md](reference/mlip-phase-diagram.md).
@@ -74,8 +89,8 @@ up as "ok", through their pure-element endmembers. Prefer a file assessed for
 the system, and list which phases it actually has before using it.
 
 If a phase the user cares about is unsupported, say so before computing
-anything. An order–disorder (`DISORDERED_PART`) phase can be rewritten as a
-plain stand-in with `discopt.calphad.ordering.stand_in(db, "FCC_L12",
+anything. An order–disorder (`DISORDERED_PART`) phase that the native model
+rejects can be rewritten as a plain stand-in with `discopt.calphad.ordering.stand_in(db, "FCC_L12",
 elements)`. For Ni–Al the stand-in is exact, but it drops magnetism and
 vacancies on substitutional sublattices, so report its `dropped` list. The
 details are in [reference/mlip-phase-diagram.md](reference/mlip-phase-diagram.md),
@@ -132,7 +147,7 @@ strongest:
 | `FAILED` | the restricted (local) solve did not converge. Nothing. |
 | `LOCAL_EQUILIBRIUM` | a local minimum. Either no pricing ran, or a phase still destabilizes (the result is not the equilibrium). |
 | `STABILITY_SEARCHED` | a local search over every phase found nothing destabilizing. This is what `certify="none"` and the browser app reach. A search is not a proof. |
-| `GLOBAL_SEARCH_INCOMPLETE` | global pricing ran, but some phase has no valid lower bound, or its bound is below −ε. Read `certificate.messages` for which phase and why. Magnetic phases are always here for now. |
+| `GLOBAL_SEARCH_INCOMPLETE` | global pricing ran, but some phase has no valid lower bound, or its bound is below −ε. Read `certificate.messages` for which phase and why. |
 | `CERTIFIED_TO_TOLERANCE` | every phase is proven to have Ψ ≥ −ε. No missing phase or set can lower G by more than `gap_bound` (in RT). |
 | `GLOBALLY_CERTIFIED` | as above, with ε at 1e-9 and a KKT residual ≤ 1e-8. |
 
@@ -221,8 +236,8 @@ its internal equilibrium.
 that a phase-equilibrium observation does not list, with certified global
 pricing at that observation's μ. A phase more than `consistency_eps` (J/mol,
 default 10) below the tangent becomes a cut, and the fit is solved again.
-`res.consistency["status"]` is then `CERTIFIED`, `INCOMPLETE` (magnetic
-phases have no bound yet), or `NOT_CERTIFIED`. Each round costs one global
+`res.consistency["status"]` is then `CERTIFIED`, `INCOMPLETE` (a bound could
+not be raised to −ε in the time limit), or `NOT_CERTIFIED`. Each round costs one global
 pricing per phase per observation, from seconds upward.
 
 **Which measurement next?** `discopt.calphad.design.rank_candidates(res,
@@ -267,8 +282,9 @@ equilibrium at each tie-line datum.
 
 - **Magnetic phases.** G and L parameters of a magnetic phase fit normally,
   and so does data referenced to one, such as a formation enthalpy against
-  magnetic FCC Ni. TC and BMAGN cannot be freed, because G is not linear in
-  them.
+  magnetic FCC Ni. TC, BMAGN and NT can be freed too: they enter
+  nonlinearly, so the fit linearizes them and iterates, and it is local, so
+  start TC near the measured λ peak.
 - **Partly fitted phases.** Fit every parameter of a phase that the data
   cover. An endmember or interaction you leave out keeps its old value, and
   can make the phase stable or unstable for reasons the data never saw.
@@ -432,15 +448,12 @@ fitted_alcu = fit(alcu, result.dataset, ("AL", "CU"), {"G(ALCU_THETA,AL:CU;0)": 
   - A T outside the ranges raises `ValueError`. Set
     `ThermoDatabase.extrapolate = True` to use the nearest range instead.
 - **Unsupported models raise with the reason.** `UnsupportedModelError` covers:
-  - order–disorder (`DISORDERED_PART`), unless replaced by `ordering.stand_in`;
-  - ionic liquids;
-  - phases whose every sublattice can be empty (an all-vacancy configuration);
-  - the Xiong magnetic model;
+  - Einstein (THETA) and two-state (GD) terms in a partitioned phase or an
+    ionic liquid (in a plain CEF phase they are supported);
   - some high-order CEF interactions.
 
   `phase_models()` skips such phases silently, so check `applicability()`.
-  Inden–Hillert–Jarl magnetic phases are supported, but certify at most to
-  `GLOBAL_SEARCH_INCOMPLETE` (no interval bounds for that term yet).
+  Inden–Hillert–Jarl magnetic phases are supported and certified.
 - **Speed.**
   - A local (`certify="none"`) solve takes tens of milliseconds with simple
     phases, and 0.5–30 s when several multi-sublattice (CEF) phases compete.

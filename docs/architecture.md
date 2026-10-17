@@ -373,9 +373,10 @@ building the prototype. The upstream requests are tracked in discopt#1249.
     reason:
     - a missing endmember G parameter;
     - interaction structures pycalphad also rejects (§9.16);
-    - the Xiong magnetic model (AFM factor 0; the IHJ model is supported, §9.18);
-    - DISORDERED_PART;
-    - ionic liquids;
+    - DISORDERED_PART with mismatched interstitial sublattices (§9.21);
+    - Einstein (THETA) and two-state (GD) parameters in a partitioned phase
+      or an ionic liquid (§9.24);
+    - an ionic liquid with more than two sublattices (§9.23);
     - parameter kinds or orders the binary model cannot represent.
 
     `phase_models(elements)` skips such phases silently.
@@ -399,7 +400,9 @@ building the prototype. The upstream requests are tracked in discopt#1249.
       sublattices, and more than 3 mixing constituents.
     - **Vacancies.** A_φ(y) counts atoms on non-VA constituents.
       `atoms_min` is the sum of site ratios over sublattices without VA, and
-      N_tot,max = Σb/atoms_min. A phase with `atoms_min = 0` is rejected.
+      N_tot,max = Σb/atoms_min. A phase with a vacancy on every sublattice
+      would have `atoms_min = 0`. It is restricted to a minimum occupancy
+      instead (§9.22).
     - **Oracle.** pycalphad's GM is per mole of atoms, with R = 8.3145.
       Eleven phases (Laves C14/C15, CU2MG, AL13FE4, ALMG_GAMMA, AL3NI2, CHI_RENB,
       AL8FE5_D82, ternary liquids) agree to 1e-9 relative at 3 temperatures.
@@ -437,10 +440,10 @@ building the prototype. The upstream requests are tracked in discopt#1249.
     `DOMAIN_FLOOR` to 1e-6 did not help. This is the measured case for the
     simplex structure request (discopt-feature-requests P2-2).
     `applicability(elements)` lists the reason for each one, and should be
-    checked before trusting a diagram. In Al–Fe, for example, B2_BCC is
-    skipped because it is an order–disorder phase.
-18. **Magnetic ordering.** *Issue #6, first step; measured against pycalphad
-    0.11.2.* `models/magnetic.py` implements the Inden–Hillert–Jarl term
+    checked before trusting a diagram. In Dupin's Al–Ni, for example, BCC_B2 is
+    skipped because it has vacancies on its substitutional sublattices
+    (§9.21).
+18. **Magnetic ordering.** *Issue #6; measured against pycalphad 0.11.2.* `models/magnetic.py` implements the Inden–Hillert–Jarl term
     RT ln(β' + 1) f(T/T_c') per formula unit, and a magnetic phase is always a
     `CEFPhase`.
     - **Conventions, as pycalphad applies them.**
@@ -450,7 +453,7 @@ building the prototype. The upstream requests are tracked in discopt#1249.
       - TC or BMAGN parameters with no MAGNETIC type are ignored.
       - `BM` abbreviates `BMAGN`.
       - T_c ≤ 0 and β ≤ 0 are divided by the AFM factor.
-      - AFM factor 0 selects the Xiong model, which raises for now.
+      - AFM factor 0 selects the Xiong model (below).
     - **Checked.** G matches `pycalphad.calculate` to 1e-9 relative for 8
       magnetic phases in 7 databases, at 300–1800 K. Four equilibria match
       `pycalphad.equilibrium` in phases and compositions: the Cr–Fe BCC gap,
@@ -473,20 +476,79 @@ building the prototype. The upstream requests are tracked in discopt#1249.
       case where the solution sits on the edge itself. In the Cr–Fe gap at
       700 K, the Cr-rich set starts with T_c > 0, stops on T_c = 0, and
       converges on the antiferromagnetic branch in the second solve.
-    - **Pricing, and what is not done.** No interval extension is implemented
-      for the magnetic term yet. So a magnetic phase is priced by the local
-      search, without a lower bound, and its certificate is at most
-      `GLOBAL_SEARCH_INCOMPLETE` (a destabilizing point still gives
-      `LOCAL_EQUILIBRIUM`). The message names the reason.
-    - **Next.** Interval rules for ln(1 + β) and for f on s-intervals that may
-      straddle 1. Then global pricing split into the branch regions, each
-      solved with its branch constraints and taking the smaller bound.
-    - **Fitting.** G is not linear in TC and BMAGN, so `fit` cannot free
-      them. It does fit the G and L parameters of a magnetic phase, and data
-      referenced to one (a formation enthalpy against magnetic FCC Ni): the
-      probes run with TC and BMAGN at zero, which removes the magnetic term
-      exactly, and the fixed magnetic term is added back, with its
-      T-derivatives for H, S and Cp taken by finite differences.
+    - **Interval extension.** f is continuous and strictly decreasing in s on
+      all of s ≥ 0. On the paramagnetic side every term falls. The slopes of
+      the two branches agree at s = 1. On the ordered side, the slope
+      −(79/(140p) − c(s⁻⁴/2 + s⁻¹⁰/15 + s⁻¹⁶/40))/A only grows more negative
+      with s, because the subtracted series shrinks. So f over [s_lo, s_hi]
+      is [f(s_hi), f(s_lo)], whether or not the interval straddles 1, and
+      f ≤ f(0) = 0. T_c' and β' are nonnegative piecewise-linear images of
+      T_c and β: x for x > 0 and x/afm for x ≤ 0. Their range is the image of
+      the endpoints, with 0 added when the interval contains 0. ln(1 + β') is
+      increasing. libm's `pow` and `log1p` are not correctly rounded, so the
+      endpoint values are padded by 1e-14 relative. With these rules, the
+      boundary-slab bound and every `INTERVAL` evaluation cover magnetic
+      phases. Random boxes in five oracle phases at 300–1500 K give no
+      enclosure violations.
+    - **Global pricing by branch.** An interval evaluation of T_c and β over
+      the site-fraction box tells which branches the box can reach
+      (`magnetic_pieces`). Usually there are three to six of the eight. Each one
+      becomes its own discopt model, with:
+      - the sign constraints of its branch;
+      - an auxiliary variable s = T_c'/T, tied to y by the equality
+        s − T_c'(y)/T = 0, and bounded to [s_lo, 1] or [1, s_hi].
+
+      Bounding s keeps the negative powers on the ordered side away from
+      s = 0 in the relaxation. Without it they would have no finite bound.
+      The branches are closed sets that cover the box. Ψ is continuous across
+      their edges: f is C¹ at s = 1, and T_c' and β' are 0 from both sides
+      at a sign change. So the smallest of the branch minima is the minimum
+      over the box, and the smallest of their certified bounds bounds it.
+      A branch that discopt proves infeasible contributes +∞. The staged ε
+      loop runs over all open branches in each stage, stops as soon as one
+      gives UB < −ε, and otherwise stops once every branch bound is ≥ −ε.
+    - **Measured.**
+      - Cr–Fe BCC at 700 K (six branches): every branch closes in 0.5–4 s. The
+        bound matches a 20 001-point grid minimum to 3e-7.
+      - Ni–Fe FCC (COST 507, 600 K), Al–Fe BCC (800 K) and Cr–V BCC (300 K)
+        also close and match their grids.
+      - Certified with every phase, σ and Laves included, all at 13–19 s per
+        point:
+        - the Cr–Fe BCC gap at 700 K (ferromagnetic Fe-rich + antiferromagnetic
+          Cr-rich);
+        - σ + BCC at 800 and 1000 K;
+        - σ at 900 K;
+        - FCC inside the γ loop at 1200 K.
+      - See `examples/crfe_magnetic.py` and `examples/fe_magnetic.py`.
+    - **The Xiong model** (AFM factor 0; Xiong et al., Calphad 39 (2012)):
+      G_mag/RT = ln(β + 1)[g(T_C/T) + g(T_N/T)], with no AFM division. g is
+      0 where its temperature is ≤ 0.
+      - **The τ²¹ term.** In the τ ≤ 1 branch, τ²¹/1617 is the fourth term
+        of the series inside the (1/p − 1) bracket. Then g and its slope are
+        continuous at τ = 1 for every p (slope −0.38438/D on both sides).
+        pycalphad 0.11.2 adds that term outside the bracket, which makes g
+        discontinuous unless 1/p − 1 = 1/0.6357. The tests compare with
+        pycalphad after correcting for that term alone (1e-9).
+      - **Bounds.** g is decreasing on s ≥ 0 on both branches, so the
+        interval rule is the same as for IHJ.
+      - **Branches.** Each of T_C and T_N has three states (≤ 0, (0, T], > T).
+        `Magnetic` therefore carries a small protocol used by the phase
+        models and the solver: `quantities`, `term`, `branch_at`,
+        `constraints`, `neighbor`, `ranges` and `pricing_rows`. Global
+        pricing gets one auxiliary s per positive state. The restricted
+        solve moves across branch edges with `neighbor`.
+      - **Checked.** A synthetic Xiong database: G against pycalphad
+        (corrected), interval enclosure, global pricing against a grid, and
+        equilibria. femn.tdb combines Xiong magnetism with the Einstein and
+        two-state terms of §9.24.
+    - **Fitting.** G and L parameters of a magnetic phase fit linearly. The
+      probes run with TC and BMAGN at zero, and the magnetic term is added
+      back, with its T-derivatives by finite differences. Free TC, BMAGN and
+      NT enter nonlinearly. Their rows are linearized at the current θ
+      (central differences), and the fit's Gauss–Newton iteration solves the
+      nonlinear least squares. That fit is local: C_p jumps at T_c. FCC Ni's
+      TC and BMAGN are recovered from C_p data from 33 K away, but from 120 K
+      away the fit settles in another minimum.
 
 19. **Site fractions on the domain floor** (issue #13). A terminal phase can
     have an equilibrium solubility far below `DOMAIN_FLOOR` (about 1e-14 Al in
@@ -510,13 +572,291 @@ building the prototype. The upstream requests are tracked in discopt#1249.
     Each stand-in parameter is then a fixed linear combination of the source
     parameters' functions. For Dupin's Ni–Al, L1₂ and B2 are exact, matching
     pycalphad to 1e-10 J/mol, apart from what is dropped: magnetism, and
-    vacancies on substitutional sublattices.
+    vacancies on substitutional sublattices. Since issue #6, partitioned phases
+    are modeled natively (§9.21). A stand-in remains useful for refitting, or
+    for a phase the native model rejects.
+21. **Order–disorder (partitioned) phases.** *Issue #6; measured against
+    pycalphad 0.11.2.* `models/partitioned.py`. A DISORDERED_PART amendment
+    builds a `PartitionedPhase`:
+
+    G = λ G_dis(x) + G_ord(y) − G_ord(x)
+
+    per ordered formula unit. x is the site average over the substitutional
+    sublattices, and λ = Σ_s a_s / a_dis. NEVER_DISORDER gives
+    G = λ G_dis(x) + G_ord(y).
+    - **Conventions, as pycalphad applies them.**
+      - The amendment applies to the phase named on its line, not through the
+        type code.
+      - Ordered sublattices other than the interstitial one are extended to
+        the disordered part's constituents. Those with exactly its
+        substitutional constituents take part in the ordering.
+      - Parameters missing from the ordered part are 0.
+      - Vacancies count as a species in x.
+      - The F and B phase options imply every symmetry image of each ordered
+        parameter: F permutes all four sublattices, B permutes within {0, 1}
+        and {2, 3} and swaps the pairs. The images are added even when the
+        file lists them too, as pycalphad does. They are added when the model
+        is built, so TDB export writes the file's own parameters.
+      - **Magnetism.** The magnetic properties are partitioned like the
+        energy, as Thermo-Calc and Lukas–Fries–Sundman §5.8.6 do it:
+        T_c = T_c,dis(x) + T_c,ord(y) − T_c,ord(x), and the same for β (and
+        T_N). One magnetic term is evaluated with them, ×λ. When the ordered
+        part has magnetic parameters (Sundman's Al–Fe, alcfe_b2), pycalphad
+        0.11.2 instead adds λ·mag(T_c,dis(x)) + mag(T_c,ord(y)) −
+        mag(T_c,ord(x)), and warns that the result may be incorrect. The
+        tests compare everything else with pycalphad to 1e-9, evaluating both
+        conventions with the same verified functions. Without ordered
+        magnetic parameters, the two conventions agree.
+    - **Entropy.** The ideal terms of λG_dis(x) and G_ord(x) cancel exactly.
+      Both are (Σ_s a_s) Σ x ln x on the substitutional sites, and the
+      interstitial terms agree because the interstitial-to-substitutional site
+      ratios must be equal. Only the ordered sublattices' entropy is left, on
+      single stick-breaking variables. Every other term is a polynomial in y.
+    - **Checked.** G matches `pycalphad.calculate` to 1e-9 relative at
+      500–1500 K, at random and disordered points, for:
+      - FCC_L12 (Dupin's Al–Ni and alcrni);
+      - B2 (alfe.tdb, COST 507 Al–Ni and Fe–Ni);
+      - CoV's FCC_4SL, four sublattices with the F option;
+      - CoV's σ, NEVER_DISORDER.
+
+      In Al–Ni, γ, γ′ and γ + γ′ match `pycalphad.equilibrium` in phases and
+      compositions. Both sides use the same phase list, without BCC_A2 and
+      BCC_B2 (below). pycalphad names a disordered L1₂ set FCC_L12, and it
+      has exactly FCC_A1's G.
+    - **Pricing.** The site averages are auxiliary variables, tied to y by
+      linear equalities, so G_dis(x) and G_ord(x) are written in a few
+      variables. Without them, a non-magnetic L1₂ pricing problem took 55 s
+      to close; with them, 15 s. Magnetic branches are branches of T_c(x(y)).
+      Each is solved with its constraints in x, as in §9.18.
+    - **Symmetry.** Substitutional sublattices with the same site ratio and
+      constituents form a class. The permutations that leave G unchanged are
+      found numerically when the model is built, at three temperatures and
+      four random points:
+      - B2: 2;
+      - CoV's FCC_4SL: 24;
+      - L1₂: none, since its two sublattices have different ratios.
+
+      When a class is invariant under all its permutations, pricing requires
+      the first constituent's fraction to descend along the class. Each point
+      has a sorted image with the same G, so this removes duplicate minima and
+      never the minimum. `is_duplicate` compares composition sets up to the
+      same symmetry.
+    - **Restricted solve.** A new ordered set has one sublattice nearly pure
+      and a small amount. Freed from its pricing point with the default
+      interior-point barrier, it was pushed back from the bound, slid into the
+      disordered basin, and the loop cycled. The free solve after the
+      held-set solve therefore starts with `mu_init = 1e-6`.
+    - **Not supported yet.**
+      - **Mismatched interstitial sublattices.** COST 507's BCC_B2 in seven
+        binaries, such as Al–N, which pycalphad rejects too.
+    - **Registry.** COST 507 goes from 7 to 338 of 345 complete binaries, and
+      the COST 507 Al–Fe file is complete.
+22. **Vacancies on every sublattice.** *Issue #6.* Dupin's BCC_A2 and BCC_B2,
+    and alcrni's B2, can hold a vacancy on every sublattice, so a formula unit
+    can be empty.
+    - **The model has no global minimum there.** These databases set
+      G(VA:…:VA) = 0. Take a fraction δ of atoms in an otherwise empty
+      lattice. Its G per atom is about G_atom + L_atom,VA + RT ln δ, which
+      goes to −∞ as δ → 0. Read literally, the model lets a huge amount of
+      nearly empty lattice dissolve any atoms at unbounded entropy per atom.
+      pycalphad never meets this, because its point sampling does not reach
+      δ ≈ e⁻²⁰, and a local minimizer never starts there. No certificate can
+      cover the full simplex, and no amount bound N_tot,max exists.
+    - **The domain.** A phase with a vacancy on every sublattice is
+      restricted to formula units holding at least `min_occupancy` (default
+      0.5, `ThermoDatabase.min_occupancy`) of `atoms_max` in atoms:
+      `CEFPhase.domain_constraints` gives atoms(y) − atoms_min ≥ 0. Then
+      atoms_min = min_occupancy · atoms_max > 0, and the certificate theorem
+      (§2) holds unchanged on that domain. Constitutional vacancies in real
+      phases are a few percent: Al-rich NiAl at 1200 K reaches about 4% of
+      sites. The constraint is never active at an equilibrium, and the
+      certificate's messages state the assumption.
+    - **Where it applies.**
+      - The constraint is a row in the restricted solve, after the balance
+        rows.
+      - It is a constraint in every global pricing model.
+      - The boundary-slab bound prunes a box whose interval of the
+        constraint is entirely negative.
+      - Local pricing gives such points +∞.
+    - **Checked.**
+      - G matches pycalphad to 1e-9 for Dupin's BCC_B2 and alcrni's B2.
+      - Al–Ni equilibria with every phase match `pycalphad.equilibrium` in
+        phases and compositions, including Al-rich β + Al₃Ni₂ (0.556 /
+        0.594 at 1200 K). There the vacancy-free stand-in was off by up to
+        0.04.
+      - On a toy phase with G(VA:VA) = 0, global pricing matches a dense
+        grid restricted to the domain, while a point with δ = 1e-8 lies more
+        than 10 RT per atom below the tangent.
+    - **Mean-value form for the interval bounds.** The boundary-slab and
+      whole-domain interval bounds use the better of the natural interval
+      form and a mean-value form, Ψ(y) ∈ Ψ(c) + Σ_j ∂_jΨ(box)·(y_j − c_j).
+      Both come from one pass over a first-order Taylor model
+      (`ops.Dual`, the `DUAL` backend): an enclosure over the box, one at
+      c, and interval gradients, with exact zeros for directions a term
+      does not depend on. The natural form overestimates by O(width), the
+      mean-value form by O(width²).
+      - Next to y = 0 or 1, ln y in the entropy's derivative is unbounded
+        on one side only. Those sides expand about the far corner, so y − c
+        has one sign and the term stays finite (with 0·∞ = 0 at interval
+        endpoints). That is exactly where an ordered phase's minimizer sits.
+      - Thin sides (a slab's own coordinate) and sides spanning the whole
+        range stay intervals. Magnetism enters as its interval over the box,
+        unexpanded: a constant is a valid Taylor model, and the term is small.
+      - Checked on random boxes, many touching the domain's edge, in five
+        phases (partitioned and magnetic BCC_B2, FCC_L12, magnetic BCC_A2,
+        the Cu–O ionic liquid, charged fluorite): no sampled Ψ lies below the
+        bound (`tests/test_interval_bounds.py`).
+      - Effect: with BCC_B2 modeled, Al–Ni γ + γ′ (x = 0.22, 1200 K) had
+        lost its certificate. BCC_B2's minimum there (Ψ = 0.175) lies
+        1.5e-8 from a slab, and the natural form stalled at −0.46 after
+        20 000 boxes per slab. The mean-value form closes the slab in 5 s,
+        and the equilibrium is `CERTIFIED_TO_TOLERANCE` in 16 s (it took
+        9 minutes before B2 was modeled).
+    - **Open: certification with β active.** At 1200 K, β + Al₃Ni₂
+      (x = 0.58) and β + γ′ (x = 0.3) end `GLOBAL_SEARCH_INCOMPLETE`, with
+      the mean-value form:
+      - β + γ′: BCC_B2 −1.4e-4 and FCC_L12 −1.0e-5, against ε = 1e-5.
+        Without the form, these were about −3 and −4.4e-5.
+      - β + Al₃Ni₂: BCC_B2 −0.22 and Al₃Ni₂ −1.0e-5. Without the form,
+        about −3 and −4.8e-3.
+    - **Where the weak bound comes from.** An active, nearly perfectly
+      ordered set has its minimum, Ψ = 0, on a corner of the domain:
+      y = (0.0027, 0.804, 0.99999969, 1.0) for β in β + Al₃Ni₂. So the
+      minimum lies inside a slab, and every box around it bounds slightly
+      below 0. The mean-value form shrinks that deficit as O(width²), but
+      the entropy's curvature (1/y, with y = 0.0027) is large. The slab
+      bound goes from −0.22 at 20 000 boxes per slab to −0.023 at 200 000
+      (21 minutes). discopt's bound on the inner box is −0.065 after 300 s.
+      Dropping the floor (`domain_floor = 0`, discopt on the whole box)
+      gives −12.65 on discopt 0.9, so the floor stays. A second-order form,
+      or discopt bounding `entropy` from exactly 0 (discopt#1242), would be
+      the next step.
+23. **Ionic models.** *Issue #6; measured against pycalphad 0.11.2.*
+    - **Species.** A constituent may be a SPECIES with a stoichiometry and a
+      charge (`CU+1` = `CU1/+1`, `O-2`, `O2`, `ALO3/2` = `AL1O1.5`). Formulas
+      are read against the database's elements, longest symbol first. A
+      species takes part in a system when all of its elements do. Amounts are
+      Σ_s a_s Σ_c y_s,c n_e(c), and atoms_min and atoms_max are the minimum
+      and maximum over endmembers. An undefined `R` in an expression is the gas
+      constant, as in pycalphad (cuo.tdb's gas writes `R*T*LN(1E-05*P)`).
+    - **Charged CEF phases** (oxide fluorite, pyrochlore, Nd₂O₃). The domain
+      is cut by charge neutrality, Σ_s a_s Σ_c q_c y_s,c = 0, which is
+      `CEFPhase.domain_equalities`. It applies in five places:
+      - it is a row in the restricted solve;
+      - it is an equality in every global pricing model;
+      - the boundary-slab and interval bounds drop a box whose charge
+        interval excludes 0;
+      - local pricing ranks samples by Ψ plus a penalty on the charge, then
+        refines under the equality with SLSQP;
+      - `initial_y` fits the composition and the charge.
+
+      A missing charged endmember is 0, as in pycalphad.
+    - **Fixed valences make a row redundant.** If every constituent has a
+      fixed valence, q_c = v·n(c), then each neutral phase has v·A(y) = 0, and
+      summed over the sets the balance rows give v·b. With v·b = 0, one row is
+      redundant and the Jacobian is singular, and the interior-point solve
+      errors. `_valence` detects this. The restricted solve then leaves out
+      one neutrality row, or, if no free set has one (a lone ionic liquid),
+      one balance row. In the second case μ_e = 0 for that element. μ is free
+      along v, and when every phase is v-neutral this is a gauge that changes
+      no tangent distance, so the loop does not try to centre μ.
+    - **Two-sublattice ionic liquid** (phase hint `Y`): (C)_P(A, Va, B)_Q,
+      `models/ionic.py`, following Sundman (Calphad 15 (1991) 109) as
+      pycalphad implements it.
+      - The site ratios are Q = Σ q_C y_C and P = Σ |q_A| y_A + Q y_Va, so the
+        liquid is neutral for every y.
+      - Anion-free parameters are multiplied by Q. Their cation fractions are
+        also multiplied by y_Va (the pair rule), except in a single endmember
+        with Va.
+      - Second-sublattice constituents are ordered charged, then Va, then
+        neutral, before the Redlich–Kister difference.
+      - A neutral-only parameter may be written on one sublattice.
+      - Amounts are polynomial in y. Their minimum is still at a vertex: along
+        any edge they are concave or monotone.
+    - **pycalphad cannot evaluate one case.** An ionic liquid with a neutral
+      species and no Va (`I_LIQUID` with ALO3/2) raises in pycalphad 0.11.2,
+      because its pair-rule code looks for a Va sublattice. We follow
+      Sundman's model there, with the neutral term multiplied by Q, and a test
+      checks the formula by hand.
+    - **Checked.**
+      - G matches `pycalphad.calculate` to round-off (≤ 1e-14 relative) for:
+        - the Cu–O, Fe–Mn–S and Nd–Zr–O liquids;
+        - fluorite, pyrochlore and Nd₂O₃-A (al2o3_nd2o3_zro2);
+        - zrlayalo's fluorite.
+      - Equilibria match `pycalphad.equilibrium`:
+        - Cu–O: liquid, Cu₂O + CuO, CuO + gas, Cu₂O + liquid, FCC + Cu₂O;
+        - ZrO₂–NdO₁.₅: fluorite + tetragonal, fluorite, pyrochlore,
+          fluorite + Nd₂O₃-A, monoclinic + pyrochlore.
+      - The ZrO₂–NdO₁.₅ map (`examples/zro2_nd2o3.py`, 425 points at
+        1200–2800 K) solves every point, and 423 match pycalphad. At the
+        other two, a trace of pyrochlore sits next to fluorite. The two
+        states differ by 0.03–0.04 J/mol, within the gas-constant
+        difference between the codes.
+    - **Where pycalphad misses the minimum.** At Cu–O x(O) = 0.2, 1500 K,
+      pycalphad reports Cu₂O + liquid. We find two liquids, Cu-rich and
+      oxide-rich, 46 J/mol lower, with Cu₂O 0.010 RT above the tangent. Both
+      codes give the same G for every phase, so this is the better minimum of
+      the same model: pycalphad's grid starts missed the liquid miscibility
+      gap. `examples/cuo_ionic.py` maps where this happens: pycalphad misses the gap at
+      14 of 425 points and returns no state at 19. The map also finds the eutectic
+      at 1339.4 K (1066.3 °C) and the monotectic L₂ → L₁ + Cu₂O at 1497.1 K.
+    - **Restricted-solve starts.** Starting amounts from a least-squares fit
+      can make the solve converge to a worse KKT point. In the oxide section,
+      a set that should stay then vanished, and the loop cycled until
+      `max_iter`. From the second iteration on, the loop also solves from the
+      previous solution's amounts (`warm=True`, with `mu_init = 1e-6`) and
+      keeps the better result.
+    - **Pricing.**
+      - The ionic liquid's P and Q are bounded auxiliary variables, tied to y
+        by equalities. This raised the 120 s bound on the Cu–O liquid from
+        −3.7 to −1.2.
+      - For phases with at most 4 variables, interval branch and bound over
+        the whole domain runs first (`interval_lower_bound`, 20 000 boxes).
+        It decides most inactive phases in under 1.3 s without a discopt
+        solve.
+      - The boundary-slab bound now gets 20 000 boxes per slab; with 2000 it
+        stopped at −0.64 where 20 000 reach +1e-4.
+      - Cu–O x(O) = 0.4, 1000 K (Cu₂O + CuO) is `GLOBALLY_CERTIFIED`.
+    - **Open.**
+      - An *active* ionic liquid (Cu–O liquid at 1500 K, both liquids
+        stable at x(O) = 0.2) does not certify: its bound stalls at −0.20
+        with the mean-value form of §9.22 (−0.6 before).
+      - A charged four-sublattice phase near the tangent (pyrochlore,
+        0.10 RT above it) does not certify either: discopt reaches −45 in
+        300 s, and a million interval boxes −25.
+24. **Einstein and two-state contributions.** *Issue #6; measured against
+    pycalphad 0.11.2.* Third-generation unary descriptions (Ågren et al.,
+    Calphad 19 (1995) 449–480) give a CEF phase two more terms, per formula
+    unit as in pycalphad (`models/lattice.py`):
+    - **Einstein.** THETA parameters hold ln θ_E. Their Redlich–Kister sum L
+      gives θ = e^L, and G_E = 1.5 R θ + 3 R T ln(1 − e^(−θ/T)).
+    - **Two-state** (Ågren 1988). GD parameters hold ΔG_d, with sum g, and
+      G_2st = −R T ln(1 + e^(−g/RT)).
+    - **As in pycalphad,** a contribution with no parameters is 0. It is not
+      the model's value at L = 0 or g = 0. Only a phase that lists the
+      parameters gets the term, so femn's Mn-rich liquid sees ln θ = y_Fe
+      ln 245 + y_Mn ln θ_Mn.
+    - **Bounding.** Both terms are increasing in their argument:
+      dG_E/dL = 1.5 R θ coth(θ/2T), and dG_2st/dg = 1/(1 + e^(g/RT)). Their
+      derivatives are monotone too. The interval rule is therefore exact (the
+      endpoints, padded for libm), and so is the `DUAL` gradient rule of
+      §9.22. discopt gets the expressions through `exp`, `log` and `log1p`.
+    - **Scope.** CEF phases only. Partitioned phases and ionic liquids with
+      THETA or GD raise `UnsupportedModelError`, and no database in the
+      registry or pycalphad's tests has one.
+    - **Checked** (`tests/test_lattice.py`, `examples/femn_two_state.py`):
+      - G of femn.tdb's Fe–Mn liquid (Xiong magnetism, Einstein, two-state)
+        matches pycalphad.calculate to 1e-9 at 300–2500 K, with pycalphad's
+        R in the terms that carry it;
+      - interval and Taylor-model enclosures on random intervals;
+      - the discopt expression against NUM, and the SymPy view;
+      - 15 Fe–Mn liquid equilibria, certified, with pycalphad's assemblage.
 
 ## 10. Roadmap after MVP 1
 
 **MVP 1 status: done.**
 
-- **Package:** `src/discopt/calphad` with ops backends (NUM/EXPR/INTERVAL),
+- **Package:** `src/discopt/calphad` with ops backends (NUM/EXPR/INTERVAL, and DUAL for mean-value bounds),
   `RegularSolution`, the restricted solve, pricing, generation, certificate and
   plot.
 - **Tests:** `tests/test_regular_solution.py` has one test per §8 step plus a

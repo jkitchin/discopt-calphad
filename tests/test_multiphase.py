@@ -132,7 +132,8 @@ def test_equilibrium_at_exactly_a_compound_composition(x):
     phases = list(db.phase_models(("AL", "NI")).values())
     res = equilibrium(phases, x=x, T=1000.0, certify="none")
     assert res.certificate.level.name == "STABILITY_SEARCHED"
-    assert res.phase_names == ["AL3NI5" if x == 0.375 else "AL3NI1"]
+    # with B2 and L12 modeled (issue #6), x = 0.375 at 1000 K is β + γ′, as pycalphad also finds
+    assert sorted(res.phase_names) == (["BCC_B2", "FCC_L12"] if x == 0.375 else ["AL3NI1"])
 
 
 def test_lone_compound_is_certified_with_a_centred_mu():
@@ -173,4 +174,5 @@ def test_far_from_equilibrium_starts_converge(x):
     phases = list(ThermoDatabase.from_tdb(EMT_FIT).phase_models(("AL", "NI")).values())
     res = equilibrium(phases, x=x, T=700.0, certify="none")
     assert res.certificate.level.name == "STABILITY_SEARCHED"
-    assert sorted(res.phase_names) == ["AL3NI5", "FCC_A1"]
+    # with B2 modeled (issue #6), the EMT fit makes B2 the Al-rich partner, as pycalphad also finds
+    assert sorted(res.phase_names) == ["BCC_B2", "FCC_A1"]

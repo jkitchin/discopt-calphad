@@ -21,7 +21,7 @@ import math
 import numpy as np
 from discopt.modeling.core import FunctionCall
 
-__all__ = ["NUM", "EXPR", "INTERVAL", "Interval"]
+__all__ = ["NUM", "EXPR", "INTERVAL", "DUAL", "Dual", "Interval"]
 
 _INV_E = math.exp(-1.0)
 
@@ -40,13 +40,15 @@ class _Num:
 class _Expr:
     name = "expr"
 
-    def __init__(self, branch=None):
+    def __init__(self, branch=None, s=None):
         #: the piece of a piecewise model to lower (see :mod:`discopt.calphad.models.magnetic`)
         self.branch = branch
+        #: an auxiliary discopt variable standing for T_c'/T on that piece, or None
+        self.s = s
 
-    def with_branch(self, branch) -> _Expr:
-        """This backend, lowering a piecewise model on ``branch``."""
-        return _Expr(branch)
+    def with_branch(self, branch, s=None) -> _Expr:
+        """This backend, lowering a piecewise model on ``branch`` (with ``s`` for T_c'/T if given)."""
+        return _Expr(branch, s)
 
     @staticmethod
     def xlogx(x):
@@ -83,6 +85,8 @@ class Interval:
         return o if isinstance(o, Interval) else Interval(float(o))
 
     def __add__(self, o):
+        if isinstance(o, Dual):
+            return NotImplemented
         o = self._coerce(o)
         return Interval(_down(self.lo + o.lo), _up(self.hi + o.hi))
 
@@ -92,14 +96,19 @@ class Interval:
         return Interval(-self.hi, -self.lo)
 
     def __sub__(self, o):
+        if isinstance(o, Dual):
+            return NotImplemented
         return self + (-self._coerce(o))
 
     def __rsub__(self, o):
         return self._coerce(o) + (-self)
 
     def __mul__(self, o):
+        if isinstance(o, Dual):
+            return NotImplemented
         o = self._coerce(o)
-        p = (self.lo * o.lo, self.lo * o.hi, self.hi * o.lo, self.hi * o.hi)
+        # endpoint products take 0 · ∞ = 0, so an unbounded factor times [0, w] stays well defined
+        p = [0.0 if a == 0 or b == 0 else a * b for a in (self.lo, self.hi) for b in (o.lo, o.hi)]
         return Interval(_down(min(p)), _up(max(p)))
 
     __rmul__ = __mul__
@@ -131,6 +140,88 @@ class _Interval:
         return Interval(lo - pad, hi + pad)
 
 
+def _log(x: Interval) -> Interval:
+    """An enclosure of ln over ``x`` (−∞ at 0), padded for libm's rounding."""
+    lo = math.log(x.lo) if x.lo > 0 else -math.inf
+    hi = math.log(x.hi) if x.hi > 0 else -math.inf
+    pad = lambda v: 4e-16 * max(1.0, abs(v)) if math.isfinite(v) else 0.0  # noqa: E731
+    return Interval(lo - pad(lo), hi + pad(hi))
+
+
+class Dual:
+    """A first-order Taylor model of a quantity q over a box, for mean-value bounds.
+
+    For an expansion point c in the box, three enclosures: ``v`` ⊇ q(box),
+    ``c`` ⊇ q(c), and gradients ``d`` with q(y) ∈ c + Σ_k d_k (y_k − c_k) for
+    every y in the box. ``d`` has one entry per expanded direction, and
+    ``None`` is an exact zero: a term that does not depend on a direction adds
+    nothing to it, even when its own derivative is unbounded (ln 0 in
+    ``xlogx``). A quantity known only by its range is ``Dual.const(range)``.
+    """
+
+    __slots__ = ("v", "c", "d")
+
+    def __init__(self, v: Interval, c: Interval, d: tuple):
+        self.v, self.c, self.d = v, c, d
+
+    @staticmethod
+    def const(v, n: int) -> Dual:
+        v = Interval._coerce(v)
+        return Dual(v, v, (None,) * n)
+
+    def _other(self, o) -> Dual:
+        return o if isinstance(o, Dual) else Dual.const(o, len(self.d))
+
+    def __add__(self, o):
+        o = self._other(o)
+        return Dual(self.v + o.v, self.c + o.c, tuple(_dsum(a, b) for a, b in zip(self.d, o.d)))
+
+    __radd__ = __add__
+
+    def __neg__(self):
+        return Dual(-self.v, -self.c, tuple(None if a is None else -a for a in self.d))
+
+    def __sub__(self, o):
+        return self + (-self._other(o))
+
+    def __rsub__(self, o):
+        return (-self) + o
+
+    def __mul__(self, o):
+        # q r − q(c) r(c) = (q − q(c)) r + q(c) (r − r(c))
+        o = self._other(o)
+        d = tuple(_dsum(None if a is None else a * o.v, None if b is None else b * self.c) for a, b in zip(self.d, o.d))
+        return Dual(self.v * o.v, self.c * o.c, d)
+
+    __rmul__ = __mul__
+
+    def __repr__(self) -> str:
+        return f"Dual({self.v!r}, {self.c!r}, {self.d!r})"
+
+
+def _dsum(a, b):
+    return b if a is None else a if b is None else a + b
+
+
+def _nonneg(x: Interval) -> Interval:
+    # outward rounding of a site fraction can reach just below 0 (see _Interval.xlogx)
+    return x if x.lo >= 0 else Interval(0.0, max(x.hi, 0.0))
+
+
+class _DualInterval:
+    """``INTERVAL`` carried as first-order Taylor models: values are :class:`Dual`."""
+
+    name = "dual"
+
+    @staticmethod
+    def xlogx(x):
+        if not isinstance(x, Dual):
+            return _Interval.xlogx(x)  # a constant
+        g = _log(_nonneg(x.v)) + 1.0  # d(x ln x)/dx over the range of x
+        return Dual(_Interval.xlogx(x.v), _Interval.xlogx(x.c), tuple(None if a is None else g * a for a in x.d))
+
+
 NUM = _Num()
 EXPR = _Expr()
 INTERVAL = _Interval()
+DUAL = _DualInterval()

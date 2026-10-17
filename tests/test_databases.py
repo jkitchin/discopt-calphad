@@ -40,9 +40,10 @@ def test_find_prefers_complete_then_dedicated():
     names = [e.name for e in find(["zn", "al"])]
     assert names[0] == "alzn_mey"  # complete and binary, ahead of COST507
     assert "cost507" in names
-    assert [e.name for e in find(["AL", "ZN"], complete=True)] == ["alzn_mey"]
-    assert find(["AL", "FE"], complete=True) == []
-    assert all(e.unsupported(["AL", "FE"]) for e in find(["AL", "FE"]))
+    assert [e.name for e in find(["AL", "ZN"], complete=True)] == ["alzn_mey", "cost507"]  # dedicated first
+    # every Al–Fe file is complete now that order–disorder phases, with ordered-part magnetism, are modeled
+    assert [e.name for e in find(["AL", "FE"], complete=True)] == ["alfe_cost507", "alfe_sundman", "cost507"]
+    assert not get("alfe_sundman").unsupported(["AL", "FE"])
     assert find(["XX", "YY"]) == []
 
 

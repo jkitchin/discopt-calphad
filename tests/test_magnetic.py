@@ -1,4 +1,4 @@
-"""The Inden–Hillert–Jarl magnetic contribution (issue #6, first step: no global certificate yet)."""
+"""The Inden–Hillert–Jarl magnetic contribution (issue #6): model, interval bounds, and certified pricing."""
 
 import sys
 from pathlib import Path
@@ -6,12 +6,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from discopt.calphad import CertificateLevel, ThermoDatabase, UnsupportedModelError, equilibrium
+from discopt.calphad import CertificateLevel, ThermoDatabase, equilibrium
 from discopt.calphad.equilibrium.common import R_GAS
 from discopt.calphad.equilibrium.pricing import price_phase
 from discopt.calphad.equilibrium.restricted import CompositionSet, solve_restricted
 from discopt.calphad.models import CEFPhase
-from discopt.calphad.models.magnetic import _ordered, _paramagnetic, ihj
+from discopt.calphad.models.magnetic import Branch, Magnetic, _afm_image, _ordered, _paramagnetic, branch_ranges, ihj
 from discopt.calphad.ops import EXPR, INTERVAL, NUM, Interval
 
 PYCALPHAD_R = 8.3145  # pycalphad.variables.R
@@ -90,15 +90,60 @@ def test_num_matches_expr_on_every_branch(bcc):
             assert got == pytest.approx(float(bcc.gibbs([y], NUM, T)), rel=1e-12), (T, y, branch)
 
 
-def test_expr_without_a_branch_and_interval_raise(bcc):
+def test_expr_without_a_branch_raises(bcc):
     import discopt.modeling as dm
 
     m = dm.Model("g")
     v = m.continuous("y", lb=0.0, ub=1.0)
     with pytest.raises(ValueError, match="with_branch"):
         bcc.gibbs([v], EXPR, 800.0)
-    with pytest.raises(NotImplementedError, match="interval"):
-        bcc.gibbs([Interval(0.2, 0.3)], INTERVAL, 800.0)
+
+
+@pytest.mark.parametrize("p", [0.4, 0.28])
+def test_ihj_f_is_decreasing_across_both_branches(p):
+    """The interval rule for f uses only its endpoints, which needs f decreasing on all s ≥ 0."""
+    A = 518 / 1125 + (11692 / 15975) * (1 / p - 1)
+    s_para, s_ord = np.linspace(0, 1, 20001), np.geomspace(1, 1e4, 20001)
+    assert np.all(np.diff(_paramagnetic(s_para, A)) < 0)
+    assert np.all(np.diff(_ordered(s_ord, p, A)) < 0)
+    assert _paramagnetic(0.0, A) == 0.0
+
+
+def test_afm_image():
+    """x' is x for x > 0 and x / afm for x ≤ 0, so its range over a straddling interval starts at 0."""
+    for lo, hi in [(2.0, 5.0), (-6.0, -3.0), (-6.0, 1.0), (-1.0, 4.0), (0.0, 0.0)]:
+        out = _afm_image(Interval(lo, hi), -3.0)
+        xs = np.append(np.linspace(lo, hi, 1001), [0.0] if lo <= 0 <= hi else [])
+        img = np.where(xs <= 0, xs / -3.0, xs)
+        assert out.lo <= img.min() and out.hi >= img.max()
+        assert out.lo == pytest.approx(img.min(), abs=1e-14) and out.hi == pytest.approx(img.max(), rel=1e-14)
+
+
+def test_branch_ranges_prune_and_cut_s():
+    mag = Magnetic(afm=-1.0, p=0.4)
+    # T_c in [200, 600] at T = 400: ferromagnetic only, both sides of s = 1; β > 0 only
+    got = branch_ranges(mag, Interval(200.0, 600.0), Interval(0.5, 1.0), 400.0)
+    assert [b for b, _ in got] == [Branch(False, False, False), Branch(False, False, True)]
+    (_, para), (_, ordered) = got
+    assert para[0] == pytest.approx(0.5) and para[1] == 1.0
+    assert ordered[0] == 1.0 and ordered[1] == pytest.approx(1.5)
+    # T_c in [-100, 50] at T = 400: never ordered; both signs of T_c and of β
+    got = branch_ranges(mag, Interval(-100.0, 50.0), Interval(-0.1, 0.2), 400.0)
+    assert sorted(got) == sorted(
+        [(Branch(tn, bn, False), r) for tn, r in ((True, got[0][1]), (False, got[2][1])) for bn in (True, False)]
+    )
+    assert not any(b.ordered for b, _ in got)
+
+
+def test_interval_encloses_magnetic_gibbs(bcc):
+    rng = np.random.default_rng(0)
+    for T in (300.0, 500.0, 800.0, 1100.0, 1600.0):
+        for _ in range(200):
+            c, w = rng.uniform(0, 1), rng.uniform(0, 0.4)
+            lo, hi = max(c - w, 0.0), min(c + w, 1.0)
+            box = bcc.gibbs([Interval(lo, hi)], INTERVAL, T)
+            vals = np.array([float(bcc.gibbs([y], NUM, T)) for y in np.linspace(lo, hi, 201)])
+            assert box.lo <= vals.min() and box.hi >= vals.max(), (T, lo, hi)
 
 
 def test_symbolic_view_matches_numeric(bcc):
@@ -116,12 +161,120 @@ def test_symbolic_view_matches_numeric(bcc):
             assert f(y, 1 - y, T, R_GAS) == pytest.approx(float(bcc.gibbs([y], NUM, T)) * R_GAS * T, rel=1e-10)
 
 
-def test_xiong_model_is_reported_unsupported():
-    db = ThermoDatabase.from_string(
-        TDB.replace("MAGNETIC -1.0 4.00000E-01", "MAGNETIC 0.0 0.25"),
-    )
-    with pytest.raises(UnsupportedModelError, match="Xiong"):
-        db.phase_model("BCC", ("A", "B"))
+XIONG_TDB = """
+ELEMENT VA VACUUM 0 0 0 !
+ELEMENT A BLANK 1 0 0 !
+ELEMENT B BLANK 1 0 0 !
+TYPE_DEFINITION % SEQ * !
+TYPE_DEFINITION & GES A_P_D BCC MAGNETIC 0.0 0.25 !
+PHASE BCC %& 2 1 3 !
+CONSTITUENT BCC : A,B : VA : !
+PARAMETER G(BCC,A:VA;0) 298.15 -8000-30*T; 6000 N !
+PARAMETER G(BCC,B:VA;0) 298.15 -7000-32*T; 6000 N !
+PARAMETER G(BCC,A,B:VA;0) 298.15 15000-6*T; 6000 N !
+PARAMETER TC(BCC,A:VA;0) 298.15 1000; 6000 N !
+PARAMETER TC(BCC,B:VA;0) 298.15 -50; 6000 N !
+PARAMETER NT(BCC,B:VA;0) 298.15 600; 6000 N !
+PARAMETER NT(BCC,A:VA;0) 298.15 -100; 6000 N !
+PARAMETER BMAGN(BCC,A:VA;0) 298.15 2.2; 6000 N !
+PARAMETER BMAGN(BCC,B:VA;0) 298.15 0.6; 6000 N !
+PARAMETER BMAGN(BCC,A,B:VA;0) 298.15 -0.5; 6000 N !
+PHASE LIQ % 1 1 !
+CONSTITUENT LIQ : A,B : !
+PARAMETER G(LIQ,A;0) 298.15 5000-36*T; 6000 N !
+PARAMETER G(LIQ,B;0) 298.15 6000-37*T; 6000 N !
+"""
+
+
+@pytest.fixture(scope="module")
+def xiong_db():
+    return ThermoDatabase.from_string(XIONG_TDB)
+
+
+def test_xiong_function_is_continuous_and_decreasing():
+    """With the τ²¹ term inside the (1/p − 1) bracket (Xiong et al. 2012), g is C¹ at τ = 1 and decreasing."""
+    from discopt.calphad.models.magnetic import _x_ord, _x_para
+
+    for p in (0.25, 0.28, 0.4):
+        assert _x_para(1.0, p) == pytest.approx(_x_ord(1.0, p), abs=1e-7)
+        h = 1e-6
+        assert (_x_para(1.0, p) - _x_para(1 - h, p)) / h == pytest.approx(
+            (_x_ord(1 + h, p) - _x_ord(1.0, p)) / h, rel=1e-4
+        )
+        assert np.all(np.diff(_x_para(np.linspace(0, 1, 5001), p)) <= 0)
+        assert np.all(np.diff(_x_ord(np.geomspace(1, 1e3, 5001), p)) < 0)
+
+
+def test_xiong_phase_builds_with_neel_terms(xiong_db):
+    bcc = xiong_db.phase_model("BCC", ("A", "B"))
+    assert bcc.magnetic.xiong and bcc.magnetic.quantities == ("tc", "nt", "beta")
+    assert len(bcc.magnetic.nt) == 2
+    assert bcc.neel_temperature([0.2], 500.0) == pytest.approx(-100 * 0.2 + 600 * 0.8)
+
+
+def _pycalphad_xiong_shift(s, p):
+    """pycalphad 0.11.2 minus ours for one g with s = X/T: its τ²¹/1617 sits outside the (1/p − 1) bracket."""
+    from discopt.calphad.models.magnetic import _XB, _xD
+
+    if s < 1:  # τ > 1, or X ≤ 0: the same
+        return 0.0
+    return -(1 - _XB * (1 / p - 1)) * s**-21 / 1617 / _xD(p)
+
+
+@pytest.mark.parametrize("t", [300.0, 450.0, 700.0, 1100.0, 1500.0])
+def test_xiong_gibbs_matches_pycalphad(xiong_db, t):
+    pytest.importorskip("pycalphad")
+    from pycalphad import Database, calculate
+
+    bcc = xiong_db.phase_model("BCC", ("A", "B"))
+    ys = np.linspace(0.02, 0.98, 13)
+    pts = np.array([[y, 1 - y, 1.0] for y in ys])
+    ref = calculate(Database(XIONG_TDB), ["A", "B", "VA"], "BCC", T=t, P=101325, N=1, points=pts, output="GM")
+    for y, gm in zip(ys, np.asarray(ref.GM).ravel()):
+        tc, nt, beta = bcc.curie_temperature([y], t), bcc.neel_temperature([y], t), bcc.magnetic_moment([y], t)
+        shift = (_pycalphad_xiong_shift(tc / t, 0.25) + _pycalphad_xiong_shift(nt / t, 0.25)) * np.log1p(beta)
+        ideal = y * np.log(y) + (1 - y) * np.log(1 - y)
+        mag = float(bcc.magnetic.term((tc, nt, beta), t, NUM))
+        ours = (float(bcc.gibbs([y], NUM, t)) + shift) * R_GAS * t + (PYCALPHAD_R - R_GAS) * t * (ideal + mag + shift)
+        assert ours == pytest.approx(gm, rel=1e-9, abs=1e-6), (t, y)
+
+
+def test_xiong_interval_encloses(xiong_db):
+    bcc = xiong_db.phase_model("BCC", ("A", "B"))
+    rng = np.random.default_rng(4)
+    for T in (300.0, 550.0, 900.0, 1400.0):
+        for _ in range(150):
+            c, w = rng.uniform(0, 1), rng.uniform(0, 0.3)
+            lo, hi = max(c - w, 0.0), min(c + w, 1.0)
+            box = bcc.gibbs([Interval(lo, hi)], INTERVAL, T)
+            vals = np.array([float(bcc.gibbs([y], NUM, T)) for y in np.linspace(lo, hi, 201)])
+            assert box.lo <= vals.min() and box.hi >= vals.max()
+
+
+def test_xiong_global_pricing_matches_a_grid(xiong_db):
+    bcc = xiong_db.phase_model("BCC", ("A", "B"))
+    ys = np.linspace(1e-9, 1 - 1e-9, 20001)
+    for T, mu in ((450.0, [-4.0, -3.5]), (800.0, [-3.0, -2.5])):
+        r = price_phase(bcc, np.array(mu), T=T)
+        psi = np.array([float(bcc.gibbs([y], NUM, T)) - mu[0] * y - mu[1] * (1 - y) for y in ys])
+        assert r.ub == pytest.approx(psi.min(), abs=1e-6)
+        assert r.lb is not None and psi.min() - 1e-5 <= r.lb <= psi.min() + 1e-12
+
+
+def test_xiong_equilibrium_matches_pycalphad(xiong_db):
+    pytest.importorskip("pycalphad")
+    from pycalphad import Database
+    from pycalphad import equilibrium as pyeq
+    from pycalphad import variables as v
+
+    phases = list(xiong_db.phase_models(("A", "B")).values())
+    for x, t in ((0.5, 500.0), (0.3, 900.0)):
+        res = equilibrium(phases, x=x, T=t, certify="none")
+        eq = pyeq(Database(XIONG_TDB), ["A", "B", "VA"], ["BCC", "LIQ"], {v.X("A"): x, v.T: t, v.P: 101325, v.N: 1})
+        names = [str(n) for n in np.squeeze(eq.Phase.values) if n]
+        xs = np.atleast_1d(np.squeeze(eq.X.sel(component="A").values))[: len(names)]
+        ref = sorted((n, round(float(c), 2)) for n, c in zip(names, xs))
+        assert sorted((cs.phase.name, round(float(cs.x[0]), 2)) for cs in res.composition_sets) == ref
 
 
 def test_fixed_composition_magnetic_phase_is_priced_exactly():
@@ -163,11 +316,31 @@ def test_restricted_solve_switches_branch():
     assert bcc.magnetic_branch(res.sets[1].y, T).tc_negative
 
 
-def test_equilibrium_reports_search_incomplete(bcc, db):
+def test_global_pricing_matches_a_dense_grid(bcc):
+    """Branch-split pricing finds the grid minimum and bounds it, at T on both sides of the T_c range."""
+    ys = np.linspace(1e-9, 1 - 1e-9, 40001)
+    for T, mu in ((500.0, [-3.0, -2.5]), (900.0, [-2.0, -3.0])):
+        r = price_phase(bcc, np.array(mu), T=T)
+        psi = np.array([float(bcc.gibbs([y], NUM, T)) - mu[0] * y - mu[1] * (1 - y) for y in ys])
+        assert r.bound_source in ("tree", "callback") and r.lb is not None
+        assert r.ub == pytest.approx(psi.min(), abs=1e-7)
+        assert r.lb <= psi.min() + 1e-12 and r.lb >= psi.min() - 1e-5
+
+
+def test_magnetic_equilibrium_is_certified(db):
     phases = list(db.phase_models(("A", "B")).values())
     res = equilibrium(phases, x=0.5, T=900.0, certify="final")
-    assert res.certificate.level == CertificateLevel.GLOBAL_SEARCH_INCOMPLETE
-    assert any("magnetic" in m for m in res.certificate.messages)
+    assert res.certificate.level in (CertificateLevel.GLOBALLY_CERTIFIED, CertificateLevel.CERTIFIED_TO_TOLERANCE)
+    assert res.certificate.lower_bounds["BCC"] is not None
+
+
+@pytest.mark.slow
+def test_crfe_bcc_gap_is_certified():
+    """Cr–Fe at 700 K: the ferromagnetic and antiferromagnetic BCC sets of the gap, certified."""
+    bcc = ThermoDatabase.from_tdb(pycalphad_db("CrFeNb_Jacob2016.tdb")).phase_model("BCC_A2", ("CR", "FE"))
+    res = equilibrium([bcc], x=0.5, T=700.0, certify="final")
+    assert res.certificate.level in (CertificateLevel.GLOBALLY_CERTIFIED, CertificateLevel.CERTIFIED_TO_TOLERANCE)
+    assert sorted(float(cs.x[0]) for cs in res.composition_sets) == pytest.approx([0.1135, 0.9228], abs=5e-4)
 
 
 # ---------------------------------------------------------------------------- pycalphad oracle

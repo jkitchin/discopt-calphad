@@ -30,6 +30,18 @@ slabs) without linear constraints. For a product of factors,
 x ln x = Σ_i f_i ln f_i Π_{j≠i} f_j. Every ``xlogx`` call therefore acts on a
 single u or 1 − u, where discopt's ``entropy`` rules are tightest.
 
+**Vacancies.** A vacancy on a sublattice makes the number of atoms per formula
+unit depend on y. When every sublattice can hold one (constitutional vacancies
+in B2, for example), a formula unit could even be empty, and the model has no
+global minimum. With G(VA:…:VA) = 0, as in most databases, a dilute fraction δ
+of atoms in an otherwise empty lattice has G per atom ≈ G_atom + L + RT ln δ,
+which goes to −∞: an unbounded "vacuum phase" that only sampling resolution
+hides. The phase is therefore restricted to formula units holding at least
+``min_occupancy`` (default 0.5) of :attr:`atoms_max` in atoms, through
+:meth:`domain_constraints`. Constitutional vacancies in real phases are far
+below that. A certificate covers that domain, and the bound on the total
+amount of formula units, Σb/atoms_min, is finite again.
+
 **Magnetic ordering.** With ``magnetic`` set, G also gets the Inden–Hillert–Jarl
 term RT ln(β' + 1) f(T/T_c'). T_c(y) and β(y) are built from TC and BMAGN terms
 with the same products as above. See :mod:`discopt.calphad.models.magnetic`.
@@ -45,7 +57,7 @@ from itertools import product
 import numpy as np
 
 from discopt.calphad.equilibrium.common import R_GAS
-from discopt.calphad.models.magnetic import Branch, Magnetic, branch_constraints, branch_of, ihj
+from discopt.calphad.models.magnetic import Magnetic
 from discopt.calphad.models.tfunc import coef
 from discopt.calphad.ops import NUM
 
@@ -100,12 +112,31 @@ class CEFPhase:
     terms: tuple[CEFTerm, ...] = ()
     #: the magnetic ordering contribution, if the phase has one
     magnetic: Magnetic | None = None
+    #: with a vacancy on every sublattice, the fewest atoms a formula unit may hold, as a fraction of
+    #: :attr:`atoms_max` (see "Vacancies" in the module docstring)
+    min_occupancy: float = 0.5
+    #: constituents that are not elements: ``(name, ((element, amount), ...), charge)`` each
+    species: tuple = ()
+    #: THETA terms (ln θ_E) of the Einstein contribution, and GD terms of the two-state contribution
+    #: (see :mod:`discopt.calphad.models.lattice`)
+    einstein: tuple[CEFTerm, ...] = ()
+    two_state: tuple[CEFTerm, ...] = ()
     _layout: tuple = field(init=False, repr=False, compare=False)
+    #: constituent -> ({element: amount}, charge), for elements, VA and ``species``
+    _stoich: dict = field(init=False, repr=False, compare=False)
 
     def __post_init__(self):
         if len(self.site_ratios) != len(self.constituents):
             raise ValueError(f"{self.name}: one site ratio per sublattice is required")
-        allowed = set(self.elements) | {VACANCY}
+        stoich = {e: ({e: 1.0}, 0.0) for e in self.elements}
+        stoich[VACANCY] = ({}, 0.0)
+        for name, comp, charge in self.species:
+            comp = dict(comp)
+            if not set(comp) <= set(self.elements):
+                raise ValueError(f"{self.name}: species {name} has elements outside {self.elements}")
+            stoich[name] = (comp, float(charge))
+        object.__setattr__(self, "_stoich", stoich)
+        allowed = set(stoich)
         for s, cons in enumerate(self.constituents):
             if not cons or len(set(cons)) != len(cons) or not set(cons) <= allowed:
                 raise ValueError(f"{self.name}: bad constituents {cons} on sublattice {s}")
@@ -113,16 +144,17 @@ class CEFPhase:
                 raise ValueError(f"{self.name}: constituents on sublattice {s} must be sorted")
         for t in self.terms + (self.magnetic.tc + self.magnetic.beta if self.magnetic else ()):
             self._check_term(t)
+        for t in self.einstein + self.two_state:
+            self._check_term(t)
         layout, i = [], 0
         for cons in self.constituents:
             layout.append(tuple(range(i, i + len(cons) - 1)))
             i += len(cons) - 1
         object.__setattr__(self, "_layout", tuple(layout))
-        if self.atoms_min <= 0:
-            raise NotImplementedError(
-                f"{self.name}: an all-vacancy configuration has no atoms, "
-                "so the certificate's amount bound is unbounded"
-            )
+        if not 0 < self.min_occupancy <= 1:
+            raise ValueError(f"{self.name}: min_occupancy must be in (0, 1], got {self.min_occupancy}")
+        if self.atoms_max <= 0:
+            raise ValueError(f"{self.name}: no sublattice can hold an atom")
 
     def _check_term(self, t: CEFTerm) -> None:
         if len(t.constituents) != len(self.constituents):
@@ -151,10 +183,73 @@ class CEFPhase:
     def y_bounds(self) -> list[tuple[float, float]]:
         return [(0.0, 1.0)] * self.n_y
 
+    def _atoms_of(self, constituent) -> float:
+        return float(sum(self._stoich[constituent][0].values()))
+
+    def _endmember_atoms(self) -> list[float]:
+        """Atoms per formula unit of every endmember. Atoms are linear in y, so these bound them."""
+        per = [[self._atoms_of(c) for c in cons] for cons in self.constituents]
+        out = [0.0]
+        for a, opts in zip(self.site_ratios, per):
+            out = [t + a * n for t in out for n in sorted(set(opts))]
+        return out
+
+    @property
+    def atoms_max(self) -> float:
+        """Most atoms per formula unit, over the endmembers."""
+        return max(self._endmember_atoms())
+
+    @property
+    def vacancy_limited(self) -> bool:
+        """True if every sublattice can hold a vacancy, so that a formula unit could be empty."""
+        return all(VACANCY in cons for cons in self.constituents)
+
+    @property
+    def charged(self) -> bool:
+        """True if some constituent carries a charge: the phase then needs charge neutrality."""
+        return any(self._stoich[c][1] != 0 for cons in self.constituents for c in cons)
+
+    def charge(self, y):
+        """Σ_s a_s Σ_c q_c y_s,c: the charge per formula unit (0 on the phase's domain if :attr:`charged`)."""
+        Y = self._Y(y)
+        total = 0.0
+        for a, d in zip(self.site_ratios, Y):
+            for c, v in d.items():
+                q = self._stoich[c][1]
+                if q:
+                    total = total + (a * q) * v
+        return total
+
+    def domain_equalities(self, y) -> list:
+        """Expressions in ``y`` that are 0 on the phase's domain: charge neutrality, scaled to order one."""
+        if not self.charged:
+            return []
+        scale = max(abs(self._stoich[c][1]) * a for a, cons in zip(self.site_ratios, self.constituents) for c in cons)
+        return [self.charge(y) * (1.0 / scale)]
+
     @property
     def atoms_min(self) -> float:
-        """Fewest atoms per formula unit: each sublattice that can hold VA may be empty."""
-        return float(sum(a for a, cons in zip(self.site_ratios, self.constituents) if VACANCY not in cons))
+        """Fewest atoms per formula unit.
+
+        Each sublattice that can hold VA may be empty. If every one can, the
+        phase is restricted to :attr:`min_occupancy` · :attr:`atoms_max` (see
+        :meth:`domain_constraints`).
+        """
+        if self.vacancy_limited:
+            return self.min_occupancy * self.atoms_max
+        return min(self._endmember_atoms())
+
+    def domain_constraints(self, y) -> list:
+        """Expressions in ``y`` that are ≥ 0 on the phase's domain, beyond the box.
+
+        Only a vacancy-limited phase has one: atoms(y) − atoms_min ≥ 0.
+        """
+        if not self.vacancy_limited:
+            return []
+        total = 0.0
+        for a in self.amounts(y):
+            total = total + a
+        return [(total - self.atoms_min) * (1.0 / self.atoms_max)]
 
     def _factors(self, y):
         """Per sublattice, the stick-breaking factors of each constituent's site fraction."""
@@ -173,21 +268,66 @@ class CEFPhase:
     def gibbs(self, y, ops=NUM, T=None):
         if T is None:
             raise ValueError(f"{self.name}: temperature T is required")
-        RT = R_GAS * T
         F = self._factors(y)
         Y = [{c: _prod(f) for c, f in d.items()} for d in F]
+        G = self.energy_at(Y, T) + self._ideal(F, ops)
+        if self.magnetic is not None:
+            G = G + self.magnetic_at(Y, T, ops)
+        if self.einstein or self.two_state:
+            G = G + self.lattice_at(Y, T, ops)
+        return G
+
+    def lattice_at(self, Y, T: float, ops):
+        """G_E/RT + G_2st/RT at site fractions ``Y``: the Einstein and two-state contributions.
+
+        As in pycalphad, a contribution whose parameters all vanish is 0, not
+        the model's value at a zero argument.
+        """
+        from discopt.calphad.models.lattice import einstein, two_state
+
+        G = 0.0
+        for terms, f in ((self.einstein, einstein), (self.two_state, two_state)):
+            q = self._sum(terms, Y, T)
+            if not (isinstance(q, float) and q == 0.0):
+                G = G + f(q, T, ops)
+        return G
+
+    def energy_at(self, Y, T: float):
+        """Σ_terms P(Y) V(T) / RT: G/RT without the ideal mixing and magnetic terms.
+
+        ``Y`` holds the site fractions per sublattice as dicts by constituent.
+        They may be any expressions: :class:`PartitionedPhase` evaluates this
+        at site-averaged fractions.
+        """
+        RT = R_GAS * T
         G = 0.0
         for t in self.terms:
             v = coef(t.value, T) / RT
             if v != 0.0:
                 G = G + v * self._term_factor(t, Y)
+        return G
+
+    def ideal_at(self, Y, ops):
+        """RT Σ_s a_s Σ_c y ln y, divided by RT, for site fractions ``Y`` given as expressions."""
+        G = 0.0
+        for a, d in zip(self.site_ratios, Y):
+            if len(d) > 1:
+                for v in d.values():
+                    G = G + a * ops.xlogx(v)
+        return G
+
+    def magnetic_at(self, Y, T: float, ops):
+        """G_mag/RT at site fractions ``Y`` (0 without magnetism)."""
+        if self.magnetic is None:
+            return 0.0
+        return self.magnetic.term(self._magnetic_q(Y, T), T, ops)
+
+    def _ideal(self, F, ops):
+        G = 0.0
         for a, d in zip(self.site_ratios, F):
             for f in d.values():
                 if f:
                     G = G + a * _xlogx_prod(f, ops)
-        if self.magnetic is not None:
-            tc, beta = self._magnetic_sums(Y, T)
-            G = G + ihj(self.magnetic, tc, beta, T, ops)
         return G
 
     # ------------------------------------------------------------------ magnetism
@@ -203,6 +343,11 @@ class CEFPhase:
     def _magnetic_sums(self, Y, T):
         return self._sum(self.magnetic.tc, Y, T), self._sum(self.magnetic.beta, Y, T)
 
+    def _magnetic_q(self, Y, T):
+        """The magnetic model's quantities (``Magnetic.quantities``) at site fractions ``Y``."""
+        mag = self.magnetic
+        return tuple(self._sum(getattr(mag, name), Y, T) for name in mag.quantities)
+
     def _Y(self, y):
         return [{c: _prod(f) for c, f in d.items()} for d in self._factors(y)]
 
@@ -212,25 +357,48 @@ class CEFPhase:
             return 0.0
         return float(self._sum(self.magnetic.tc, self._Y(np.asarray(y, float)), T))
 
+    def neel_temperature(self, y, T: float) -> float:
+        """T_N(y) in K (Xiong model; 0 otherwise)."""
+        if self.magnetic is None:
+            return 0.0
+        return float(self._sum(self.magnetic.nt, self._Y(np.asarray(y, float)), T))
+
     def magnetic_moment(self, y, T: float) -> float:
         """β(y) in Bohr magnetons, before the AFM division (0 for a phase without magnetism)."""
         if self.magnetic is None:
             return 0.0
         return float(self._sum(self.magnetic.beta, self._Y(np.asarray(y, float)), T))
 
-    def magnetic_branch(self, y, T: float) -> Branch | None:
+    def magnetic_branch(self, y, T: float):
         """The smooth piece of the magnetic term at numeric ``y``, or None without magnetism."""
         if self.magnetic is None:
             return None
-        return branch_of(self.curie_temperature(y, T), self.magnetic_moment(y, T), T, self.magnetic.afm)
+        q = [float(v) for v in self._magnetic_q(self._Y(np.asarray(y, float)), T)]
+        return self.magnetic.branch_at(q, T)
 
-    def branch_constraints(self, y, T: float, branch: Branch) -> list:
-        """discopt expressions in ``y`` that are ≥ 0 exactly on ``branch``.
+    def branch_constraints(self, y, T: float, branch) -> list:
+        """discopt expressions in ``y`` that are ≥ 0 exactly on ``branch`` (``Magnetic.constraints``)."""
+        return self.magnetic.constraints(self._magnetic_q(self._Y(y), T), T, branch)
 
-        See :func:`discopt.calphad.models.magnetic.branch_constraints`.
+    def magnetic_pieces(self, box, T: float) -> list:
+        """The magnetic branches the site-fraction ``box`` may reach, each with its auxiliary-variable ranges.
+
+        An interval evaluation of the magnetic quantities over the box rules
+        out the others (``Magnetic.ranges``).
         """
-        tc, beta = self._magnetic_sums(self._Y(y), T)
-        return branch_constraints(self.magnetic, tc, beta, T, branch)
+        from discopt.calphad.ops import Interval
+
+        q = self._magnetic_q(self._Y([Interval(lo, hi) for lo, hi in box]), T)
+        return self.magnetic.ranges(q, T)
+
+    def pricing_constraints(self, y, T: float, branch, s=None) -> tuple[list, list]:
+        """``(equalities, inequalities)`` in discopt variables ``y`` that hold ``y`` on ``branch``.
+
+        ``s`` holds the auxiliary variables of the branch's ranges
+        (``Magnetic.pricing_rows``). Without them, the result is
+        :meth:`branch_constraints` as inequalities.
+        """
+        return self.magnetic.pricing_rows(self._magnetic_q(self._Y(y), T), T, branch, s)
 
     def _term_factor(self, t: CEFTerm, Y):
         mixing = [s for s, c in enumerate(t.constituents) if len(c) > 1]
@@ -256,8 +424,10 @@ class CEFPhase:
         for e in self.elements:
             total = 0.0
             for a, d in zip(self.site_ratios, Y):
-                if e in d:
-                    total = total + a * d[e]
+                for c, v in d.items():
+                    n = self._stoich[c][0].get(e, 0.0)
+                    if n:
+                        total = total + (a * n) * v
             out.append(total)
         return tuple(out)
 
@@ -274,7 +444,7 @@ class CEFPhase:
 
         def xres(u):
             a = np.array([float(v) for v in self.amounts(u)])
-            return a / a.sum() - xb
+            return np.concatenate([a / a.sum() - xb, [float(g) for g in self.domain_equalities(u)]])
 
         if self.n_y == 0:
             return np.empty(0) if np.max(np.abs(xres(np.empty(0)))) < 1e-12 else None
@@ -343,6 +513,16 @@ class CEFPhase:
             G += sp.nsimplify(a) * R * T_ * sum(yc * sp.log(yc) for yc in d.values() if yc != 1)
         if self.magnetic is not None:
             G += R * T_ * self._magnetic_expr(Y)
+
+        def total(terms):
+            vals = (t.value.expr() if hasattr(t.value, "expr") else sp.sympify(t.value) for t in terms)
+            return sum((self._term_factor(t, Y) * v for t, v in zip(terms, vals)), sp.Integer(0))
+
+        if self.einstein:
+            theta = sp.exp(total(self.einstein))
+            G += sp.Rational(3, 2) * R * theta + 3 * R * T_ * sp.log(1 - sp.exp(-theta / T_))
+        if self.two_state:
+            G += -R * T_ * sp.log(1 + sp.exp(-total(self.two_state) / (R * T_)))
         return G
 
     def _magnetic_expr(self, Y):
@@ -358,6 +538,13 @@ class CEFPhase:
         mag = self.magnetic
         tc = sum((self._term_factor(t, Y) * value(t) for t in mag.tc), sp.Integer(0))
         beta = sum((self._term_factor(t, Y) * value(t) for t in mag.beta), sp.Integer(0))
+        if mag.xiong:
+            from discopt.calphad.models.magnetic import _x_ord, _x_para
+
+            nt = sum((self._term_factor(t, Y) * value(t) for t in mag.nt), sp.Integer(0))
+            s = sp.Symbol("s", real=True)
+            g = sp.Piecewise((0, s <= 0), (_x_para(s, mag.p), s <= 1), (_x_ord(s, mag.p), True))
+            return sp.log(beta + 1) * (g.subs(s, tc / T_) + g.subs(s, nt / T_))
         afm = sp.nsimplify(mag.afm)
         tc_eff = sp.Piecewise((tc / afm, tc <= 0), (tc, True))
         beta_eff = sp.Piecewise((beta / afm, beta <= 0), (beta, True))
