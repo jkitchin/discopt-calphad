@@ -798,7 +798,7 @@ building the prototype. The upstream requests are tracked in discopt#1249.
       codes give the same G for every phase, so this is the better minimum of
       the same model: pycalphad's grid starts missed the liquid miscibility
       gap. `examples/cuo_ionic.py` maps where this happens: pycalphad misses the gap at
-      14 of 425 points and returns no state at 19. The map also finds the eutectic
+      15 of 425 points and returns no state at 18. The map also finds the eutectic
       at 1339.4 K (1066.3 °C) and the monotectic L₂ → L₁ + Cu₂O at 1497.1 K.
     - **Restricted-solve starts.** Starting amounts from a least-squares fit
       can make the solve converge to a worse KKT point. In the oxide section,
@@ -979,6 +979,12 @@ remedies:
   analytically using the local convexity of the composition set;
 - give discopt the known minimizer as an incumbent together with a
   bound-target stop (P0-4).
+
+*Update (issue #6):* resolved for Cu–Mg. The deficit came from the
+boundary-slab interval bound, not the tree: CU2MG's minimizer lies next to a
+slab (y ≈ 0.99 and 2e-6). With the mean-value form of §9.22, all three
+`examples/cumg_cef.py` states, two with CU2MG active, are
+`CERTIFIED_TO_TOLERANCE` in seconds.
 
 **Fitting (issue #2): first version.** `src/discopt/calphad/fit.py`. Free
 parameters are TDB labels with symbolic T-forms that are linear in their

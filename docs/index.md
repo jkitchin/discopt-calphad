@@ -16,14 +16,18 @@ the tangent-plane distance Ψ(y) = G(y) − μ·A(y):
 
 **Status.** Pre-alpha.
 
+Each major feature has a [notebook](notebooks.md) that compares results with
+the literature: certified equilibrium, magnetic ordering, order–disorder, ionic
+models, Einstein and two-state terms, and fitting.
+
 - **MVP 1:** a binary regular solution with a miscibility gap.
 - **MVP 2:** binary systems with several phases: Redlich–Kister solutions, line
   compounds, T-dependent energies, and phase appearance and disappearance.
 - **MVP 3:** TDB import and export into a symbolic `ThermoDatabase`, and binary
   phase models built from it.
 - **MVP 4:** compound-energy-formalism phases in any number of elements, checked
-  against pycalphad, with staged pricing. Open: when a two-sublattice phase is
-  *active*, its bound stalls near −1e-4, so the result is `GLOBAL_SEARCH_INCOMPLETE`.
+  against pycalphad, with staged pricing. Active two-sublattice phases (Cu–Mg with
+  CU2MG) certify too, since the interval bounds gained a mean-value form.
 - **Fitting:** weighted least squares of TDB parameters to thermochemical,
   activity and phase-equilibrium data (one-sided boundary points included),
   with an ESPEI JSON reader and a real Cu–Mg example.
