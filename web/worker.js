@@ -64,7 +64,14 @@ const ready = (async () => {
   // The driver is fetched rather than bundled into this file so it stays
   // readable Python that runs unchanged off-browser.
   pyodide.FS.writeFile('/home/pyodide/calphad_app.py', await (await fetch('./calphad_app.py')).text());
-  await pyodide.runPythonAsync('import sys; sys.path.insert(0, "/home/pyodide")');
+  // discopt 0.9 lowers models through an "arena tape" built by discopt._rust,
+  // which this build does not have, and it imports it unguarded: left on, every
+  // solve raises ModuleNotFoundError. Off, it uses the pure-Python tape, which
+  // is the path this build was made for. Read at call time, so setting it here,
+  // before the first solve, is enough.
+  await pyodide.runPythonAsync(
+    'import os, sys; os.environ["DISCOPT_ARENA_TAPE"] = "0"; sys.path.insert(0, "/home/pyodide")',
+  );
   app = pyodide.pyimport('calphad_app');
 
   say('ready');

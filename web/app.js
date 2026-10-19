@@ -2037,7 +2037,9 @@ function tipHtml(p) {
   const db = currentDatabase();
   const a = db ? db.elements[0] : 'A';
   const head = `T = ${p.T.toFixed(0)} K · overall x(${a}) = ${p.x.toFixed(3)}`;
-  if (p.error) return `<div class="tip-head">${head}</div><b>did not solve</b>`;
+  // The reason is the useful part: "outside the range" means the database
+  // stops short of this T, which no amount of retrying will change.
+  if (p.error) return `<div class="tip-head">${head}</div><b>did not solve</b><br>${esc(p.error)}`;
   const sets = uniqueSets(p);
   const rows = sets
     .map((s) => `<tr>
