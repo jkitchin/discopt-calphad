@@ -6,7 +6,9 @@ installed in the browser as published. It does not have to be, *for solving*:
 ``discopt/modeling/core.py`` imports ``_rust`` lazily, inside the functions that
 need the Rust model builder, and equilibrium solving goes through the tape
 evaluator into POUNCE instead. Import tracing over a solve confirms it: zero
-imports of ``discopt._rust``.
+imports of ``discopt._rust`` -- with ``DISCOPT_ARENA_TAPE=0``, which the worker
+sets. From discopt 0.9 the default lowering is the arena tape, which imports
+``discopt._rust`` unguarded, and every solve fails without that switch.
 
 Certifying is the exception, and it is not a small one. Global pricing
 (``equilibrium(..., certify="final"|"every")``, ``EquilibriumResult.certify()``)
