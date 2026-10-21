@@ -4,6 +4,7 @@
 
 [![tests](https://github.com/jkitchin/discopt-calphad/actions/workflows/tests.yml/badge.svg)](https://github.com/jkitchin/discopt-calphad/actions/workflows/tests.yml)
 [![docs](https://github.com/jkitchin/discopt-calphad/actions/workflows/docs.yml/badge.svg)](https://kitchingroup.cheme.cmu.edu/discopt-calphad/)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23539986.svg)](https://doi.org/10.5281/zenodo.23539986)
 
 </div>
 
